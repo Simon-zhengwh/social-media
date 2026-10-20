@@ -1,29 +1,37 @@
-import type { Asset, BrandStyle, Ratio } from '../types'
-
-const RATIO_OPTIONS: Array<{ value: Ratio; label: string; hint: string }> = [
-  { value: '1:1', label: '1:1', hint: '方形' },
-  { value: '9:16', label: '9:16', hint: '竖版' },
-  { value: '4:5', label: '4:5', hint: '社媒' },
-  { value: '16:9', label: '16:9', hint: '横版' },
-]
+import PlatformSelector from './PlatformSelector'
+import BrandModeSelector from './BrandModeSelector'
+import CandidateCountSelector from './CandidateCountSelector'
+import type { Asset, BrandMode, BrandStyle, MerchantInfo, PlatformPreset } from '../types'
 
 type Props = {
   brands: BrandStyle[]
   selectedBrandId: string
   brandsLoading: boolean
   brandsError: string | null
+  brandMode: BrandMode
+  styleReferences: Asset[]
+  styleReferencesUploading: boolean
+  platforms: PlatformPreset[]
+  platformsLoading: boolean
+  platformsError: string | null
+  selectedPlatformId: string
+  selectedPlacementId: string
+  merchantInfo: MerchantInfo
   products: Asset[]
-  logo: Asset | null
-  ratio: Ratio
   prompt: string
+  candidateCount: number
   busy: boolean
   onBrandChange: (brandId: string) => void
+  onBrandModeChange: (mode: BrandMode) => void
+  onUploadStyleReferences: (files: File[]) => void
+  onRemoveStyleReference: (assetId: string) => void
+  onPlatformChange: (platformId: string) => void
+  onPlacementChange: (placementId: string) => void
+  onMerchantChange: (merchant: MerchantInfo) => void
   onPickProducts: () => void
   onRemoveProduct: (id: string) => void
-  onPickLogo: () => void
-  onClearLogo: () => void
-  onRatioChange: (ratio: Ratio) => void
   onPromptChange: (value: string) => void
+  onCandidateCountChange: (value: number) => void
   onGoAssets: () => void
   onGenerate: () => void
 }
@@ -33,105 +41,85 @@ export default function GenerateForm({
   selectedBrandId,
   brandsLoading,
   brandsError,
+  brandMode,
+  styleReferences,
+  styleReferencesUploading,
+  platforms,
+  platformsLoading,
+  platformsError,
+  selectedPlatformId,
+  selectedPlacementId,
+  merchantInfo,
   products,
-  logo,
-  ratio,
   prompt,
+  candidateCount,
   busy,
   onBrandChange,
+  onBrandModeChange,
+  onUploadStyleReferences,
+  onRemoveStyleReference,
+  onPlatformChange,
+  onPlacementChange,
+  onMerchantChange,
   onPickProducts,
   onRemoveProduct,
-  onPickLogo,
-  onClearLogo,
-  onRatioChange,
   onPromptChange,
+  onCandidateCountChange,
   onGoAssets,
   onGenerate,
 }: Props) {
+  const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId)
+  const contactReady =
+    selectedPlatform?.contact_policy !== 'required' ||
+    Boolean(merchantInfo.address.trim() && merchantInfo.phone.trim())
+  const brandReady =
+    brandMode !== 'preset' ||
+    (!brandsLoading &&
+      !brandsError &&
+      brands.some((brand) => brand.id === selectedBrandId))
+
   return (
     <section className="mp-card form-card">
       <div className="panel-head">
         <div>
           <span className="eyebrow">01 · 素材</span>
-          <h1>生成一张品牌海报</h1>
-          <p className="panel-lead">从资产管理选择商品图与 Logo，AI 生成场景底图。</p>
+          <h1>生成一张海报</h1>
+          <p className="panel-lead">从资产管理选择参考素材，AI 生成场景底图。</p>
         </div>
       </div>
 
-      <div className="brand-field">
-        <div className="brand-field-head">
-          <span className="prompt-field-label">
-            品牌风格 <span>必选</span>
-          </span>
-          <span className="brand-field-hint">品牌决定配色、字体、构图与 Logo 规则</span>
-        </div>
-        {brandsError ? (
-          <div className="brand-empty brand-error" role="alert">
-            <strong>品牌风格加载失败</strong>
-            <span>{brandsError}</span>
-          </div>
-        ) : brandsLoading ? (
-          <div className="brand-empty">
-            <span className="brand-loading-dot" aria-hidden="true" />
-            <span>正在读取品牌 skill</span>
-          </div>
-        ) : brands.length === 0 ? (
-          <div className="brand-empty">
-            <strong>没有可用的品牌风格</strong>
-            <span>请检查项目中 .agents/skills 下的品牌 skill。</span>
-          </div>
-        ) : (
-          <div className="brand-options" role="radiogroup" aria-label="品牌风格">
-            {brands.map((brand) => {
-              const selected = brand.id === selectedBrandId
-              const swatches = Object.entries(brand.palette)
-                .filter(([key]) =>
-                  ['primary', 'accent', 'accent_bright', 'cream', 'highlight'].includes(key),
-                )
-                .slice(0, 5)
-              return (
-                <button
-                  key={brand.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  className={`brand-option${selected ? ' is-active' : ''}`}
-                  onClick={() => onBrandChange(brand.id)}
-                  disabled={busy}
-                >
-                  <span className="brand-cover">
-                    {brand.cover_url ? (
-                      <img src={brand.cover_url} alt={`${brand.name} 风格参考`} />
-                    ) : (
-                      <span className="brand-cover-placeholder">{brand.short_name.slice(0, 2)}</span>
-                    )}
-                    {selected ? <span className="brand-selected-mark">当前</span> : null}
-                  </span>
-                  <span className="brand-option-copy">
-                    <strong>{brand.name}</strong>
-                    <span>{brand.summary || '品牌专属视觉规范'}</span>
-                    <span className="brand-swatches" aria-hidden="true">
-                      {swatches.map(([token, color]) => (
-                        <span
-                          key={token}
-                          className="brand-swatch"
-                          style={{ background: color }}
-                          title={`${token} ${color}`}
-                        />
-                      ))}
-                    </span>
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
+      <PlatformSelector
+        platforms={platforms}
+        selectedPlatformId={selectedPlatformId}
+        selectedPlacementId={selectedPlacementId}
+        merchantInfo={merchantInfo}
+        loading={platformsLoading}
+        error={platformsError}
+        busy={busy}
+        onPlatformChange={onPlatformChange}
+        onPlacementChange={onPlacementChange}
+        onMerchantChange={onMerchantChange}
+      />
+
+      <BrandModeSelector
+        brands={brands}
+        selectedBrandId={selectedBrandId}
+        brandsLoading={brandsLoading}
+        brandsError={brandsError}
+        mode={brandMode}
+        references={styleReferences}
+        referencesUploading={styleReferencesUploading}
+        busy={busy}
+        onModeChange={onBrandModeChange}
+        onBrandChange={onBrandChange}
+        onUploadReferences={onUploadStyleReferences}
+        onRemoveReference={onRemoveStyleReference}
+      />
 
       <div className="product-block">
         <div className="product-block-head">
-          <strong>菜品 / 商品图</strong>
-          <span>必填 · 最多 4 张</span>
+          <strong>参考素材</strong>
+          <span>必选 · 最多 4 张</span>
         </div>
         {products.length > 0 ? (
           <div className="product-strip">
@@ -163,66 +151,10 @@ export default function GenerateForm({
         ) : (
           <button type="button" className="product-empty" onClick={onPickProducts}>
             <span className="upload-plus" aria-hidden="true" />
-            <strong>从资产管理选择商品图</strong>
-            <span>可多选，第一张作为主视觉</span>
+            <strong>从资产管理选择参考素材</strong>
+            <span>可多选</span>
           </button>
         )}
-        <span className="product-hint">多张图会融合成同一张海报；第一张作为主视觉。</span>
-      </div>
-
-      <div className={`asset-slot${logo ? ' has-asset' : ''}`}>
-        <div className="asset-slot-head">
-          <strong>品牌 Logo</strong>
-          <span className="asset-optional">可选</span>
-        </div>
-        {logo ? (
-          <div className="asset-slot-body">
-            <img
-              className="asset-slot-thumb asset-slot-thumb-logo"
-              src={logo.url}
-              alt={logo.original_name}
-            />
-            <div className="asset-slot-meta">
-              <strong title={logo.original_name}>{logo.original_name}</strong>
-              <span className="tnum">
-                {logo.width} × {logo.height}
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div className="asset-slot-empty">
-            <span className="upload-plus" aria-hidden="true" />
-            <span>可选择，也可以不添加</span>
-          </div>
-        )}
-        <div className="asset-slot-actions">
-          <button type="button" className="asset-slot-pick" onClick={onPickLogo}>
-            {logo ? '更换' : '从资产管理选择'}
-          </button>
-          {logo ? (
-            <button type="button" className="asset-slot-clear" onClick={onClearLogo}>
-              移除
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="ratio-field">
-        <span className="prompt-field-label">画面比例</span>
-        <div className="ratio-options">
-          {RATIO_OPTIONS.map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              className={`ratio-option${ratio === option.value ? ' is-active' : ''}`}
-              onClick={() => onRatioChange(option.value)}
-              disabled={busy}
-            >
-              <strong>{option.label}</strong>
-              <span>{option.hint}</span>
-            </button>
-          ))}
-        </div>
       </div>
 
       <label className="prompt-field">
@@ -233,7 +165,7 @@ export default function GenerateForm({
           value={prompt}
           maxLength={2000}
           rows={5}
-          placeholder="例如：用素材图的信息制作一张 9:16 IG 海报，深色背景、顶部聚光灯，文案清晰可读"
+          placeholder="例如：用素材图的信息制作一张新品海报，深色背景、顶部聚光灯，文案清晰可读"
           onChange={(event) => onPromptChange(event.target.value)}
           disabled={busy}
         />
@@ -241,6 +173,12 @@ export default function GenerateForm({
           描述背景、光线、构图和文案；留空使用默认暖色餐厅场景。
         </span>
       </label>
+
+      <CandidateCountSelector
+        value={candidateCount}
+        busy={busy}
+        onChange={onCandidateCountChange}
+      />
 
       <button type="button" className="asset-library-link" onClick={onGoAssets}>
         去资产管理上传或载入示例素材
@@ -254,10 +192,11 @@ export default function GenerateForm({
         disabled={
           products.length === 0 ||
           busy ||
-          brandsLoading ||
-          Boolean(brandsError) ||
-          brands.length === 0 ||
-          !brands.some((brand) => brand.id === selectedBrandId)
+          !brandReady ||
+          platformsLoading ||
+          Boolean(platformsError) ||
+          !selectedPlatform ||
+          !contactReady
         }
       >
         {busy ? (
@@ -269,7 +208,7 @@ export default function GenerateForm({
           '生成海报'
         )}
       </button>
-      <p className="form-footnote">ToAPIs 生图约需 1–3 分钟。生成期间可离开页面，回来用链接继续查看。</p>
+      <p className="form-footnote">core-ai 生图约需 1–3 分钟。生成期间可离开页面，回来用链接继续查看。</p>
     </section>
   )
 }

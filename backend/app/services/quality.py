@@ -101,3 +101,156 @@ def assess_legibility(
                 }
             )
     return {"warnings": warnings, "checked": True}
+
+
+def _safe_bounds(
+    canvas: dict[str, Any],
+    placement: dict[str, Any] | None,
+) -> tuple[float, float, float, float]:
+    width = float(canvas.get("width") or 1)
+    height = float(canvas.get("height") or 1)
+    safe = (placement or {}).get("safe_area") or {}
+    return (
+        width * float(safe.get("left") or 0),
+        height * float(safe.get("top") or 0),
+        width * (1 - float(safe.get("right") or 0)),
+        height * (1 - float(safe.get("bottom") or 0)),
+    )
+
+
+def clamp_layers_to_safe_area(
+    layers: list[dict[str, Any]],
+    canvas: dict[str, Any],
+    placement: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(placement, dict):
+        return layers
+    left, top, right, bottom = _safe_bounds(canvas, placement)
+    for layer in layers:
+        if not isinstance(layer, dict) or not layer.get("visible", True):
+            continue
+        if layer.get("type") not in {"text", "visual_component"} and not (
+            layer.get("type") == "image" and layer.get("role") == "logo"
+        ):
+            continue
+        position = layer.get("position")
+        size = layer.get("size")
+        if not isinstance(position, dict) or not isinstance(size, dict):
+            continue
+        width = min(float(size.get("width") or 0), right - left)
+        height = min(float(size.get("height") or 0), bottom - top)
+        if width <= 0 or height <= 0:
+            continue
+        size["width"] = int(width)
+        size["height"] = int(height)
+        x = min(max(float(position.get("x") or 0), left), right - width)
+        y = min(max(float(position.get("y") or 0), top), bottom - height)
+        position["x"] = int(round(x))
+        position["y"] = int(round(y))
+    return layers
+
+
+def clamp_design_to_safe_area(
+    design: dict[str, Any],
+    placement: dict[str, Any] | None,
+) -> dict[str, Any]:
+    layers = design.get("layers") or []
+    if isinstance(layers, list):
+        clamp_layers_to_safe_area(layers, design.get("canvas") or {}, placement)
+    return design
+
+
+def _platform_hard_failures(
+    design: dict[str, Any],
+    platform: dict[str, Any] | None,
+    placement: dict[str, Any] | None,
+    merchant_info: dict[str, Any] | None,
+) -> list[dict[str, str]]:
+    if not isinstance(platform, dict):
+        return []
+    failures: list[dict[str, str]] = []
+    canvas = design.get("canvas") or {}
+    width = int(canvas.get("width") or 1)
+    height = int(canvas.get("height") or 1)
+    chosen = placement if isinstance(placement, dict) else None
+    if chosen is None:
+        placements = platform.get("placements") or []
+        default_id = str(platform.get("default_placement_id") or "")
+        chosen = next(
+            (item for item in placements if isinstance(item, dict) and item.get("id") == default_id),
+            placements[0] if placements and isinstance(placements[0], dict) else None,
+        )
+    safe = (chosen or {}).get("safe_area") or {}
+    left = width * float(safe.get("left") or 0)
+    top = height * float(safe.get("top") or 0)
+    right = width * (1 - float(safe.get("right") or 0))
+    bottom = height * (1 - float(safe.get("bottom") or 0))
+    for layer in design.get("layers") or []:
+        if not isinstance(layer, dict) or not layer.get("visible", True):
+            continue
+        if layer.get("type") not in {"text", "image"}:
+            continue
+        if layer.get("type") == "image" and layer.get("role") != "logo":
+            continue
+        box = layer.get("position") or {}
+        size = layer.get("size") or {}
+        x = float(box.get("x") or 0)
+        y = float(box.get("y") or 0)
+        box_right = x + float(size.get("width") or 0)
+        box_bottom = y + float(size.get("height") or 0)
+        if x < left - 1 or y < top - 1 or box_right > right + 1 or box_bottom > bottom + 1:
+            failures.append({
+                "code": "safe_area",
+                "layer_id": str(layer.get("id") or ""),
+                "message": f"图层「{layer.get('name') or layer.get('id')}」超出{platform.get('name') or '平台'}安全区",
+            })
+    return failures
+
+
+def assess_scene(
+    design: dict[str, Any],
+    image: Image.Image,
+    metrics: list[dict[str, Any]] | None = None,
+    copy_items: list[dict[str, Any]] | None = None,
+    platform: dict[str, Any] | None = None,
+    placement: dict[str, Any] | None = None,
+    merchant_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    layers = design.get("layers") or []
+    legibility = assess_legibility(image, layers, metrics)
+    warnings = list(legibility.get("warnings") or [])
+    hard: list[dict[str, Any]] = []
+    metrics_by_id = {item.get("id"): item for item in (metrics or []) if isinstance(item, dict)}
+    copy_items = copy_items or []
+    text_by_copy = {
+        str(layer.get("copy_id")): layer
+        for layer in layers
+        if layer.get("type") == "text" and layer.get("copy_id")
+    }
+    for item in copy_items:
+        copy_id = str(item.get("id") or "")
+        text = str(item.get("text") or "")
+        layer = text_by_copy.get(copy_id)
+        if layer is None:
+            hard.append({"code": "copy_missing", "message": f"缺少文案 {copy_id}"})
+            continue
+        if str(layer.get("content") or "") != text:
+            hard.append({"code": "copy_changed", "message": f"文案 {copy_id} 与事实源不一致"})
+    canvas_width = int((design.get("canvas") or {}).get("width") or 1)
+    canvas_height = int((design.get("canvas") or {}).get("height") or 1)
+    for layer in layers:
+        layer_id = layer.get("id")
+        metric = metrics_by_id.get(layer_id) or {}
+        if layer.get("type") == "image" and metric.get("skipped") == "asset_missing":
+            hard.append({"code": "asset_missing", "message": f"图层 {layer_id} 图片素材缺失"})
+        if layer.get("type") == "text" and layer.get("visible", True):
+            bounds = metric.get("rotated_bounds") or metric.get("bounds") or {}
+            if bounds:
+                right = int(bounds.get("x", 0)) + int(bounds.get("width", 0))
+                bottom = int(bounds.get("y", 0)) + int(bounds.get("height", 0))
+                if right <= 0 or bottom <= 0 or int(bounds.get("x", 0)) >= canvas_width or int(bounds.get("y", 0)) >= canvas_height:
+                    hard.append({"code": "text_invisible", "message": f"关键文字图层 {layer_id} 不在画布可见范围"})
+            if metric.get("overflow") and layer.get("role") in {"headline", "price", "details"}:
+                hard.append({"code": "critical_text_overflow", "message": f"关键文字图层 {layer_id} 无法放入文本框"})
+    hard.extend(_platform_hard_failures(design, platform, placement, merchant_info))
+    return {"warnings": warnings, "hard_failures": hard, "checked": True}

@@ -77,7 +77,7 @@
 ```text
 素材 + 提示词
   → 设计模型抽取文案 / 生成底图提示词（不写字、不画 Logo）
-  → ToAPIs 生成干净场景底图
+  → core-ai /images/edits 生成干净场景底图（参考图以 data URL 提交）
   → 设计模型看实际底图，输出文字层 boxes / 字号 / 颜色 / Logo 框
   → 校验并解决 Logo 与文字重叠、Logo 原始宽高比
   → 模型局部融合 Logo + 原始透明 Logo 精确覆盖
@@ -174,7 +174,7 @@
 |---|---|---|
 | `POST` | `/api/tasks` | 创建任务 |
 | `GET` | `/api/tasks/{id}` | 任务、设计状态、消息、版本号、编辑状态、质量报告 |
-| `POST` | `/api/tasks/{id}/edits` | 自然语言修改，202；轮询 `edit.status` |
+| `POST` | `/api/tasks/{id}/edits` | 自然语言修改，202；轮询 `edit.status`；纯文字修改不调用图像模型 |
 | `PATCH` | `/api/tasks/{id}/layers/{layer_id}` | 直接改图层字段 |
 | `GET` | `/api/tasks/{id}/versions` | 版本列表 |
 | `POST` | `/api/tasks/{id}/versions/{n}/restore` | 恢复版本 |

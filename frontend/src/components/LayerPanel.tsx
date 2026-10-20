@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { DesignState, Layer, LayerPatch, TextLayer, LogoLayer } from '../types'
+import type { DesignState, Layer, LayerPatch, TextLayer, ImageLayer, VisualComponentLayer } from '../types'
 
 type Props = {
   design: DesignState
@@ -7,12 +7,15 @@ type Props = {
   busy: boolean
   onSelect: (id: string | null) => void
   onPatch: (layerId: string, patch: LayerPatch) => void
+  onRegenerateComponent?: (layerId: string) => void
 }
 
 const TYPE_LABELS: Record<Layer['type'], string> = {
   background: '底图',
   text: '文字',
-  logo: 'Logo',
+  image: '图片',
+  shape: '形状',
+  visual_component: '组件',
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -24,6 +27,14 @@ const ROLE_LABELS: Record<string, string> = {
   cta: '行动',
   brand: '品牌',
   legal: '说明',
+}
+
+const COMPONENT_LABELS: Record<string, string> = {
+  headline: '笔刷标题',
+  promotion_price: '价格丝带',
+  offer_badge: '优惠贴片',
+  activity_info: '活动组件',
+  brand_lockup: '品牌组件',
 }
 
 function EyeIcon({ visible }: { visible: boolean }) {
@@ -85,7 +96,7 @@ function TextControls({
           <input
             autoFocus
             value={draft}
-            maxLength={200}
+            maxLength={500}
             aria-label="编辑文字内容"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -149,7 +160,7 @@ function TextControls({
           <button
             type="button"
             onClick={() =>
-              onPatch({ rotation: Math.max(-20, (layer.rotation ?? 0) - 3) })
+              onPatch({ rotation: Math.max(-45, (layer.rotation ?? 0) - 3) })
             }
             disabled={busy}
             title="逆时针旋转 3°"
@@ -159,7 +170,7 @@ function TextControls({
           <button
             type="button"
             onClick={() =>
-              onPatch({ rotation: Math.min(20, (layer.rotation ?? 0) + 3) })
+              onPatch({ rotation: Math.min(45, (layer.rotation ?? 0) + 3) })
             }
             disabled={busy}
             title="顺时针旋转 3°"
@@ -173,13 +184,13 @@ function TextControls({
   )
 }
 
-function LogoControls({
+function ImageControls({
   layer,
   design,
   busy,
   onPatch,
 }: {
-  layer: LogoLayer
+  layer: ImageLayer
   design: DesignState
   busy: boolean
   onPatch: (patch: LayerPatch) => void
@@ -207,7 +218,7 @@ function LogoControls({
   return (
     <div className="layer-controls" onClick={(event) => event.stopPropagation()}>
       <div className="layer-style-row">
-        <div className="layer-position-grid" aria-label="Logo 位置">
+        <div className="layer-position-grid" aria-label="图片位置">
           <button type="button" onClick={() => move('top_left')} disabled={busy} title="左上角">
             ↖
           </button>
@@ -222,25 +233,117 @@ function LogoControls({
           </button>
         </div>
         <div className="layer-stepper">
-          <button type="button" onClick={() => scale(0.82)} disabled={busy} aria-label="缩小 Logo">
+          <button type="button" onClick={() => scale(0.82)} disabled={busy} aria-label="缩小图片">
             −
           </button>
           <span className="tnum">{Math.round(layer.size.width)}</span>
-          <button type="button" onClick={() => scale(1.2)} disabled={busy} aria-label="放大 Logo">
+          <button type="button" onClick={() => scale(1.2)} disabled={busy} aria-label="放大图片">
             +
           </button>
         </div>
       </div>
       <p className="layer-note">
-        {layer.mode === 'model_integrated'
-          ? 'Logo 由模型自然融入底图；调整位置会从干净底图重新融合，文字层不动。'
-          : '透明 Logo 直接叠加，没有底板或卡片。'}
+        独立图片图层；可调整透明度和尺寸，不调用生图。
       </p>
     </div>
   )
 }
 
-export default function LayerPanel({ design, selectedId, busy, onSelect, onPatch }: Props) {
+function VisualControls({
+  layer,
+  busy,
+  onPatch,
+  onRegenerate,
+}: {
+  layer: VisualComponentLayer
+  busy: boolean
+  onPatch: (patch: LayerPatch) => void
+  onRegenerate?: () => void
+}) {
+  const initialText = typeof layer.content.text === 'string' ? layer.content.text : ''
+  const [draft, setDraft] = useState(initialText)
+  const [editing, setEditing] = useState(false)
+  const submit = () => {
+    const next = draft.trim()
+    if (next && next !== initialText) {
+      onPatch({ content: { ...layer.content, text: next } })
+    }
+    setEditing(false)
+  }
+  const scale = (factor: number) => {
+    onPatch({
+      size: {
+        width: Math.max(32, Math.round(layer.size.width * factor)),
+        height: Math.max(32, Math.round(layer.size.height * factor)),
+      },
+    })
+  }
+  return (
+    <div className="layer-controls" onClick={(event) => event.stopPropagation()}>
+      {editing ? (
+        <div className="layer-inline-edit">
+          <input
+            autoFocus
+            value={draft}
+            maxLength={500}
+            aria-label="编辑组件文字"
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') submit()
+              if (event.key === 'Escape') {
+                setDraft(initialText)
+                setEditing(false)
+              }
+            }}
+          />
+          <button type="button" className="layer-mini-btn" onClick={submit} disabled={busy}>
+            保存
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="layer-edit-trigger"
+          onClick={() => {
+            setDraft(initialText)
+            setEditing(true)
+          }}
+          disabled={busy}
+        >
+          编辑组件文字
+        </button>
+      )}
+      <div className="layer-style-row">
+        <span className="layer-note">
+          视觉素材 + 原生文字 · 融合 {layer.compositing?.blend_mode ?? 'normal'}
+          {layer.compositing?.feather_px ? ` · ${layer.compositing.feather_px}px 边缘` : ''}
+          {layer.compositing?.color_match ? ` · 色彩匹配 ${Math.round(layer.compositing.color_match * 100)}%` : ''}
+        </span>
+        <div className="layer-stepper">
+          <button type="button" onClick={() => scale(0.9)} disabled={busy} aria-label="缩小组件">
+            −
+          </button>
+          <span className="tnum">{Math.round(layer.size.width)}</span>
+          <button type="button" onClick={() => scale(1.1)} disabled={busy} aria-label="放大组件">
+            +
+          </button>
+        </div>
+      </div>
+      {onRegenerate ? (
+        <button
+          type="button"
+          className="layer-regenerate-btn"
+          onClick={onRegenerate}
+          disabled={busy}
+        >
+          只重生成这个组件的笔刷素材
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+export default function LayerPanel({ design, selectedId, busy, onSelect, onPatch, onRegenerateComponent }: Props) {
   const layers = [...design.layers].sort((a, b) => b.z_index - a.z_index)
   return (
     <div className="layer-panel">
@@ -273,11 +376,13 @@ export default function LayerPanel({ design, selectedId, busy, onSelect, onPatch
                   <span className="layer-sub">
                     {layer.type === 'text'
                       ? `${ROLE_LABELS[textLayer?.role ?? ''] ?? textLayer?.role} · ${textLayer?.content}`
-                      : layer.type === 'logo'
-                        ? layer.mode === 'model_integrated'
-                          ? '模型融合 · 原始素材'
-                          : '透明叠加 · 原始素材'
-                        : '锁定 · 独立版本'}
+                      : layer.type === 'image'
+                        ? '独立图片'
+                        : layer.type === 'shape'
+                          ? `${layer.shape} · 确定性形状`
+                          : layer.type === 'visual_component'
+                            ? `${COMPONENT_LABELS[layer.semantic_type] ?? layer.semantic_type} · ${String(layer.content.text ?? '')}`
+                            : '锁定 · 独立版本'}
                   </span>
                 </span>
                 {layer.locked ? (
@@ -308,12 +413,22 @@ export default function LayerPanel({ design, selectedId, busy, onSelect, onPatch
                       onPatch={(patch) => onPatch(layer.id, patch)}
                     />
                   ) : null}
-                  {layer.type === 'logo' ? (
-                    <LogoControls
-                      layer={layer as LogoLayer}
+                  {layer.type === 'image' ? (
+                    <ImageControls
+                      layer={layer as ImageLayer}
                       design={design}
                       busy={busy}
                       onPatch={(patch) => onPatch(layer.id, patch)}
+                    />
+                  ) : null}
+                  {layer.type === 'visual_component' ? (
+                    <VisualControls
+                      layer={layer}
+                      busy={busy}
+                      onPatch={(patch) => onPatch(layer.id, patch)}
+                      onRegenerate={
+                        onRegenerateComponent ? () => onRegenerateComponent(layer.id) : undefined
+                      }
                     />
                   ) : null}
                   {layer.type === 'background' ? (

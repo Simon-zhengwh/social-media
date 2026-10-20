@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import mongomock
 import pytest
-from fastapi import BackgroundTasks, HTTPException
+from fastapi import BackgroundTasks, HTTPException, UploadFile
 from PIL import Image
 
 from app.config import PROJECT_DIR
 from app.routes import brands as brand_routes
 from app.routes import tasks as task_routes
-from app.schemas import TaskCreate
+from app.schemas import BrandUpdate, TaskCreate
 from app.services import brand_style, storage
 
 
@@ -37,12 +39,9 @@ def _write_skill(
         "id": brand_id,
         "name": f"Brand {brand_id}",
         "summary": "test",
-        "version": 1,
         "is_default": is_default,
         "cover": cover,
         "logo_keywords": ["test", "测试"],
-        "palette": {"primary": "#123456", "accent": "#AA1122"},
-        "fonts": {"display": "brush", "body": "sans", "price": "sans"},
         "guides": {
             "layout": "references/layout.md",
             "background": "references/background.md",
@@ -55,83 +54,14 @@ def _write_skill(
     return skill
 
 
-@pytest.fixture(autouse=True)
-def clear_cache():
-    brand_style.clear_brand_cache()
-    yield
-    brand_style.clear_brand_cache()
-
-
-def test_project_exposes_seejoy_skill_with_three_references():
-    brand = brand_style.get_brand(PROJECT_DIR / ".agents" / "skills", "seejoy")
-    assert brand.name == "SEEJOY 喜聚"
-    assert brand.is_default is True
-    assert len(brand.reference_paths) == 3
-    assert "brush" in brand.layout_guide
-    assert "不生成任何文字" in brand.background_guide
-    assert brand.palette["primary"] == "#0D4317"
-
-
-def test_discovery_orders_default_first(tmp_path):
-    _write_skill(tmp_path, "alpha", "alpha")
-    _write_skill(tmp_path, "zeta", "zeta", is_default=True)
-    brands = brand_style.list_brands(tmp_path)
-    assert [brand.id for brand in brands] == ["zeta", "alpha"]
-    assert brand_style.get_brand(tmp_path).id == "zeta"
-
-
-def test_unknown_brand_raises(tmp_path):
-    _write_skill(tmp_path, "alpha", "alpha", is_default=True)
-    with pytest.raises(brand_style.BrandError) as exc:
-        brand_style.get_brand(tmp_path, "missing")
-    assert exc.value.code == "brand_not_found"
-
-
-def test_invalid_json_is_skipped(tmp_path):
-    _write_skill(tmp_path, "bad", "bad", raw_manifest="{not json")
-    _write_skill(tmp_path, "good", "good", is_default=True)
-    brands = brand_style.list_brands(tmp_path)
-    assert [brand.id for brand in brands] == ["good"]
-
-
-def test_duplicate_brand_id_is_skipped(tmp_path):
-    first = _write_skill(tmp_path, "a-first", "same", is_default=True)
-    _write_skill(tmp_path, "b-second", "same")
-    brands = brand_style.list_brands(tmp_path)
-    assert len(brands) == 1
-    assert brands[0].layout_guide == "LAYOUT GUIDE 测试规范"
-    assert brands[0].reference_paths[0].parent == (first / "assets").resolve()
-
-
-def test_cover_path_traversal_is_rejected(tmp_path):
-    (tmp_path / "outside.png").write_bytes(b"x")
-    _write_skill(tmp_path, "bad", "bad", cover="../outside.png")
-    assert brand_style.list_brands(tmp_path) == []
-
-
-def test_missing_skills_directory_returns_empty(tmp_path):
-    assert brand_style.list_brands(tmp_path / "missing") == []
-
-
-def test_brand_routes_return_cover_and_options(settings):
-    request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(settings=settings))
-    )
-    items = brand_routes.list_brands(request)
-    assert items[0]["id"] == "seejoy"
-    assert items[0]["cover_url"] == "/api/brands/seejoy/cover"
-    assert len(items[0]["palette"]) >= 5
-    cover = brand_routes.brand_cover("seejoy", request)
-    assert Path(cover.path).name == "reference-2.jpg"
-    with pytest.raises(HTTPException) as exc:
-        brand_routes.brand_cover("missing", request)
-    assert exc.value.status_code == 404
+def _import(db, settings, store, skills_dir: Path, **kwargs):
+    return brand_style.import_brand_skills(db, store, settings, skills_dir, **kwargs)
 
 
 def _task_request(db, settings, store):
     return SimpleNamespace(
         app=SimpleNamespace(
-            state=SimpleNamespace(db=db, settings=settings, store=store, toapis=None)
+            state=SimpleNamespace(db=db, settings=settings, store=store, core_ai=None)
         )
     )
 
@@ -150,31 +80,334 @@ def _seed_product(settings, store, db, product_png):
             "height": prepared.height,
             "bytes": prepared.bytes,
             "sha256": prepared.sha256,
+            "created_at": datetime.now(timezone.utc),
         }
     )
     return prepared.id
 
 
-def test_task_defaults_to_seejoy_and_snapshots_guides(settings, store, product_png):
+def test_project_skill_imports_three_references(settings, store):
     db = mongomock.MongoClient().db
+    result = _import(
+        db,
+        settings,
+        store,
+        PROJECT_DIR / ".agents" / "skills",
+        force=True,
+    )
+
+    assert result["errors"] == []
+    assert [item["brand_id"] for item in result["imported"]] == ["seejoy"]
+    brand = brand_style.get_brand(db, "seejoy")
+    assert brand.name == "SEEJOY 喜聚"
+    assert brand.is_default is True
+    assert len(brand.reference_asset_ids) == 3
+    assert brand.cover_asset_id in brand.reference_asset_ids
+    assert "brush" in brand.layout_guide
+    assert "不生成任何文字" in brand.background_guide
+    assert "skill_dir" not in db.brands.find_one({"_id": "seejoy"})
+
+
+def test_import_is_idempotent_and_force_updates(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    skill = _write_skill(tmp_path, "custom", "custom", is_default=True)
+    first = _import(db, settings, store, tmp_path)
+    assert [item["brand_id"] for item in first["imported"]] == ["custom"]
+    asset_count = db.assets.count_documents({})
+
+    second = _import(db, settings, store, tmp_path)
+    assert second["imported"] == []
+    assert [item["brand_id"] for item in second["skipped"]] == ["custom"]
+    assert db.assets.count_documents({}) == asset_count
+
+    (skill / "references" / "layout.md").write_text("CHANGED LAYOUT GUIDE", encoding="utf-8")
+    third = _import(db, settings, store, tmp_path, force=True)
+    assert [item["brand_id"] for item in third["imported"]] == ["custom"]
+    assert brand_style.get_brand(db, "custom").layout_guide == "CHANGED LAYOUT GUIDE"
+
+
+def test_list_brands_reads_mongo_and_orders_default_first(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "alpha", "alpha")
+    _write_skill(tmp_path, "zeta", "zeta", is_default=True)
+    _import(db, settings, store, tmp_path)
+
+    brands = brand_style.list_brands(db)
+    assert [brand.id for brand in brands] == ["zeta", "alpha"]
+    assert brand_style.get_brand(db).id == "zeta"
+
+
+def test_get_brand_does_not_fallback_to_skill_files(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "seejoy", "seejoy", is_default=True)
+
+    assert brand_style.list_brands(db) == []
+    with pytest.raises(brand_style.BrandError) as exc:
+        brand_style.get_brand(db, "seejoy")
+    assert exc.value.code == "brand_not_found"
+
+
+def test_direct_mongo_update_is_visible_without_cache(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+
+    db.brands.update_one(
+        {"_id": "custom"},
+        {
+            "$set": {
+                "layout_guide": "DIRECT MONGO UPDATE",
+            },
+        },
+    )
+
+    brand = brand_style.get_brand(db, "custom")
+    assert brand.layout_guide == "DIRECT MONGO UPDATE"
+
+
+def test_invalid_document_is_skipped_in_list_and_fails_direct_get():
+    db = mongomock.MongoClient().db
+    db.brands.insert_one(
+        {
+            "_id": "bad",
+            "name": "",
+            "layout_guide": "",
+            "background_guide": "",
+            "is_default": True,
+        }
+    )
+
+    assert brand_style.list_brands(db) == []
+    with pytest.raises(brand_style.BrandError) as exc:
+        brand_style.get_brand(db, "bad")
+    assert exc.value.code == "invalid_brand"
+
+
+def test_brand_routes_return_cover_and_options(settings, store):
+    db = mongomock.MongoClient().db
+    _import(db, settings, store, PROJECT_DIR / ".agents" / "skills")
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(db=db, settings=settings, store=store)
+        )
+    )
+
+    items = brand_routes.list_brands(request)
+    assert items[0]["id"] == "seejoy"
+    assert items[0]["cover_url"] == "/api/brands/seejoy/cover"
+
+    cover = brand_routes.brand_cover("seejoy", request)
+    image = Image.open(BytesIO(cover.body))
+    assert max(image.size) <= 640
+    assert cover.headers["cache-control"] == "no-cache"
+    with pytest.raises(HTTPException) as exc:
+        brand_routes.brand_cover("missing", request)
+    assert exc.value.status_code == 404
+
+
+def test_brand_cover_falls_back_to_first_reference(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    db.brands.update_one({"_id": "custom"}, {"$set": {"cover_asset_id": None}})
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(db=db, settings=settings, store=store)
+        )
+    )
+
+    cover = brand_routes.brand_cover("custom", request)
+    assert cover.media_type == "image/jpeg"
+    assert cover.body
+
+
+def _brand_request(db, settings, store):
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(db=db, settings=settings, store=store))
+    )
+
+
+def _update_payload(detail: dict, **overrides) -> BrandUpdate:
+    payload = {
+        "name": detail["name"],
+        "short_name": detail["short_name"],
+        "summary": detail["summary"],
+        "layout_guide": detail["layout_guide"],
+        "background_guide": detail["background_guide"],
+        "logo_keywords": detail["logo_keywords"],
+        "is_default": detail["is_default"],
+        "cover_asset_id": detail["cover_asset_id"],
+    }
+    payload.update(overrides)
+    return BrandUpdate(**payload)
+
+
+def test_brand_detail_returns_guides_and_references(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+
+    detail = brand_routes.get_brand("custom", _brand_request(db, settings, store))
+    assert detail["id"] == "custom"
+    assert detail["layout_guide"] == "LAYOUT GUIDE 测试规范"
+    assert detail["background_guide"] == "BACKGROUND GUIDE 测试背景"
+    assert len(detail["reference_images"]) == 1
+    assert detail["reference_images"][0]["is_cover"] is True
+
+
+def test_update_brand_persists_editable_fields(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    detail = brand_routes.get_brand("custom", request)
+
+    updated = brand_routes.update_brand(
+        "custom",
+        _update_payload(
+            detail,
+            name="Updated Brand",
+            summary="updated summary",
+            layout_guide="NEW LAYOUT",
+            background_guide="NEW BACKGROUND",
+            logo_keywords=["one", "two"],
+        ),
+        request,
+    )
+    assert updated["name"] == "Updated Brand"
+    assert updated["layout_guide"] == "NEW LAYOUT"
+
+
+def _upload_png(color=(240, 120, 20)) -> UploadFile:
+    buffer = BytesIO()
+    Image.new("RGB", (40, 60), color).save(buffer, format="PNG")
+    buffer.seek(0)
+    return UploadFile(file=buffer, filename="new-reference.png")
+
+
+def test_upload_and_delete_brand_reference(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    before = brand_routes.get_brand("custom", request)
+
+    uploaded = brand_routes.upload_reference(
+        "custom",
+        request,
+        _upload_png(),
+    )
+    assert len(uploaded["reference_images"]) == 2
+    new_asset_id = next(
+        item["asset_id"]
+        for item in uploaded["reference_images"]
+        if item["asset_id"] not in {ref["asset_id"] for ref in before["reference_images"]}
+    )
+    assert db.assets.find_one({"_id": new_asset_id})["kind"] == "brand_reference"
+
+    deleted = brand_routes.delete_reference("custom", new_asset_id, request)
+    assert len(deleted["reference_images"]) == 1
+    assert db.assets.find_one({"_id": new_asset_id}) is not None
+
+
+def test_upload_reference_rejects_fourth_image(settings, store):
+    db = mongomock.MongoClient().db
+    _import(db, settings, store, PROJECT_DIR / ".agents" / "skills")
+    request = _brand_request(db, settings, store)
+    with pytest.raises(HTTPException) as exc:
+        brand_routes.upload_reference("seejoy", request, _upload_png())
+    assert exc.value.status_code == 422
+    assert "最多 3 张" in str(exc.value.detail)
+
+
+def test_task_brand_snapshot_keeps_guides_and_loads_style_references(
+    tmp_path, settings, store, product_png
+):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
     product_id = _seed_product(settings, store, db, product_png)
+
+    created = task_routes.create_task(
+        TaskCreate(product_asset_ids=[product_id], brand_id="custom"),
+        _task_request(db, settings, store),
+        BackgroundTasks(),
+    )
+    stored = db.tasks.find_one({"_id": created["id"]})
+    assert stored["brand"]["layout_guide"] == "LAYOUT GUIDE 测试规范"
+    assert stored["brand"]["background_guide"] == "BACKGROUND GUIDE 测试背景"
+    assert stored["brand"]["reference_asset_ids"]
+    assert "skill_dir" not in stored["brand"]
+
+    db.brands.update_one({"_id": "custom"}, {"$set": {"layout_guide": "CHANGED"}})
+    restored = brand_style.brand_for_task(stored, db, store)
+    assert restored.layout_guide == "LAYOUT GUIDE 测试规范"
+    assert len(restored.reference_paths) == 1
+    assert restored.reference_paths[0].exists()
+    for path in restored.reference_paths:
+        path.unlink(missing_ok=True)
+
+
+def test_task_snapshot_rejects_missing_reference_asset(
+    tmp_path, settings, store, product_png
+):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    product_id = _seed_product(settings, store, db, product_png)
+    brand_doc = db.brands.find_one({"_id": "custom"})
+    missing_id = brand_doc["reference_asset_ids"][0]
+    db.assets.delete_one({"_id": missing_id})
+
+    with pytest.raises(HTTPException) as exc:
+        task_routes.create_task(
+            TaskCreate(product_asset_ids=[product_id], brand_id="custom"),
+            _task_request(db, settings, store),
+            BackgroundTasks(),
+        )
+    assert exc.value.status_code == 422
+    assert "品牌参考图" in str(exc.value.detail)
+
+
+def test_old_task_without_snapshot_falls_back_to_mongo_brand(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+
+    restored = brand_style.brand_for_task({"input": {"brand_id": "custom"}}, db, store)
+    assert restored.id == "custom"
+    assert restored.layout_guide == "LAYOUT GUIDE 测试规范"
+
+
+def test_old_task_with_unknown_brand_has_no_style(settings, store):
+    db = mongomock.MongoClient().db
+    restored = brand_style.brand_for_task({"input": {"brand_id": "missing"}}, db, store)
+    assert restored is None
+
+
+def test_task_without_brand_has_no_style_snapshot(settings, store, product_png):
+    db = mongomock.MongoClient().db
+    _import(db, settings, store, PROJECT_DIR / ".agents" / "skills")
+    product_id = _seed_product(settings, store, db, product_png)
+
     created = task_routes.create_task(
         TaskCreate(product_asset_ids=[product_id]),
         _task_request(db, settings, store),
         BackgroundTasks(),
     )
-    assert created["input"]["brand_id"] == "seejoy"
-    assert created["brand"]["name"] == "SEEJOY 喜聚"
+    assert created["input"]["brand_id"] is None
+    assert created["input"]["brand_mode"] == "none"
+    assert created["brand"] is None
     stored = db.tasks.find_one({"_id": created["id"]})
-    assert stored["brand"]["id"] == "seejoy"
-    assert "brush" in stored["brand"]["layout_guide"]
-    assert "不生成任何文字" in stored["brand"]["background_guide"]
+    assert stored["brand"] is None
 
 
 def test_task_accepts_explicit_brand_and_rejects_unknown(settings, store, product_png):
     db = mongomock.MongoClient().db
+    _import(db, settings, store, PROJECT_DIR / ".agents" / "skills")
     product_id = _seed_product(settings, store, db, product_png)
     request = _task_request(db, settings, store)
+
     created = task_routes.create_task(
         TaskCreate(product_asset_ids=[product_id], brand_id="seejoy"),
         request,
@@ -188,3 +421,43 @@ def test_task_accepts_explicit_brand_and_rejects_unknown(settings, store, produc
             BackgroundTasks(),
         )
     assert exc.value.status_code == 422
+
+
+def test_task_output_keeps_legacy_task_without_brand():
+    now = datetime.now(timezone.utc)
+    out = task_routes.task_out(
+        {
+            "_id": "task_legacy",
+            "status": "succeeded",
+            "stage": "done",
+            "input": {},
+            "canvas": {"width": 1024, "height": 1024},
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+    assert out["brand"] is None
+
+
+def test_task_brand_snapshot_registers_immutable_references(
+    settings, store, product_png
+):
+    db = mongomock.MongoClient().db
+    _import(db, settings, store, PROJECT_DIR / ".agents" / "skills")
+    product_id = _seed_product(settings, store, db, product_png)
+    created = task_routes.create_task(
+        TaskCreate(product_asset_ids=[product_id], brand_mode="preset", brand_id="seejoy"),
+        _task_request(db, settings, store),
+        BackgroundTasks(),
+    )
+    stored = db.tasks.find_one({"_id": created["id"]})
+    refs = stored["brand"]["references"]
+    assert len(refs) == 3
+    assert all(ref["asset_id"] and len(ref["sha256"]) == 64 for ref in refs)
+    assert all(db.assets.find_one({"_id": ref["asset_id"]})["kind"] == "brand_reference" for ref in refs)
+    restored = brand_style.brand_for_task(stored, db, store)
+    assert len(restored.reference_paths) == 3
+    assert all(path.exists() for path in restored.reference_paths)
+    for path in restored.reference_paths:
+        path.unlink(missing_ok=True)

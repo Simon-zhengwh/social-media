@@ -83,7 +83,8 @@ def test_make_design_has_one_background_and_ordered_layers():
     design_utils.validate_design(design)
     types = [layer["type"] for layer in design["layers"]]
     assert types.count("background") == 1
-    assert types == ["background", "text", "text", "logo"]
+    assert types == ["background", "text", "text", "image"]
+    assert design["layers"][-1]["role"] == "logo"
 
 
 def test_update_text_only_changes_target_layer():
@@ -135,9 +136,11 @@ def test_logo_move_does_not_touch_text():
     result = applied["design"]
     logo = design_utils.logo_layer(result)
     assert logo["position"]["x"] == 1080 - int(1080 * 0.05) - logo["size"]["width"]
-    assert applied["logo_reintegrate"] is True
+    assert applied["logo_reintegrate"] is False
+    assert logo.get("render_hint") == "overlay"
     assert result["layers"][1:3] == design["layers"][1:3]
-    assert result["background"] == design["background"]
+    assert result["background"]["render_asset_id"] == design["background"]["clean_asset_id"]
+    assert result["background"]["logo_integrated"] is False
 
 
 def test_background_regeneration_keeps_text_and_logo_payloads():
