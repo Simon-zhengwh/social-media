@@ -1,0 +1,13 @@
+# Local credentials; keep the shareable template.
+.env
+.env.*
+!.env.example
+
+# Dependencies and generated files.
+.venv/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+storage/

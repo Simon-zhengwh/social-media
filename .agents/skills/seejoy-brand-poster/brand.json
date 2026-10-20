@@ -1,0 +1,31 @@
+{
+  "id": "seejoy",
+  "name": "SEEJOY 喜聚",
+  "short_name": "喜聚",
+  "summary": "深森林绿、品牌红与奶油白的真实菜品拼贴海报，超大毛笔标题配手写批注和促销色块。",
+  "version": 1,
+  "is_default": true,
+  "cover": "assets/reference-2.jpg",
+  "logo_keywords": ["seejoy", "喜聚"],
+  "palette": {
+    "primary": "#0D4317",
+    "primary_deep": "#08300F",
+    "accent": "#B12310",
+    "accent_bright": "#D92D20",
+    "accent_deep": "#7A160F",
+    "cream": "#FFF4DF",
+    "highlight": "#FFE36B",
+    "ink": "#3A2318",
+    "white": "#FFFFFF",
+    "cta_text": "#153F2A"
+  },
+  "fonts": {
+    "display": "brush",
+    "body": "sans",
+    "price": "sans"
+  },
+  "guides": {
+    "layout": "references/layout-guide.md",
+    "background": "references/background-guide.md"
+  }
+}
