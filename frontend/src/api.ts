@@ -315,3 +315,26 @@ export async function selectWholeImageVersion(
   )
   return parseResponse<WholeImageTask>(response)
 }
+
+export type PromptOptimizePayload = {
+  workflow: 'layered' | 'whole_image'
+  prompt: string
+  brand_mode: BrandMode
+  brand_id?: string | null
+  style_reference_asset_ids: string[]
+  product_asset_ids: string[]
+  platform_id?: string | null
+  placement_id?: string | null
+  merchant_info?: MerchantInfo | null
+}
+
+export async function optimizePrompt(
+  payload: PromptOptimizePayload,
+): Promise<{ prompt: string }> {
+  const response = await fetch('/api/prompts/optimize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse<{ prompt: string }>(response)
+}

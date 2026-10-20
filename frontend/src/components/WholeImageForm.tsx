@@ -1,6 +1,7 @@
 import PlatformSelector from './PlatformSelector'
 import BrandModeSelector from './BrandModeSelector'
 import CandidateCountSelector from './CandidateCountSelector'
+import PromptField from './PromptField'
 import type { Asset, BrandMode, BrandStyle, MerchantInfo, PlatformPreset } from '../types'
 
 type Props = {
@@ -77,6 +78,20 @@ export default function WholeImageForm({
     (!brandsLoading &&
       !brandsError &&
       brands.some((brand) => brand.id === selectedBrandId))
+  const optimizationReady =
+    products.length > 0 &&
+    brandReady &&
+    !platformsLoading &&
+    !platformsError &&
+    Boolean(selectedPlatform)
+  const optimizationBlockedReason =
+    products.length === 0
+      ? '请先选择参考素材'
+      : !brandReady
+        ? '请先选择有效的品牌风格'
+        : platformsLoading || platformsError || !selectedPlatform
+          ? '请先等待平台配置就绪'
+          : undefined
 
   return (
     <section className="mp-card form-card">
@@ -158,22 +173,29 @@ export default function WholeImageForm({
         <span className="product-hint">参考图只作为视觉输入，最终排版由模型一次完成。</span>
       </div>
 
-      <label className="prompt-field">
-        <span className="prompt-field-label">
-          设计需求 <span>必填</span>
-        </span>
-        <textarea
-          value={prompt}
-          maxLength={2000}
-          rows={5}
-          placeholder="例如：夏日冰美式新品海报，年轻、有设计感，标题写「夏日限定」"
-          onChange={(event) => onPromptChange(event.target.value)}
-          disabled={busy}
-        />
-        <span className="prompt-field-hint">
-          描述内容、风格、文案和限制；模型会直接输出完整设计。
-        </span>
-      </label>
+      <PromptField
+        label="设计需求"
+        availability="必填"
+        placeholder="例如：夏日冰美式新品海报，年轻、有设计感，标题写「夏日限定」"
+        hint="描述内容、风格、文案和限制；模型会直接输出完整设计。"
+        prompt={prompt}
+        busy={busy}
+        canOptimize={optimizationReady}
+        optimizationBlockedReason={optimizationBlockedReason}
+        optimizeContext={{
+          workflow: 'whole_image',
+          brand_mode: brandMode,
+          brand_id: brandMode === 'preset' ? selectedBrandId : null,
+          style_reference_asset_ids:
+            brandMode === 'reference' ? styleReferences.map((asset) => asset.id) : [],
+          product_asset_ids: products.map((asset) => asset.id),
+          platform_id: selectedPlatform?.id ?? selectedPlatformId ?? null,
+          placement_id: selectedPlacementId || null,
+          merchant_info:
+            selectedPlatform?.contact_policy === 'required' ? merchantInfo : null,
+        }}
+        onPromptChange={onPromptChange}
+      />
 
       <CandidateCountSelector
         value={candidateCount}

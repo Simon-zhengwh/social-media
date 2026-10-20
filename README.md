@@ -279,3 +279,18 @@ Set-Location backend
 ```
 
 产物在 `storage/visual-component-experiment/`。完整分析见 [`doc/visual-first-phase1-2026-10-20.md`](doc/visual-first-phase1-2026-10-20.md)。
+## 提示词优化与基准报告（2026-10-21）
+
+「海报生成」和「自由设计」的提示词输入框共用 AI 优化按钮。接口 `POST /api/prompts/optimize` 会根据当前品牌/参考图、素材图、平台规则和商家信息生成可直接使用的提示词；空输入可生成初稿，重复点击会基于文本框中的最新内容继续优化。
+
+真实基准迭代使用隔离数据库和独立运行目录：
+
+```powershell
+Set-Location backend
+.\.venv\Scripts\python.exe -m scripts.prompt_optimization_loop prepare --run-dir <run-dir>
+.\.venv\Scripts\python.exe -m scripts.prompt_optimization_loop optimize-and-generate --run-dir <run-dir> --workflow layered
+.\.venv\Scripts\python.exe -m scripts.prompt_optimization_loop optimize-and-generate --run-dir <run-dir> --workflow whole_image
+.\.venv\Scripts\python.exe -m scripts.prompt_optimization_loop score --run-dir <run-dir> --workflow layered --score-file <score.json>
+```
+
+每轮会保存优化提示词、生成图、模型调用次数、分项评分和具体评分原因。运行 `report` 或 `curate` 会原子更新 `index.html`；`finalize --winner workflow:round` 用于记录最终 meta-judge 冠军。当前 2026-10-21 实验保留两路各 22 轮，报告位于 `storage/prompt-optimization/20261021-live/index.html`。
