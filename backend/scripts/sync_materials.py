@@ -13,7 +13,7 @@ from app.db import create_client, get_database
 from app.services.object_store import create_object_store
 from app.services.sample_assets import import_samples
 
-MANAGED_KINDS = {"product", "logo", "style"}
+MANAGED_KINDS = {"product", "logo", "style", "decoration"}
 
 
 def main() -> None:

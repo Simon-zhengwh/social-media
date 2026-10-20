@@ -8,7 +8,7 @@ from typing import Any
 
 from app.config import Settings
 from app.services import design as design_utils
-from app.services.toapis import ToAPIsClient
+from app.services.core_ai import CoreAIClient
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +79,11 @@ ALLOWED_ACTIONS = {
     "move_layer",
     "resize_layer",
     "set_visibility",
-    "replace_logo_asset",
     "regenerate_background",
     "relayout",
     "add_text",
     "delete_layer",
+    "update_shape_style",
 }
 
 
@@ -111,9 +111,11 @@ def _resolve_layer(design: dict[str, Any], action: dict[str, Any]) -> dict[str, 
             raise EditError(exc.code, exc.message) from exc
     role = action.get("role")
     if role:
-        layer = design_utils.find_layer_by_role(design, str(role))
-        if layer is not None:
-            return layer
+        candidates = design_utils.find_layers_by_role(design, str(role))
+        if len(candidates) > 1:
+            raise EditError("ambiguous_role", "存在多个同角色图层，请指定 layer_id")
+        if candidates:
+            return candidates[0]
     raise EditError("layer_not_found", "没有找到要修改的图层")
 
 
@@ -181,9 +183,12 @@ def validate_actions(
             "resize_layer",
             "set_visibility",
             "delete_layer",
+            "update_shape_style",
         }:
             layer = _resolve_layer(design, action)
             action["layer_id"] = layer["id"]
+            if design_utils.is_protected(layer):
+                raise EditError("protected_layer", f"图层「{layer.get('name')}」已被人工修改保护")
             if action_type == "update_text":
                 if layer.get("type") != "text":
                     raise EditError("invalid_target", "只能修改文字图层的内容")
@@ -208,6 +213,11 @@ def validate_actions(
             elif action_type == "delete_layer":
                 if layer.get("type") == "background":
                     raise EditError("invalid_target", "底图图层不能删除")
+            elif action_type == "update_shape_style":
+                if layer.get("type") != "shape":
+                    raise EditError("invalid_target", "只能修改形状图层样式")
+                if not isinstance(action.get("style"), dict) or not action["style"]:
+                    raise EditError("empty_style", "没有提供形状样式修改")
         elif action_type == "regenerate_background":
             prompt = str(action.get("prompt") or "").strip()
             if len(prompt) < 4:
@@ -220,11 +230,6 @@ def validate_actions(
             content = str(action.get("content") or "").strip()
             if not content:
                 raise EditError("empty_content", "新增文字不能为空")
-            if any(
-                layer.get("type") == "text" and layer.get("role") == role
-                for layer in design["layers"]
-            ):
-                raise EditError("duplicate_role", "该文字角色已经存在，请直接修改已有图层")
             action["role"] = role
             action["content"] = content[:500]
             action["name"] = str(action.get("name") or "新增文字")[:20]
@@ -237,14 +242,6 @@ def validate_actions(
             if not isinstance(box, dict):
                 raise EditError("invalid_box", "新增文字的位置无效")
             action["box"] = box
-        elif action_type == "replace_logo_asset":
-            logo = design_utils.logo_layer(design)
-            if logo is None:
-                raise EditError("logo_missing", "当前设计没有 Logo 图层")
-            asset_id = str(action.get("asset_id") or "").strip()
-            if not asset_id:
-                raise EditError("invalid_asset", "缺少 Logo 素材")
-            action["layer_id"] = logo["id"]
         elif action_type == "relayout":
             pass
         validated.append(action)
@@ -309,15 +306,18 @@ def apply_actions(
                 )
             else:
                 new_position = {
-                    "x": int(max(0, float(position.get("x", layer["position"]["x"])))),
-                    "y": int(max(0, float(position.get("y", layer["position"]["y"])))),
+                    "x": int(max(-10000, float(position.get("x", layer["position"]["x"])))),
+                    "y": int(max(-10000, float(position.get("y", layer["position"]["y"])))),
                 }
             updated = design_utils.apply_layer_patch(layer, {"position": new_position})
             result = design_utils.replace_layer(result, updated)
             changed.append(layer["id"])
             summaries.append(f"移动「{layer.get('name')}」")
-            if layer.get("type") == "logo" and layer.get("mode") == "model_integrated":
-                logo_reintegrate = True
+            if layer.get("role") == "logo" and (layer.get("render_hint") == "baked" or layer.get("mode") == "model_integrated"):
+                _detach_baked_logo(result)
+                updated["render_hint"] = "overlay"
+                updated["mode"] = "overlay"
+                result = design_utils.replace_layer(result, updated)
         elif action_type == "resize_layer":
             layer = design_utils.find_layer(result, action["layer_id"])
             if action.get("size"):
@@ -335,20 +335,24 @@ def apply_actions(
             result = design_utils.replace_layer(result, updated)
             changed.append(layer["id"])
             summaries.append(f"缩放「{layer.get('name')}」")
-            if layer.get("type") == "logo" and layer.get("mode") == "model_integrated":
-                logo_reintegrate = True
+            if layer.get("role") == "logo" and (layer.get("render_hint") == "baked" or layer.get("mode") == "model_integrated"):
+                _detach_baked_logo(result)
+                updated["render_hint"] = "overlay"
+                updated["mode"] = "overlay"
+                result = design_utils.replace_layer(result, updated)
         elif action_type == "set_visibility":
             layer = design_utils.find_layer(result, action["layer_id"])
             updated = design_utils.apply_layer_patch(
                 layer, {"visible": bool(action["visible"])}
             )
             if (
-                layer.get("type") == "logo"
+                layer.get("role") == "logo"
                 and not action["visible"]
                 and (result.get("background") or {}).get("logo_integrated")
             ):
                 _detach_baked_logo(result)
                 updated["mode"] = "overlay"
+                updated["render_hint"] = "overlay"
             result = design_utils.replace_layer(result, updated)
             changed.append(layer["id"])
             summaries.append(
@@ -356,7 +360,7 @@ def apply_actions(
             )
         elif action_type == "delete_layer":
             layer = design_utils.find_layer(result, action["layer_id"])
-            if layer.get("type") == "logo":
+            if layer.get("role") == "logo":
                 _detach_baked_logo(result)
             result["layers"] = [
                 item for item in result["layers"] if item.get("id") != layer["id"]
@@ -376,19 +380,16 @@ def apply_actions(
             result["layers"].append(layer)
             changed.append(layer["id"])
             summaries.append(f"新增「{layer['name']}」")
-        elif action_type == "replace_logo_asset":
-            layer = design_utils.find_layer(result, action["layer_id"])
-            updated = design_utils.apply_layer_patch(
-                layer, {"asset_id": action["asset_id"]}
-            )
-            result = design_utils.replace_layer(result, updated)
-            changed.append(layer["id"])
-            summaries.append("替换 Logo 素材")
-            logo_reintegrate = True
         elif action_type == "regenerate_background":
             result["background"]["prompt"] = action["prompt"]
             background_changed = True
             summaries.append("重新生成场景底图")
+        elif action_type == "update_shape_style":
+            layer = design_utils.find_layer(result, action["layer_id"])
+            updated = design_utils.apply_layer_patch(layer, action["style"])
+            result = design_utils.replace_layer(result, updated)
+            changed.append(layer["id"])
+            summaries.append(f"调整「{layer.get('name')}」形状样式")
         elif action_type == "relayout":
             summaries.append("重新排版：广告层级")
 
@@ -597,7 +598,7 @@ def parse_instruction(design: dict[str, Any], instruction: str) -> dict[str, Any
         if not actions:
             raise EditError("unsupported", "暂时只支持移动、放大或缩小 Logo")
         result["actions"] = actions
-        result["reply"] = "已调整 Logo 图层；Logo 会从干净底图重新融入，文字层保持不变。"
+        result["reply"] = "已调整 Logo 图层；Logo 使用原始透明素材直接覆盖，文字层保持不变，也不会调用生图。"
         return result
 
     if role:
@@ -649,7 +650,7 @@ def parse_instruction(design: dict[str, Any], instruction: str) -> dict[str, Any
 
 def plan_edit(
     settings: Settings,
-    client: ToAPIsClient | None,
+    client: CoreAIClient | None,
     *,
     instruction: str,
     design: dict[str, Any],
@@ -690,7 +691,7 @@ def plan_edit(
 
 def _llm_edit_plan(
     settings: Settings,
-    client: ToAPIsClient,
+    client: CoreAIClient,
     instruction: str,
     design: dict[str, Any],
 ) -> dict[str, Any]:
@@ -721,6 +722,6 @@ def _llm_edit_plan(
     )
     response = client.chat_json(
         [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        model=settings.toapis_edit_model,
+        model=settings.core_ai_edit_model,
     )
     return response

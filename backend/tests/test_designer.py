@@ -8,7 +8,7 @@ from app.services import designer
 
 
 def seejoy_brand():
-    return brand_style.get_brand(PROJECT_DIR / ".agents" / "skills", "seejoy")
+    return brand_style.load_brand_skill(PROJECT_DIR / ".agents" / "skills" / "seejoy-brand-poster")
 
 
 def test_logo_overlap_shrinks_headline_box():
@@ -61,44 +61,30 @@ def test_logo_box_preserves_original_aspect_ratio():
     assert layout["logo_box"]["width"] == layout["logo_box"]["height"]
 
 
-def test_top_left_clump_is_reflowed_into_ad_layout():
+def test_free_layout_is_not_reflowed_into_promo_template():
     canvas = {"width": 1080, "height": 1350}
     copy = {
-        "brand": "SEEJOY 喜聚",
         "headline": "夜宵时间到",
-        "subheadline": "火锅 · 寿司 · 甜品",
-        "offer": "儿童5折｜5岁以下免费",
         "price": "$56.99/位",
-        "cta": "欢迎到店",
-        "details": "12PM - 12AM 119 W 31st St",
     }
-    clumped = {
+    layout = {
         "layers": [
-            {
-                "role": "headline",
-                "content": copy["headline"],
-                "box": {"x": 30, "y": 130, "width": 530, "height": 100},
-            },
-            {
-                "role": "price",
-                "content": copy["price"],
-                "box": {"x": 33, "y": 376, "width": 315, "height": 62},
-            },
+            {"id": "title_side", "role": "headline", "copy_id": "copy_headline_1", "content": copy["headline"], "box": {"x": 30, "y": 130, "width": 530, "height": 100}, "rotation": 14},
+            {"id": "price_side", "role": "price", "copy_id": "copy_price_1", "content": copy["price"], "box": {"x": 33, "y": 376, "width": 315, "height": 62}, "rotation": -3},
         ],
         "logo_box": None,
     }
-    layout = designer.repair_layout(
-        clumped, canvas, copy, has_logo=True
+    result = designer.repair_layout(
+        layout, canvas, copy, has_logo=True,
+        copy_items=[
+            {"id": "copy_headline_1", "role": "headline", "text": copy["headline"], "source": "user"},
+            {"id": "copy_price_1", "role": "price", "text": copy["price"], "source": "user"},
+        ],
     )
-    assert layout["source"] == "promo-reflow"
-    boxes = {item["role"]: item["box"] for item in layout["layers"]}
-    assert boxes["price"]["y"] > canvas["height"] * 0.55
-    assert boxes["headline"]["height"] >= canvas["height"] * 0.15
-    assert any(item.get("rotation") for item in layout["layers"])
-    offer = next(item for item in layout["layers"] if item["role"] == "offer")
-    assert offer["background"]["color"].startswith("#")
-
-
+    assert result["source"] == "model"
+    boxes = {item["role"]: item["box"] for item in result["layers"]}
+    assert boxes["price"]["y"] < canvas["height"] * 0.55
+    assert result["layers"][0]["rotation"] == 14
 def test_layout_to_layers_keeps_exact_copy():
     canvas = {"width": 1080, "height": 1920}
     copy = {"headline": "畅吃自助", "price": "$56.99/位"}
@@ -163,7 +149,7 @@ def test_fallback_creative_plan_uses_brand_layout_guide():
     assert plan["creative_direction"] == seejoy_brand().layout_guide
 
 
-def test_promo_layout_uses_brand_palette_and_display_font():
+def test_promo_layout_uses_default_palette_and_display_font():
     canvas = {"width": 1080, "height": 1920}
     copy = {"headline": "畅吃自助", "price": "$56.99/位", "offer": "儿童5折"}
     layout = designer.promo_layout(
@@ -197,7 +183,7 @@ def test_creative_plan_sends_three_style_references_to_design_model():
     client = CaptureClient()
     settings = SimpleNamespace(
         design_model_enabled=True,
-        toapis_design_model="test-design-model",
+        core_ai_design_model="test-design-model",
     )
     plan = designer.make_creative_plan(
         settings,
@@ -217,3 +203,16 @@ def test_creative_plan_sends_three_style_references_to_design_model():
         item["text"] for item in user_content if item["type"] == "text"
     ][1]
     assert "只学习配色" in style_text
+    assert "构图自由" in prompt_text
+
+
+def test_background_prompt_includes_canvas_ratio():
+    prompt = designer.build_background_prompt(
+        "夜晚门店，热气腾腾的牛肉火锅",
+        has_logo=True,
+        product_count=1,
+        brand=seejoy_brand(),
+        ratio="9:16",
+    )
+    assert "画面比例为 9:16" in prompt
+    assert "不要出现任何文字" in prompt

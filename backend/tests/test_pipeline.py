@@ -4,40 +4,44 @@ import io
 from datetime import datetime, timezone
 
 import mongomock
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from app.services import design as design_utils
 from app.services import pipeline, storage
-from app.services.toapis import ToAPIsError
+from app.services.core_ai import CoreAIError
 
 
-class FakeToAPIs:
+class FakeCoreAI:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
         self.submitted = 0
+        self.last_prompt = ""
+        self.last_reference_count = 0
+        self.last_size = None
 
-    def upload_reference(self, path):
-        return "https://files.toapis.xyz/uploads/reference.png"
-
-    def submit_generation(self, prompt, reference_urls, ratio=None, resolution=None):
+    def edit_image(self, prompt, references, *, size, model=None, quality=None, mask=None):
         self.submitted += 1
         self.last_prompt = prompt
-        self.last_reference_count = len(reference_urls)
-        self.last_ratio = ratio
-        self.last_resolution = resolution
-        return {"id": "provider_task_1", "status": "queued"}
-
-    def wait_for_generation(self, task_id, on_update=None):
-        if on_update:
-            on_update({"status": "completed", "progress": 100})
+        self.last_reference_count = len(references)
+        self.last_size = size
         if self.fail:
-            raise ToAPIsError("generation_failed", "simulated failure")
-        return "https://files.toapis.xyz/images/final.png"
-
-    def download_result(self, url):
+            raise CoreAIError("generation_failed", "simulated failure")
         buffer = io.BytesIO()
         Image.new("RGB", (700, 700), (80, 50, 40)).save(buffer, format="PNG")
         return buffer.getvalue()
+
+    def generate_image(self, prompt, *, size, model=None, quality=None):
+        self.submitted += 1
+        self.last_prompt = prompt
+        self.last_size = size
+        if self.fail:
+            raise CoreAIError("generation_failed", "simulated failure")
+        buffer = io.BytesIO()
+        Image.new("RGB", (700, 700), (80, 50, 40)).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    def chat_json(self, messages, *, model=None, timeout_seconds=None):
+        return {"status": "pass", "violations": []}
 
 
 def seed_assets(db, settings, store, product_png, logo_png):
@@ -80,7 +84,7 @@ def make_task(db, product, logo):
             },
             "canvas": {"width": 1024, "height": 1024},
             "provider": {
-                "name": "toapis",
+                "name": "core-ai",
                 "model": "gpt-image-2.5-flare",
                 "task_id": None,
                 "status": None,
@@ -101,7 +105,7 @@ def test_pipeline_success(settings, store, product_png, logo_png):
     db = mongomock.MongoClient().db
     product, logo = seed_assets(db, settings, store, product_png, logo_png)
     task_id = make_task(db, product, logo)
-    fake = FakeToAPIs()
+    fake = FakeCoreAI()
     pipeline.run_task(db, settings, store, fake, task_id)
     task = db.tasks.find_one({"_id": task_id})
     assert task["status"] == "succeeded"
@@ -111,11 +115,11 @@ def test_pipeline_success(settings, store, product_png, logo_png):
     assert db.assets.find_one({"_id": task["output_asset_id"]})["kind"] == "output"
     assert fake.submitted == 1
     assert fake.last_reference_count == 1
-    assert fake.last_ratio == "1:1"
+    assert fake.last_size == "1024x1024"
     assert task["current_version"] == 1
     assert task["design"]["layers"][0]["type"] == "background"
     assert any(layer["type"] == "text" for layer in task["design"]["layers"])
-    assert any(layer["type"] == "logo" for layer in task["design"]["layers"])
+    assert not any(layer.get("role") == "logo" for layer in task["design"]["layers"])
     versions = list(db.versions.find({"task_id": task_id}))
     assert len(versions) == 1
     assert versions[0]["version"] == 1
@@ -125,22 +129,17 @@ def test_pipeline_failure_marks_task(settings, store, product_png, logo_png):
     db = mongomock.MongoClient().db
     product, logo = seed_assets(db, settings, store, product_png, logo_png)
     task_id = make_task(db, product, logo)
-    pipeline.run_task(db, settings, store, FakeToAPIs(fail=True), task_id)
+    pipeline.run_task(db, settings, store, FakeCoreAI(fail=True), task_id)
     task = db.tasks.find_one({"_id": task_id})
     assert task["status"] == "failed"
     assert task["error"]["code"] == "generation_failed"
 
 
-def test_can_resume_requires_provider_id(settings, store, product_png, logo_png):
+def test_can_resume_restarts_interrupted_sync_task(settings, store, product_png, logo_png):
     db = mongomock.MongoClient().db
     product, logo = seed_assets(db, settings, store, product_png, logo_png)
     task_id = make_task(db, product, logo)
     db.tasks.update_one({"_id": task_id}, {"$set": {"status": "interrupted"}})
-    allowed, _ = pipeline.can_resume(db, task_id)
-    assert allowed is False
-    db.tasks.update_one(
-        {"_id": task_id}, {"$set": {"provider.task_id": "provider_task_1"}}
-    )
     allowed, _ = pipeline.can_resume(db, task_id)
     assert allowed is True
 
@@ -188,7 +187,7 @@ def test_pipeline_fuses_multiple_products(settings, store, product_png, logo_png
         {"_id": task_id},
         {"$set": {"input.product_asset_ids": [product.id, second.id]}},
     )
-    fake = FakeToAPIs()
+    fake = FakeCoreAI()
     pipeline.run_task(db, settings, store, fake, task_id)
     task = db.tasks.find_one({"_id": task_id})
     assert task["status"] == "succeeded"
@@ -211,9 +210,6 @@ def test_pipeline_uses_brand_snapshot_for_generation_prompt(
                     "name": "Custom Brand",
                     "short_name": "Custom",
                     "summary": "custom",
-                    "version": 1,
-                    "palette": {"primary": "#112233"},
-                    "fonts": {"display": "brush", "body": "sans", "price": "sans"},
                     "layout_guide": "CUSTOM LAYOUT GUIDE",
                     "background_guide": "CUSTOM BACKGROUND GUIDE",
                     "logo_keywords": ["custom"],
@@ -221,7 +217,7 @@ def test_pipeline_uses_brand_snapshot_for_generation_prompt(
             }
         },
     )
-    fake = FakeToAPIs()
+    fake = FakeCoreAI()
     pipeline.run_task(db, settings, store, fake, task_id)
     task = db.tasks.find_one({"_id": task_id})
     assert task["status"] == "succeeded"
@@ -247,7 +243,7 @@ def test_build_prompt_uses_brand_background_guide():
     from app.config import PROJECT_DIR
     from app.services import brand_style
 
-    brand = brand_style.get_brand(PROJECT_DIR / ".agents" / "skills", "seejoy")
+    brand = brand_style.load_brand_skill(PROJECT_DIR / ".agents" / "skills" / "seejoy-brand-poster")
     text = pipeline.build_prompt("夜宵自助", has_logo=False, brand=brand)
     assert "真实餐饮摄影质感" in text
     assert "深森林绿" in text
@@ -278,13 +274,14 @@ def test_exact_logo_overlay_preserves_alpha_and_position():
     assert result.getpixel((110, 110))[:3] == (220, 20, 20)
 
 
-def test_relayout_preserves_copy_background_and_logo():
+def test_layout_items_preserve_copy_and_rotation():
     headline = design_utils.make_text_layer(
         layer_id="text_headline",
         name="主标题",
         role="headline",
         content="夜宵时间到",
         box={"x": 30, "y": 130, "width": 530, "height": 100},
+        rotation=14,
     )
     price = design_utils.make_text_layer(
         layer_id="text_price",
@@ -307,10 +304,174 @@ def test_relayout_preserves_copy_background_and_logo():
         text_layers=[headline, price],
         logo_layer=logo,
     )
-    result = pipeline._relayout_design(design, has_logo=True)
-    assert result["background"] == design["background"]
-    assert design_utils.logo_layer(result) == design_utils.logo_layer(design)
-    assert design_utils.copy_from_design(result) == design_utils.copy_from_design(design)
-    new_price = design_utils.find_layer_by_role(result, "price")
-    assert new_price["position"]["y"] > 1350 * 0.55
-    assert result["layers"][1].get("rotation") is not None
+    items = pipeline._layout_items_from_design(design)
+    assert [item["content"] for item in items] == ["夜宵时间到", "$56.99/位"]
+    assert items[0]["rotation"] == 14
+    assert design_utils.logo_layer(design)["render_hint"] == "baked"
+class GhostLogoCoreAI:
+    def edit_image(self, prompt, references, *, size, model=None, quality=None, mask=None):
+        source_ref = getattr(references[0], "path", references[0])
+        with Image.open(source_ref) as source:
+            crop = source.convert("RGB").copy()
+        draw = ImageDraw.Draw(crop)
+        # Simulate a model-rendered logo inside the slot plus a duplicate that
+        # spills left of the reserved box.
+        draw.ellipse((45, 40, 59, 58), fill=(220, 20, 20))
+        draw.ellipse((75, 45, 85, 55), fill=(220, 20, 20))
+        buffer = io.BytesIO()
+        crop.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+
+def test_logo_integration_erases_duplicate_mark_outside_reserved_box(
+    settings, store, logo_png
+):
+    db = mongomock.MongoClient().db
+    local_settings = settings.model_copy(
+        update={"logo_integration_enabled": True, "logo_exact_overlay": True}
+    )
+    background = Image.new("RGB", (400, 400), (10, 20, 30))
+    background_id, _ = pipeline._save_image_asset(
+        db,
+        local_settings,
+        store,
+        task_id="task_ghost",
+        name="clean.png",
+        data=storage.encode_png(background),
+        kind="background",
+    )
+    prepared = storage.prepare_upload(
+        local_settings, store, logo_png, "logo.png", "logo"
+    )
+    db.assets.insert_one(
+        {
+            "_id": prepared.id,
+            "kind": "logo",
+            "original_name": prepared.original_name,
+            "path": prepared.path,
+            "prepared_path": prepared.prepared_path,
+            "mime_type": prepared.mime_type,
+            "width": prepared.width,
+            "height": prepared.height,
+            "bytes": prepared.bytes,
+            "sha256": prepared.sha256,
+        }
+    )
+    logo_layer = design_utils.make_logo_layer(
+        layer_id="logo_brand",
+        asset_id=prepared.id,
+        box={"x": 280, "y": 30, "width": 60, "height": 60},
+    )
+    output_id = pipeline._integrate_logo(
+        db,
+        local_settings,
+        store,
+        GhostLogoCoreAI(),
+        task_id="task_ghost",
+        version=1,
+        background_asset_id=background_id,
+        logo_asset=db.assets.find_one({"_id": prepared.id}),
+        logo_layer=logo_layer,
+        canvas={"width": 400, "height": 400},
+    )
+    assert output_id
+    output = storage.open_image(store, db.assets.find_one({"_id": output_id})["path"])
+    assert output.convert("RGB").getpixel((260, 50)) == (10, 20, 30)
+
+
+def test_platform_prompt_reaches_background_generation(settings, store, product_png, logo_png):
+    db = mongomock.MongoClient().db
+    product, logo = seed_assets(db, settings, store, product_png, logo_png)
+    task_id = make_task(db, product, logo)
+    db.tasks.update_one(
+        {"_id": task_id},
+        {
+            "$set": {
+                "platform": {
+                    "id": "xiaohongshu",
+                    "name": "小红书",
+                    "contact_policy": "forbidden",
+                    "default_placement_id": "note",
+                    "placements": [
+                        {
+                            "id": "note",
+                            "name": "图文笔记 / 封面",
+                            "ratio": "3:4",
+                            "width": 1080,
+                            "height": 1440,
+                            "safe_area": {"top": 0.05, "right": 0.05, "bottom": 0.05, "left": 0.05},
+                        }
+                    ],
+                },
+                "placement": {
+                    "id": "note",
+                    "name": "图文笔记 / 封面",
+                    "ratio": "3:4",
+                    "width": 1080,
+                    "height": 1440,
+                    "safe_area": {"top": 0.05, "right": 0.05, "bottom": 0.05, "left": 0.05},
+                },
+                "canvas": {"width": 1080, "height": 1440},
+            }
+        },
+    )
+    fake = FakeCoreAI()
+    pipeline.run_task(db, settings, store, fake, task_id)
+    assert "1080×1440" in fake.last_prompt
+    assert "不得出现地址" in fake.last_prompt
+
+
+def test_logo_kind_asset_can_be_used_as_an_ordinary_reference(settings, store, product_png, logo_png):
+    db = mongomock.MongoClient().db
+    _, logo = seed_assets(db, settings, store, product_png, logo_png)
+    loaded = pipeline._load_products(db, {"product_asset_ids": [logo.id]})
+    assert [item["_id"] for item in loaded] == [logo.id]
+
+
+def test_task_without_brand_uses_free_creation_brand(settings, store, product_png, logo_png):
+    db = mongomock.MongoClient().db
+    product, logo = seed_assets(db, settings, store, product_png, logo_png)
+    task_id = make_task(db, product, logo)
+    task = db.tasks.find_one({"_id": task_id})
+    assert pipeline.brand_style.brand_for_task(task, db, store) is None
+
+
+def test_reference_mode_passes_style_images_to_generation(settings, store, product_png, logo_png):
+    db = mongomock.MongoClient().db
+    product, logo = seed_assets(db, settings, store, product_png, logo_png)
+    style = storage.prepare_upload(settings, store, product_png, "style.png", "brand_reference")
+    db.assets.insert_one(
+        {
+            "_id": style.id,
+            "kind": style.kind,
+            "original_name": style.original_name,
+            "path": style.path,
+            "prepared_path": style.prepared_path,
+            "mime_type": style.mime_type,
+            "width": style.width,
+            "height": style.height,
+            "bytes": style.bytes,
+            "sha256": style.sha256,
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+    task_id = make_task(db, product, logo)
+    db.tasks.update_one(
+        {"_id": task_id},
+        {
+            "$set": {
+                "input": {
+                    "product_asset_ids": [product.id],
+                    "brand_id": None,
+                    "brand_mode": "reference",
+                    "style_reference_asset_ids": [style.id],
+                    "prompt": "",
+                    "ratio": "1:1",
+                    "generation_mode": "classic",
+                }
+            }
+        },
+    )
+    fake = FakeCoreAI()
+    pipeline.run_task(db, settings, store, fake, task_id)
+    assert fake.last_reference_count == 2

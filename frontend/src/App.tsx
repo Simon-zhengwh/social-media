@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import AssetLibrary from './components/AssetLibrary'
+import BrandStudio from './components/BrandStudio'
 import AssetPicker from './components/AssetPicker'
 import ChatPanel from './components/ChatPanel'
 import GenerateForm from './components/GenerateForm'
@@ -7,6 +8,7 @@ import LayerPanel from './components/LayerPanel'
 import ResultPanel from './components/ResultPanel'
 import Sidebar, { type AppView } from './components/Sidebar'
 import VersionPanel from './components/VersionPanel'
+import WholeImageStudio from './components/WholeImageStudio'
 import {
   ApiError,
   createEdit,
@@ -16,8 +18,11 @@ import {
   getTask,
   listAssets,
   listBrands,
+  listPlatforms,
+  listTaskBatch,
   listVersions,
   patchLayer,
+  regenerateComponent,
   resumeTask,
   restoreVersion,
   uploadAsset,
@@ -25,9 +30,11 @@ import {
 import type {
   Asset,
   AssetKind,
+  BrandMode,
   BrandStyle,
   LayerPatch,
-  Ratio,
+  MerchantInfo,
+  PlatformPreset,
   Task,
   VersionSummary,
 } from './types'
@@ -39,18 +46,26 @@ function readTaskId(): string | null {
 }
 
 function readView(): AppView {
-  return new URLSearchParams(window.location.search).get('view') === 'assets'
-    ? 'assets'
-    : 'poster'
+  const value = new URLSearchParams(window.location.search).get('view')
+  if (value === 'assets') {
+    return 'assets'
+  }
+  if (value === 'brands') {
+    return 'brands'
+  }
+  if (value === 'whole') {
+    return 'whole'
+  }
+  return 'poster'
 }
 
 function updateUrl(next: { view?: AppView; taskId?: string | null }) {
   const url = new URL(window.location.href)
   if (next.view !== undefined) {
-    if (next.view === 'assets') {
-      url.searchParams.set('view', 'assets')
-    } else {
+    if (next.view === 'poster') {
       url.searchParams.delete('view')
+    } else {
+      url.searchParams.set('view', next.view)
     }
   }
   if (next.taskId !== undefined) {
@@ -73,35 +88,19 @@ function errorMessage(error: unknown): string {
   return '请求失败，请稍后重试'
 }
 
-function inferRatio(canvas: { width: number; height: number }): Ratio {
-  const value = canvas.width / canvas.height
-  if (Math.abs(value - 9 / 16) < 0.02) {
-    return '9:16'
-  }
-  if (Math.abs(value - 4 / 5) < 0.02) {
-    return '4:5'
-  }
-  if (Math.abs(value - 16 / 9) < 0.02) {
-    return '16:9'
-  }
-  return '1:1'
-}
-
 function assetFromTask(
   task: Task,
   kind: AssetKind,
   assetId?: string | null,
 ): Asset | null {
-  const id =
-    assetId ??
-    (kind === 'product' ? task.input.product_asset_id : task.input.logo_asset_id)
+  const id = assetId ?? task.input.product_asset_id
   if (!id) {
     return null
   }
   return {
     id,
     kind,
-    original_name: kind === 'product' ? '已保存的商品图' : '已保存的 Logo',
+    original_name: '已保存的参考素材',
     width: 0,
     height: 0,
     mime_type: 'image/png',
@@ -119,14 +118,22 @@ const TABS: Array<{ key: StudioTab; label: string }> = [
 export default function App() {
   const [view, setView] = useState<AppView>(() => readView())
   const [products, setProducts] = useState<Asset[]>([])
-  const [logo, setLogo] = useState<Asset | null>(null)
-  const [logoManual, setLogoManual] = useState(false)
   const [brands, setBrands] = useState<BrandStyle[]>([])
   const [brandsLoading, setBrandsLoading] = useState(true)
   const [brandsError, setBrandsError] = useState<string | null>(null)
   const [selectedBrandId, setSelectedBrandId] = useState('')
-  const [ratio, setRatio] = useState<Ratio>('9:16')
+  const [brandMode, setBrandMode] = useState<BrandMode>('preset')
+  const [styleReferences, setStyleReferences] = useState<Asset[]>([])
+  const [styleReferencesUploading, setStyleReferencesUploading] = useState(false)
+  const [platforms, setPlatforms] = useState<PlatformPreset[]>([])
+  const [platformsLoading, setPlatformsLoading] = useState(true)
+  const [platformsError, setPlatformsError] = useState<string | null>(null)
+  const [selectedPlatformId, setSelectedPlatformId] = useState('')
+  const [selectedPlacementId, setSelectedPlacementId] = useState('')
+  const [merchantInfo, setMerchantInfo] = useState<MerchantInfo>({ address: '', phone: '' })
   const [prompt, setPrompt] = useState('')
+  const [candidateCount, setCandidateCount] = useState(1)
+  const [candidateTasks, setCandidateTasks] = useState<Task[]>([])
   const [task, setTask] = useState<Task | null>(null)
   const [busy, setBusy] = useState(() => Boolean(readTaskId()))
   const [error, setError] = useState<string | null>(null)
@@ -143,31 +150,51 @@ export default function App() {
   const inFlight = useRef(false)
   const lastVersionRef = useRef(0)
 
+  const loadBrands = useCallback(async () => {
+    try {
+      const list = await listBrands()
+      setBrands(list)
+      setBrandsError(null)
+      setSelectedBrandId((previous) => {
+        if (list.some((brand) => brand.id === previous)) {
+          return previous
+        }
+        return list.find((brand) => brand.is_default)?.id ?? list[0]?.id ?? ''
+      })
+    } catch (reason: unknown) {
+      setBrandsError(errorMessage(reason))
+    } finally {
+      setBrandsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadBrands(), 0)
+    return () => window.clearTimeout(timer)
+  }, [loadBrands])
+
   useEffect(() => {
     let cancelled = false
-    listBrands()
+    listPlatforms()
       .then((list) => {
-        if (cancelled) {
-          return
-        }
-        setBrands(list)
-        setBrandsError(null)
-        setSelectedBrandId((previous) => {
-          if (previous) {
-            return previous
-          }
-          return list.find((brand) => brand.is_default)?.id ?? list[0]?.id ?? ''
+        if (cancelled) return
+        setPlatforms(list)
+        setPlatformsError(null)
+        setSelectedPlatformId((previous) => {
+          if (list.some((item) => item.id === previous)) return previous
+          return list[0]?.id ?? ''
         })
+        setSelectedPlacementId((previous) =>
+          list[0]?.placements.some((item) => item.id === previous)
+            ? previous
+            : list[0]?.default_placement_id ?? '',
+        )
       })
       .catch((reason: unknown) => {
-        if (!cancelled) {
-          setBrandsError(errorMessage(reason))
-        }
+        if (!cancelled) setPlatformsError(errorMessage(reason))
       })
       .finally(() => {
-        if (!cancelled) {
-          setBrandsLoading(false)
-        }
+        if (!cancelled) setPlatformsLoading(false)
       })
     return () => {
       cancelled = true
@@ -183,11 +210,6 @@ export default function App() {
       setAssets(list)
       setProducts((previous) =>
         previous.map((item) => list.find((asset) => asset.id === item.id) ?? item),
-      )
-      setLogo((previous) =>
-        previous
-          ? list.find((asset) => asset.id === previous.id) ?? previous
-          : previous,
       )
       setAssetsError(null)
     } catch (reason: unknown) {
@@ -251,14 +273,32 @@ export default function App() {
             .map((id) => assetFromTask(restored, 'product', id))
             .filter((asset): asset is Asset => Boolean(asset)),
         )
-        setLogo(assetFromTask(restored, 'logo'))
-        setLogoManual(true)
         const restoredBrandId = restored.input.brand_id ?? restored.brand?.id ?? ''
         if (restoredBrandId) {
           setSelectedBrandId(restoredBrandId)
         }
-        setRatio(restored.input.ratio ?? inferRatio(restored.canvas))
+        const restoredMode =
+          restored.input.brand_mode ??
+          (restoredBrandId
+            ? 'preset'
+            : (restored.input.style_reference_asset_ids?.length ?? 0) > 0
+              ? 'reference'
+              : 'none')
+        setBrandMode(restoredMode)
+        setStyleReferences(
+          (restored.input.style_reference_asset_ids ?? [])
+            .map((id) => assetFromTask(restored, 'brand_reference', id))
+            .filter((asset): asset is Asset => Boolean(asset)),
+        )
+        if (restored.platform?.id) {
+          setSelectedPlatformId(restored.platform.id)
+          setSelectedPlacementId(restored.placement?.id ?? restored.platform.default_placement_id)
+        }
+        if (restored.input.merchant_info) {
+          setMerchantInfo(restored.input.merchant_info)
+        }
         setPrompt(restored.input.prompt ?? '')
+        setCandidateCount(restored.input.candidate_count ?? 1)
         if (restored.status === 'succeeded') {
           void loadVersions(restored.id)
         }
@@ -266,11 +306,6 @@ export default function App() {
           .then((list) => {
             setProducts((previous) =>
               previous.map((item) => list.find((asset) => asset.id === item.id) ?? item),
-            )
-            setLogo((previous) =>
-              previous
-                ? list.find((asset) => asset.id === previous.id) ?? previous
-                : previous,
             )
           })
           .catch(() => undefined)
@@ -282,6 +317,33 @@ export default function App() {
       .finally(() => setBusy(false))
   }, [loadVersions])
 
+  const candidateBatchId = task?.input.candidate_batch_id ?? null
+  useEffect(() => {
+    if (!candidateBatchId) {
+      return
+    }
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const list = await listTaskBatch(candidateBatchId)
+        if (!cancelled) setCandidateTasks(list)
+      } catch {
+        // keep the current candidate list while the batch is still being created
+      }
+    }
+    void refresh()
+    const interval = window.setInterval(refresh, 1800)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [candidateBatchId])
+
+  const visibleCandidates = candidateBatchId
+    ? candidateTasks
+    : task
+      ? [task]
+      : []
   const taskId = task?.id ?? null
   const taskStatus = task?.status ?? null
   const editRunning = task?.edit.status === 'running'
@@ -335,30 +397,34 @@ export default function App() {
       ? selectedLayerId
       : null
   const selectedBrand = brands.find((brand) => brand.id === selectedBrandId) ?? null
-  const autoLogo = (() => {
-    if (!selectedBrand) {
-      return null
-    }
-    const keywords = selectedBrand.logo_keywords.map((item) => item.toLowerCase())
-    return (
-      assets.find(
-        (asset) =>
-          asset.kind === 'logo' &&
-          keywords.some((keyword) =>
-            asset.original_name.toLowerCase().includes(keyword),
-          ),
-      ) ?? null
-    )
-  })()
-  const effectiveLogo = logo ?? (logoManual ? null : autoLogo)
 
   const handleBrandChange = (brandId: string) => {
-    if (brandId === selectedBrandId) {
-      return
-    }
     setSelectedBrandId(brandId)
-    if (!logoManual) {
-      setLogo(null)
+    setBrandMode('preset')
+  }
+
+  const handleBrandModeChange = (mode: BrandMode) => {
+    setBrandMode(mode)
+    if (mode === 'preset' && !selectedBrandId) {
+      setSelectedBrandId(
+        brands.find((brand) => brand.is_default)?.id ?? brands[0]?.id ?? '',
+      )
+    }
+  }
+
+  const handleUploadStyleReferences = async (files: File[]) => {
+    const remaining = Math.max(0, 3 - styleReferences.length)
+    const accepted = files.slice(0, remaining)
+    if (!accepted.length) return
+    setStyleReferencesUploading(true)
+    setError(null)
+    try {
+      const uploaded = await Promise.all(accepted.map((file) => uploadAsset(file, 'brand_reference')))
+      setStyleReferences((previous) => [...previous, ...uploaded].slice(0, 3))
+    } catch (reason: unknown) {
+      setError(errorMessage(reason))
+    } finally {
+      setStyleReferencesUploading(false)
     }
   }
 
@@ -369,17 +435,13 @@ export default function App() {
     if (next === 'assets') {
       void loadAssets()
     }
+    if (next === 'brands') {
+      void loadBrands()
+    }
   }
 
   const handlePickProducts = () => {
     setPickerKind('product')
-    if (assets.length === 0) {
-      void loadAssets()
-    }
-  }
-
-  const handlePickLogo = () => {
-    setPickerKind('logo')
     if (assets.length === 0) {
       void loadAssets()
     }
@@ -390,27 +452,16 @@ export default function App() {
     setPickerKind(null)
   }
 
-  const handleSelectLogo = (asset: Asset) => {
-    setLogo(asset)
-    setLogoManual(true)
-    setPickerKind(null)
-  }
-
   const handleRemoveProduct = (assetId: string) => {
     setProducts((previous) => previous.filter((asset) => asset.id !== assetId))
   }
 
   const handleUseForPoster = (asset: Asset) => {
-    if (asset.kind === 'product') {
-      setProducts((previous) =>
-        previous.some((item) => item.id === asset.id) || previous.length >= 4
-          ? previous
-          : [...previous, asset],
-      )
-    } else {
-      setLogo(asset)
-      setLogoManual(true)
-    }
+    setProducts((previous) =>
+      previous.some((item) => item.id === asset.id) || previous.length >= 4
+        ? previous
+        : [...previous, asset],
+    )
     setPickerKind(null)
     handleViewChange('poster')
   }
@@ -449,14 +500,9 @@ export default function App() {
 
   const handleDelete = async (asset: Asset): Promise<boolean> => {
     try {
-      await deleteAsset(asset.id)
+      await deleteAsset(asset.id, true)
       setAssets((previous) => previous.filter((item) => item.id !== asset.id))
       setProducts((previous) => previous.filter((item) => item.id !== asset.id))
-      if (effectiveLogo?.id === asset.id) {
-        setLogo(null)
-        setLogoManual(false)
-      }
-      setLogo((previous) => (previous?.id === asset.id ? null : previous))
       return true
     } catch (reason: unknown) {
       setAssetsError(errorMessage(reason))
@@ -466,12 +512,32 @@ export default function App() {
 
   const handleGenerate = async () => {
     if (products.length === 0) {
-      setError('请先从资产管理选择商品图')
+      setError('请先从资产管理选择参考素材')
       handleViewChange('assets')
       return
     }
-    if (!selectedBrandId) {
-      setError('请先选择品牌风格')
+    if (brandMode === 'preset' && !brands.some((brand) => brand.id === selectedBrandId)) {
+      setError('请选择一个预设品牌风格')
+      return
+    }
+    const platformForTask =
+      platforms.find((item) => item.id === selectedPlatformId) ?? platforms[0]
+    if (!platformForTask) {
+      setError('请先选择发布平台')
+      return
+    }
+    const placementForTask =
+      platformForTask.placements.find((item) => item.id === selectedPlacementId) ??
+      platformForTask.placements.find((item) => item.id === platformForTask.default_placement_id)
+    if (!placementForTask) {
+      setError('请选择发布用途')
+      return
+    }
+    if (
+      platformForTask.contact_policy === 'required' &&
+      (!merchantInfo.address.trim() || !merchantInfo.phone.trim())
+    ) {
+      setError('该平台必须填写商家地址和联系电话')
       return
     }
     setBusy(true)
@@ -482,15 +548,30 @@ export default function App() {
     lastVersionRef.current = 0
     updateUrl({ taskId: null })
     try {
-      const created = await createTask({
-        product_asset_ids: products.map((asset) => asset.id),
-        logo_asset_id: effectiveLogo?.id ?? null,
-        brand_id: selectedBrandId,
-        prompt,
-        ratio,
-      })
-      setTask(created)
-      updateUrl({ taskId: created.id })
+      const batchId = crypto.randomUUID()
+      const created = await Promise.all(
+        Array.from({ length: candidateCount }, (_, index) =>
+          createTask({
+            product_asset_ids: products.map((asset) => asset.id),
+            brand_id: brandMode === 'preset' ? selectedBrandId : null,
+            brand_mode: brandMode,
+            style_reference_asset_ids:
+              brandMode === 'reference' ? styleReferences.map((asset) => asset.id) : [],
+            prompt,
+            generation_mode: 'reference_guided',
+            platform_id: platformForTask.id,
+            placement_id: placementForTask.id,
+            merchant_info:
+              platformForTask.contact_policy === 'required' ? merchantInfo : null,
+            candidate_count: candidateCount,
+            candidate_batch_id: batchId,
+            candidate_index: index,
+          }),
+        ),
+      )
+      setCandidateTasks(created)
+      setTask(created[0])
+      updateUrl({ taskId: created[0].id })
     } catch (reason: unknown) {
       setError(errorMessage(reason))
     } finally {
@@ -510,6 +591,18 @@ export default function App() {
       setError(errorMessage(reason))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const handleRegenerateComponent = async (layerId: string) => {
+    if (!task) {
+      return
+    }
+    setError(null)
+    try {
+      setTask(await regenerateComponent(task.id, layerId))
+    } catch (reason: unknown) {
+      setError(errorMessage(reason))
     }
   }
 
@@ -553,6 +646,24 @@ export default function App() {
     }
   }
 
+  const selectedPlatform =
+    platforms.find((item) => item.id === selectedPlatformId) ?? platforms[0] ?? null
+  const selectedPlacement =
+    selectedPlatform?.placements.find((item) => item.id === selectedPlacementId) ??
+    selectedPlatform?.placements.find((item) => item.id === selectedPlatform.default_placement_id) ??
+    null
+  const activePlatform = task?.platform ?? selectedPlatform
+  const activePlacement = task?.placement ?? selectedPlacement
+  const displayRatio = activePlacement?.ratio ?? task?.input.ratio ?? '9:16'
+
+  const handleSelectCandidate = (candidate: Task) => {
+    setTask(candidate)
+    setSelectedLayerId(null)
+    setVersions([])
+    lastVersionRef.current = candidate.current_version
+    updateUrl({ taskId: candidate.id })
+  }
+
   const studioReady = Boolean(
     task?.status === 'succeeded' && task.design?.layers?.length,
   )
@@ -565,18 +676,46 @@ export default function App() {
         <header className="topbar">
           <div className="topbar-title">
             <span className="topbar-kicker">
-              {view === 'poster' ? 'POSTER STUDIO' : 'ASSET LIBRARY'}
+              {view === 'poster'
+              ? 'POSTER STUDIO'
+              : view === 'whole'
+                ? 'WHOLE IMAGE STUDIO'
+                : view === 'brands'
+                  ? 'BRAND LIBRARY'
+                  : 'ASSET LIBRARY'}
             </span>
-            <strong>{view === 'poster' ? '海报生成' : '资产管理'}</strong>
+            <strong>
+              {view === 'poster'
+                ? '海报生成'
+                : view === 'whole'
+                  ? '自由设计'
+                  : view === 'brands'
+                    ? '品牌风格'
+                    : '资产管理'}
+            </strong>
           </div>
           <div className="topbar-meta">
             <span className="status-dot status-dot-live" aria-hidden="true" />
-            <span>ToAPIs · 分层编辑</span>
-            <span className="meta-chip">
-              {ratio} · {ratio === '1:1' ? '1K' : '2K'}
+            <span>
+              {view === 'whole'
+                ? 'core-ai · 整图生成与编辑'
+                : view === 'brands'
+                  ? 'MongoDB · 品牌配置与参考图'
+                  : 'core-ai · 分层编辑'}
             </span>
-            {view === 'poster' && selectedBrand ? (
-              <span className="meta-chip">{selectedBrand.name}</span>
+            {view === 'poster' ? (
+              <span className="meta-chip">
+                {activePlatform?.name ?? (task ? '历史任务' : '发布平台')} · {displayRatio}
+              </span>
+            ) : null}
+            {view === 'poster' ? (
+              <span className="meta-chip">
+                {brandMode === 'preset'
+                  ? selectedBrand?.name ?? '预设风格'
+                  : brandMode === 'reference'
+                    ? '参考图'
+                    : '无风格'}
+              </span>
             ) : null}
           </div>
         </header>
@@ -597,21 +736,36 @@ export default function App() {
               selectedBrandId={selectedBrandId}
               brandsLoading={brandsLoading}
               brandsError={brandsError}
+              brandMode={brandMode}
+              styleReferences={styleReferences}
+              styleReferencesUploading={styleReferencesUploading}
+              platforms={platforms}
+              platformsLoading={platformsLoading}
+              platformsError={platformsError}
+              selectedPlatformId={selectedPlatform?.id ?? ''}
+              selectedPlacementId={selectedPlacement?.id ?? ''}
+              merchantInfo={merchantInfo}
               products={products}
-              logo={effectiveLogo}
-              ratio={ratio}
               prompt={prompt}
+              candidateCount={candidateCount}
               busy={formBusy || studioBusy}
               onBrandChange={handleBrandChange}
+              onBrandModeChange={handleBrandModeChange}
+              onUploadStyleReferences={(files) => void handleUploadStyleReferences(files)}
+              onRemoveStyleReference={(assetId) =>
+                setStyleReferences((previous) => previous.filter((asset) => asset.id !== assetId))
+              }
+              onPlatformChange={(platformId) => {
+                const next = platforms.find((item) => item.id === platformId)
+                setSelectedPlatformId(platformId)
+                setSelectedPlacementId(next?.default_placement_id ?? '')
+              }}
+              onPlacementChange={setSelectedPlacementId}
+              onMerchantChange={setMerchantInfo}
               onPickProducts={handlePickProducts}
               onRemoveProduct={handleRemoveProduct}
-              onPickLogo={handlePickLogo}
-              onClearLogo={() => {
-                setLogo(null)
-                setLogoManual(true)
-              }}
-              onRatioChange={setRatio}
               onPromptChange={setPrompt}
+              onCandidateCountChange={setCandidateCount}
               onGoAssets={() => handleViewChange('assets')}
               onGenerate={handleGenerate}
             />
@@ -620,8 +774,11 @@ export default function App() {
               busy={busy}
               selectedLayerId={activeSelectedLayerId}
               onSelectLayer={setSelectedLayerId}
+              onPatchLayer={handlePatchLayer}
               onResume={handleResume}
               onRetry={handleGenerate}
+              candidates={visibleCandidates}
+              onSelectCandidate={handleSelectCandidate}
             />
             {studioReady && task?.design ? (
               <aside className="studio-inspector" aria-label="编辑工作台">
@@ -664,6 +821,7 @@ export default function App() {
                       busy={studioBusy}
                       onSelect={setSelectedLayerId}
                       onPatch={handlePatchLayer}
+                      onRegenerateComponent={handleRegenerateComponent}
                     />
                   ) : null}
                   {studioTab === 'versions' ? (
@@ -678,6 +836,26 @@ export default function App() {
               </aside>
             ) : null}
           </main>
+        ) : view === 'whole' ? (
+          <WholeImageStudio
+            brands={brands}
+            brandsLoading={brandsLoading}
+            brandsError={brandsError}
+            platforms={platforms}
+            platformsLoading={platformsLoading}
+            platformsError={platformsError}
+            assets={assets}
+            assetsLoading={assetsLoading}
+            onLoadAssets={() => void loadAssets()}
+            onGoAssets={() => handleViewChange('assets')}
+          />
+        ) : view === 'brands' ? (
+          <BrandStudio
+            brands={brands}
+            brandsLoading={brandsLoading}
+            brandsError={brandsError}
+            onRefreshBrands={loadBrands}
+          />
         ) : (
           <AssetLibrary
             assets={assets}
@@ -685,7 +863,6 @@ export default function App() {
             error={assetsError}
             uploadingKind={uploadingKind}
             selectedProductIds={products.map((asset) => asset.id)}
-            selectedLogoId={effectiveLogo?.id ?? null}
             onUpload={handleUpload}
             onUseSamples={handleUseSamples}
             onUseForPoster={handleUseForPoster}
@@ -697,9 +874,21 @@ export default function App() {
         <footer className="app-footer">
           {view === 'poster' ? (
             <>
-              <span>文字与 Logo 分层编辑 · 底图独立版本</span>
+              <span>文字与图片分层编辑 · 底图独立版本</span>
               <span className="footer-sep" aria-hidden="true" />
               <span>刷新页面不会丢失当前任务</span>
+            </>
+          ) : view === 'whole' ? (
+            <>
+              <span>模型直出完整图片 · 不做图层拆分</span>
+              <span className="footer-sep" aria-hidden="true" />
+              <span>每次修改都会保存为独立版本</span>
+            </>
+          ) : view === 'brands' ? (
+            <>
+              <span>品牌配置保存在 MongoDB · 新任务立即生效</span>
+              <span className="footer-sep" aria-hidden="true" />
+              <span>旧任务继续使用创建时的品牌快照</span>
             </>
           ) : (
             <span>素材保存在腾讯云 COS · 生成海报时从资产库选择</span>
@@ -713,17 +902,10 @@ export default function App() {
         kind={pickerKind ?? 'product'}
         assets={assets}
         loading={assetsLoading}
-        multi={pickerKind === 'product'}
-        selectedIds={
-          pickerKind === 'product'
-            ? products.map((asset) => asset.id)
-            : effectiveLogo
-              ? [effectiveLogo.id]
-              : []
-        }
+        multi
+        selectedIds={products.map((asset) => asset.id)}
         max={4}
         onClose={() => setPickerKind(null)}
-        onSelect={handleSelectLogo}
         onConfirm={handleSelectProducts}
         onGoAssets={() => handleViewChange('assets')}
       />

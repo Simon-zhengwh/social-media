@@ -76,8 +76,8 @@ def prepare_upload(
     original_name: str,
     kind: str,
 ) -> PreparedUpload:
-    if kind not in {"product", "logo"}:
-        raise StorageError("invalid_kind", "只支持 product 或 logo 素材")
+    if kind not in {"product", "logo", "decoration", "brand_reference"}:
+        raise StorageError("invalid_kind", "只支持 product、logo、decoration 或 brand_reference 素材")
     if not data:
         raise StorageError("empty_file", "文件为空")
     if len(data) > settings.max_upload_bytes:
@@ -100,17 +100,17 @@ def prepare_upload(
         with Image.open(io.BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source)
             image.load()
-            prepared = image.convert("RGBA" if kind == "logo" else "RGB")
+            prepared = image.convert("RGBA" if kind in {"logo", "decoration"} else "RGB")
     except (UnidentifiedImageError, OSError, SyntaxError) as exc:
         raise StorageError("invalid_image", "图片解码失败") from exc
 
-    max_side = 2048 if kind == "product" else 1024
+    max_side = 2048 if kind == "product" else 1600 if kind == "brand_reference" else 1024
     prepared.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
 
-    if kind == "logo":
+    if kind in {"logo", "decoration"} and prepared.mode == "RGBA":
         alpha = prepared.getchannel("A")
         if alpha.getextrema()[1] < 16:
-            raise StorageError("blank_logo", "Logo 图片几乎全透明，请检查文件")
+            raise StorageError("blank_logo" if kind == "logo" else "blank_asset", "图片几乎全透明，请检查文件")
 
     asset_id = f"asset_{uuid.uuid4().hex}"
     extension, mime_type = ALLOWED_FORMATS[image_format]

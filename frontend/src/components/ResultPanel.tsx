@@ -1,13 +1,16 @@
-import { useState } from 'react'
-import type { Layer, Task } from '../types'
+import { useState, type PointerEvent as ReactPointerEvent } from 'react'
+import type { Layer, LayerPatch, Task } from '../types'
 
 type Props = {
   task: Task | null
   busy: boolean
   selectedLayerId: string | null
   onSelectLayer: (id: string | null) => void
+  onPatchLayer: (id: string, patch: LayerPatch) => void
   onResume: () => void
   onRetry: () => void
+  candidates?: Task[]
+  onSelectCandidate?: (candidate: Task) => void
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -15,10 +18,16 @@ const STAGE_LABELS: Record<string, string> = {
   planning: '理解需求与文案',
   uploading: '上传参考图',
   submitting: '提交生图',
+  designing_reference: '生成全局设计参考',
+  generating_components: '生成标题/价格/贴片素材',
+  regenerating_component: '只重生成当前组件',
   generating: '生成场景底图',
   downloading: '下载底图',
-  layout: '规划文字图层',
-  integrating_logo: '融合品牌 Logo',
+  layout: '规划对象与文字',
+  integrating_logo: '合成图片素材',
+  reviewing: '视觉审查成图',
+  correcting: '应用视觉修正',
+  committing: '提交最佳版本',
   rendering: '合成海报',
   editing: '识别修改意图',
   regenerating_background: '重新生成底图',
@@ -46,7 +55,7 @@ function GhostPreview() {
       </div>
       <div className="preview-empty-copy">
         <strong>选择素材后生成海报</strong>
-        <span>底图、文字与 Logo 会保存为独立图层。</span>
+        <span>底图、文字与图片素材会保存为独立图层。</span>
       </div>
     </div>
   )
@@ -61,7 +70,7 @@ function LoadingPreview({ task }: { task: Task }) {
         <span className="progress-fill" style={{ width: `${Math.max(4, task.progress)}%` }} />
       </div>
       <span className="progress-value">{task.progress}%</span>
-      <p>底图独立生成；完成后文字和 Logo 作为真实图层叠加。</p>
+      <p>底图独立生成；完成后文字和图片素材作为真实图层叠加。</p>
     </div>
   )
 }
@@ -81,10 +90,10 @@ function ErrorNotice({ task, onRetry }: { task: Task; onRetry: () => void }) {
 function WaitingNotice({ task, onResume }: { task: Task; onResume: () => void }) {
   return (
     <div className="notice notice-warn">
-      <strong>{task.status === 'interrupted' ? '任务已中断' : '仍在等待供应商'}</strong>
-      <p>{task.error?.message ?? '任务还在供应商侧处理中，可继续查询已有任务。'}</p>
+      <strong>{task.status === 'interrupted' ? '任务已中断' : '任务需要恢复'}</strong>
+      <p>{task.error?.message ?? '恢复后会重新调用 core-ai 网关，可能产生新的生成费用。'}</p>
       <button type="button" className="mp-btn-secondary mp-btn-small" onClick={onResume}>
-        继续查询
+        恢复任务
       </button>
     </div>
   )
@@ -92,7 +101,9 @@ function WaitingNotice({ task, onResume }: { task: Task; onResume: () => void })
 
 function layerLabel(layer: Layer) {
   if (layer.type === 'text') return layer.name
-  if (layer.type === 'logo') return 'Logo'
+  if (layer.type === 'image') return layer.name
+  if (layer.type === 'shape') return layer.name
+  if (layer.type === 'visual_component') return layer.name
   return '底图'
 }
 
@@ -100,16 +111,19 @@ function LayerBoxes({
   task,
   selectedLayerId,
   onSelect,
+  onPatch,
 }: {
   task: Task
   selectedLayerId: string | null
   onSelect: (id: string | null) => void
+  onPatch: (id: string, patch: LayerPatch) => void
 }) {
   if (!task.design) return null
   const canvas = task.design.canvas
   const layers = [...(task.design?.layers ?? [])]
     .filter((layer) => layer.type !== 'background' && layer.visible)
     .sort((a, b) => b.z_index - a.z_index)
+
   return (
     <div className="layer-box-layer">
       {layers.map((layer) => {
@@ -117,21 +131,101 @@ function LayerBoxes({
         const box = 'position' in layer ? layer.position : { x: 0, y: 0 }
         const size =
           'size' in layer ? layer.size : { width: canvas.width, height: canvas.height }
+        const beginTransform = (
+          event: ReactPointerEvent<HTMLElement>,
+          mode: 'move' | 'resize',
+        ) => {
+          if (event.button !== 0 || !('position' in layer) || !('size' in layer)) return
+          event.preventDefault()
+          event.stopPropagation()
+          onSelect(layer.id)
+          const frame = event.currentTarget.closest('.preview-frame')
+          if (!(frame instanceof HTMLElement)) return
+          const startX = event.clientX
+          const startY = event.clientY
+          const frameRef = frame
+          const startBox = { ...box }
+          const startSize = { ...size }
+          let latest = { dx: 0, dy: 0, dw: 0 }
+          const baseRotation = ('rotation' in layer ? layer.rotation : 0) ?? 0
+
+          const boxElement = frameRef.querySelector<HTMLElement>(
+            `[data-layer-box="${layer.id}"]`,
+          )
+          const move = (pointer: PointerEvent) => {
+            const rect = frameRef.getBoundingClientRect()
+            latest = {
+              dx: ((pointer.clientX - startX) / Math.max(1, rect.width)) * canvas.width,
+              dy: ((pointer.clientY - startY) / Math.max(1, rect.height)) * canvas.height,
+              dw: ((pointer.clientX - startX) / Math.max(1, rect.width)) * canvas.width,
+            }
+            if (!boxElement) return
+            if (mode === 'move') {
+              boxElement.style.transform = `translate(${latest.dx}px, ${latest.dy}px) rotate(${baseRotation}deg)`
+            } else {
+              const width = Math.max(32, startSize.width + latest.dw)
+              const height = Math.max(32, startSize.height * (width / startSize.width))
+              boxElement.style.width = `${(width / canvas.width) * 100}%`
+              boxElement.style.height = `${(height / canvas.height) * 100}%`
+            }
+          }
+          const finish = () => {
+            window.removeEventListener('pointermove', move)
+            window.removeEventListener('pointerup', finish)
+            window.removeEventListener('pointercancel', finish)
+            if (boxElement) {
+              boxElement.style.transform = `rotate(${baseRotation}deg)`
+              boxElement.style.width = `${(size.width / canvas.width) * 100}%`
+              boxElement.style.height = `${(size.height / canvas.height) * 100}%`
+            }
+            if (mode === 'move' && (Math.abs(latest.dx) > 2 || Math.abs(latest.dy) > 2)) {
+              onPatch(layer.id, {
+                position: {
+                  x: Math.round(startBox.x + latest.dx),
+                  y: Math.round(startBox.y + latest.dy),
+                },
+              })
+            } else if (mode === 'resize' && Math.abs(latest.dw) > 2) {
+              const width = Math.max(32, Math.round(startSize.width + latest.dw))
+              const height = Math.max(
+                32,
+                Math.round(startSize.height * (width / startSize.width)),
+              )
+              onPatch(layer.id, { size: { width, height } })
+            }
+          }
+          window.addEventListener('pointermove', move)
+          window.addEventListener('pointerup', finish, { once: true })
+          window.addEventListener('pointercancel', finish, { once: true })
+        }
+
         return (
           <button
             key={layer.id}
             type="button"
+            data-layer-box={layer.id}
             className={`layer-box layer-box-${layer.type}${selected ? ' is-selected' : ''}`}
             style={{
               left: `${(box.x / canvas.width) * 100}%`,
               top: `${(box.y / canvas.height) * 100}%`,
               width: `${(size.width / canvas.width) * 100}%`,
               height: `${(size.height / canvas.height) * 100}%`,
+              transform: `rotate(${('rotation' in layer ? layer.rotation : 0) ?? 0}deg)`,
             }}
-            onClick={() => onSelect(selected ? null : layer.id)}
-            aria-label={`选择图层：${layerLabel(layer)}`}
+            onPointerDown={(event) => beginTransform(event, 'move')}
+            onClick={(event) => {
+              event.stopPropagation()
+            }}
+            aria-label={`选择并拖动图层：${layerLabel(layer)}`}
           >
             <span>{layerLabel(layer)}</span>
+            {selected ? (
+              <i
+                className="layer-resize-handle"
+                aria-hidden="true"
+                onPointerDown={(event) => beginTransform(event, 'resize')}
+              />
+            ) : null}
           </button>
         )
       })}
@@ -140,14 +234,33 @@ function LayerBoxes({
 }
 
 export default function ResultPanel({
-  task,
+  task: confirmedTask,
   busy,
   selectedLayerId,
   onSelectLayer,
+  onPatchLayer,
   onResume,
   onRetry,
+  candidates = [],
+  onSelectCandidate,
 }: Props) {
   const [showBoxes, setShowBoxes] = useState(true)
+  const [candidatePreviewId, setCandidatePreviewId] = useState<string | null>(null)
+  const previewCandidate =
+    candidates.find((candidate) => candidate.id === candidatePreviewId) ??
+    candidates.find((candidate) => candidate.id === confirmedTask?.id) ??
+    null
+  const task = previewCandidate ?? confirmedTask
+  const isPreviewConfirmed = Boolean(task && confirmedTask && task.id === confirmedTask.id)
+  const candidateIndex = Math.max(
+    0,
+    candidates.findIndex((candidate) => candidate.id === task?.id),
+  )
+  const moveCandidate = (offset: number) => {
+    if (candidates.length <= 1) return
+    const nextIndex = (candidateIndex + offset + candidates.length) % candidates.length
+    setCandidatePreviewId(candidates[nextIndex].id)
+  }
   const isActive = Boolean(task && ['queued', 'running'].includes(task.status))
   const isReady = Boolean(task?.status === 'succeeded' && task.preview_url)
   const isWaiting = Boolean(task && ['waiting', 'interrupted'].includes(task.status))
@@ -159,7 +272,9 @@ export default function ResultPanel({
   }
   const designLayers = task?.design?.layers ?? []
   const textCount = designLayers.filter((layer) => layer.type === 'text').length
-  const hasLogo = designLayers.some((layer) => layer.type === 'logo')
+  const imageCount = designLayers.filter((layer) => layer.type === 'image').length
+  const shapeCount = designLayers.filter((layer) => layer.type === 'shape').length
+  const componentCount = designLayers.filter((layer) => layer.type === 'visual_component').length
   const qualityWarnings = task?.quality?.warnings ?? []
 
   return (
@@ -191,6 +306,26 @@ export default function ResultPanel({
       </div>
 
       <div className={`preview-frame${isReady ? ' is-ready' : ''}`} style={previewStyle}>
+        {candidates.length > 1 ? (
+          <>
+            <button
+              type="button"
+              className="candidate-arrow candidate-arrow-left"
+              onClick={() => moveCandidate(-1)}
+              aria-label="上一张候选"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              className="candidate-arrow candidate-arrow-right"
+              onClick={() => moveCandidate(1)}
+              aria-label="下一张候选"
+            >
+              ›
+            </button>
+          </>
+        ) : null}
         {isReady && task?.preview_url ? (
           <img className="poster-image" src={task.preview_url} alt="生成的品牌海报" />
         ) : isActive && task ? (
@@ -200,14 +335,15 @@ export default function ResultPanel({
         )}
         {isReady && task ? (
           <>
-            {showBoxes ? (
+            {showBoxes && isPreviewConfirmed ? (
               <LayerBoxes
                 task={task}
                 selectedLayerId={selectedLayerId}
                 onSelect={onSelectLayer}
+                onPatch={onPatchLayer}
               />
             ) : null}
-            {isEditing ? (
+            {isPreviewConfirmed && isEditing ? (
               <div className="preview-edit-overlay">
                 <span className="scanline" aria-hidden="true" />
                 <strong>{STAGE_LABELS[task.stage] ?? '正在修改'}</strong>
@@ -218,14 +354,59 @@ export default function ResultPanel({
         ) : null}
       </div>
 
+      {candidates.length > 1 ? (
+        <div className="candidate-carousel">
+          <div className="candidate-thumbnails">
+            {candidates.map((candidate, index) => (
+              <button
+                type="button"
+                key={candidate.id}
+                className={`candidate-thumbnail${candidate.id === task?.id ? ' is-active' : ''}`}
+                onClick={() => setCandidatePreviewId(candidate.id)}
+                disabled={candidate.status !== 'succeeded'}
+                aria-label={`查看候选 ${index + 1}`}
+                title={`候选 ${index + 1}`}
+              >
+                {candidate.preview_url ? (
+                  <img src={candidate.preview_url} alt="" />
+                ) : (
+                  <span>{candidate.status === 'failed' ? '失败' : '生成中'}</span>
+                )}
+              </button>
+            ))}
+          </div>
+          {task && !isPreviewConfirmed ? (
+            <button
+              type="button"
+              className="candidate-confirm-btn"
+              onClick={() => {
+                onSelectCandidate?.(task)
+                setCandidatePreviewId(task.id)
+              }}
+              disabled={task.status !== 'succeeded'}
+            >
+              就选这张
+            </button>
+          ) : (
+            <span className="candidate-confirmed">已定为当前主图</span>
+          )}
+        </div>
+      ) : null}
+
       {isReady && task ? (
         <div className="result-footer">
           <div className="legend-row">
             <span className="legend-chip legend-ai">底图 v{task.current_version}</span>
             <span className="legend-chip legend-layer">{textCount} 个文字层</span>
-            {hasLogo ? (
-              <span className="legend-chip legend-brand">
-                {task.design?.background.logo_integrated ? 'Logo 模型融合' : 'Logo 透明层'}
+            {imageCount ? <span className="legend-chip">{imageCount} 个图片层</span> : null}
+            {shapeCount ? <span className="legend-chip">{shapeCount} 个形状层</span> : null}
+            {componentCount ? <span className="legend-chip">{componentCount} 个视觉组件</span> : null}
+            {task?.reference_guided?.enabled ? (
+              <span className="legend-chip">上下文融合</span>
+            ) : null}
+            {task.review && task.review.status !== 'not_run' ? (
+              <span className="legend-chip">
+                视觉审查：{task.review.status === 'corrected' ? '已修正' : task.review.status === 'fallback' ? '回退初稿' : '保留初稿'}
               </span>
             ) : null}
           </div>

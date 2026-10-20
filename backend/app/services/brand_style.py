@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass, field
-from functools import lru_cache
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from app.services import storage
+from app.services.image_ref import ImageRef, image_ref_from_asset
 
 logger = logging.getLogger(__name__)
 
 BRAND_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
-HEX_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 DEFAULT_PALETTE = {
@@ -54,28 +57,28 @@ class BrandStyle:
     name: str
     short_name: str
     summary: str
-    version: int
     is_default: bool
     cover_path: Path | None
     logo_keywords: tuple[str, ...]
-    palette: dict[str, str] = field(default_factory=dict)
-    fonts: dict[str, str] = field(default_factory=dict)
     layout_guide: str = FALLBACK_LAYOUT_GUIDE
     background_guide: str = FALLBACK_BACKGROUND_GUIDE
     reference_paths: tuple[Path, ...] = ()
+    cover_asset_id: str | None = None
+    reference_asset_ids: tuple[str, ...] = ()
+    reference_inputs: tuple[ImageRef, ...] = ()
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, references: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
             "short_name": self.short_name,
             "summary": self.summary,
-            "version": self.version,
-            "palette": dict(self.palette),
-            "fonts": dict(self.fonts),
             "layout_guide": self.layout_guide,
             "background_guide": self.background_guide,
             "logo_keywords": list(self.logo_keywords),
+            "cover_asset_id": self.cover_asset_id,
+            "reference_asset_ids": list(self.reference_asset_ids),
+            "references": list(references or []),
         }
 
     def public_dict(self, *, cover_url: str | None = None) -> dict[str, Any]:
@@ -84,12 +87,9 @@ class BrandStyle:
             "name": self.name,
             "short_name": self.short_name,
             "summary": self.summary,
-            "version": self.version,
             "is_default": self.is_default,
             "cover_url": cover_url,
             "logo_keywords": list(self.logo_keywords),
-            "palette": dict(self.palette),
-            "fonts": dict(self.fonts),
         }
 
 
@@ -99,13 +99,14 @@ def _default_brand() -> BrandStyle:
         name="SEEJOY 喜聚",
         short_name="喜聚",
         summary="深森林绿、品牌红与奶油白的餐饮促销海报。",
-        version=1,
         is_default=True,
         cover_path=None,
         logo_keywords=("seejoy", "喜聚"),
-        palette=dict(DEFAULT_PALETTE),
-        fonts=dict(DEFAULT_FONTS),
     )
+
+
+def default_brand() -> BrandStyle:
+    return _default_brand()
 
 
 def _safe_path(root: Path, relative: Any, *, label: str, must_exist: bool = True) -> Path:
@@ -126,40 +127,58 @@ def _safe_path(root: Path, relative: Any, *, label: str, must_exist: bool = True
 def _read_text(path: Path, *, label: str) -> str:
     try:
         text = path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise BrandError("invalid_brand", f"{label} 无法读取") from exc
     if not text:
         raise BrandError("invalid_brand", f"{label} 为空")
     return text
 
 
-def _normalize_palette(raw: Any) -> dict[str, str]:
-    palette = dict(DEFAULT_PALETTE)
-    if not isinstance(raw, dict):
-        return palette
-    for key, value in raw.items():
-        if isinstance(key, str) and isinstance(value, str) and HEX_COLOR_PATTERN.fullmatch(value):
-            palette[key] = value.upper()
-    return palette
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
-def _normalize_fonts(raw: Any) -> dict[str, str]:
-    fonts = dict(DEFAULT_FONTS)
-    if not isinstance(raw, dict):
-        return fonts
-    for key in ("display", "body", "price"):
-        value = raw.get(key)
-        if value in {"sans", "brush"}:
-            fonts[key] = value
-    return fonts
+def _normalize_keywords(raw: Any) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            str(item).strip().lower()
+            for item in raw
+            if isinstance(item, str) and item.strip()
+        )
+    )
+
+
+def _normalize_asset_ids(raw: Any, *, limit: int = 3) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    ids: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ids.append(value)
+        if len(ids) >= limit:
+            break
+    return tuple(ids)
 
 
 def load_brand_skill(skill_dir: Path) -> BrandStyle:
+    """Load a brand skill from disk. Runtime code does not call this; import uses it."""
     skill_dir = skill_dir.resolve()
     manifest = skill_dir / "brand.json"
     try:
         raw = json.loads(manifest.read_text(encoding="utf-8"))
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise BrandError("invalid_brand", "brand.json 不存在或无法读取") from exc
     except json.JSONDecodeError as exc:
         raise BrandError("invalid_brand", "brand.json 不是合法 JSON") from exc
@@ -196,86 +215,79 @@ def load_brand_skill(skill_dir: Path) -> BrandStyle:
     if cover_path is None and reference_paths:
         cover_path = reference_paths[0]
 
-    keywords_raw = raw.get("logo_keywords")
-    keywords = tuple(
-        str(item).strip().lower()
-        for item in keywords_raw
-        if isinstance(item, str) and item.strip()
-    ) if isinstance(keywords_raw, list) else ()
-
-    try:
-        version = int(raw.get("version") or 1)
-    except (TypeError, ValueError):
-        version = 1
-
     return BrandStyle(
         id=brand_id,
         name=name,
         short_name=str(raw.get("short_name") or name).strip(),
         summary=str(raw.get("summary") or "").strip(),
-        version=max(1, version),
-        is_default=bool(raw.get("is_default")),
+        is_default=_as_bool(raw.get("is_default")),
         cover_path=cover_path,
-        logo_keywords=keywords,
-        palette=_normalize_palette(raw.get("palette")),
-        fonts=_normalize_fonts(raw.get("fonts")),
+        logo_keywords=_normalize_keywords(raw.get("logo_keywords")),
         layout_guide=_read_text(layout_path, label="layout 指南"),
         background_guide=_read_text(background_path, label="background 指南"),
         reference_paths=tuple(reference_paths[:3]),
     )
 
 
-@lru_cache(maxsize=8)
-def _discover_cached(skills_dir: str) -> tuple[BrandStyle, ...]:
-    root = Path(skills_dir)
-    if not root.is_dir():
-        logger.warning("brand skills directory is missing: %s", root)
-        return ()
-
-    brands: dict[str, BrandStyle] = {}
-    for manifest in sorted(root.glob("*/brand.json")):
-        try:
-            brand = load_brand_skill(manifest.parent)
-        except BrandError as exc:
-            logger.warning("skip invalid brand skill %s: %s", manifest.parent, exc.message)
-            continue
-        if brand.id in brands:
-            logger.warning(
-                "skip duplicate brand id %s at %s", brand.id, manifest.parent
-            )
-            continue
-        brands[brand.id] = brand
-
-    return tuple(
-        sorted(
-            brands.values(),
-            key=lambda item: (not item.is_default, item.name.lower(), item.id),
-        )
+def brand_from_document(document: Any) -> BrandStyle:
+    if not isinstance(document, dict):
+        raise BrandError("invalid_brand", "品牌配置必须是对象")
+    brand_id = str(document.get("_id") or document.get("id") or "").strip().lower()
+    if not BRAND_ID_PATTERN.fullmatch(brand_id):
+        raise BrandError("invalid_brand", "品牌 id 只能包含小写字母、数字和连字符")
+    name = str(document.get("name") or "").strip()
+    if not name:
+        raise BrandError("invalid_brand", "品牌名称不能为空")
+    layout_guide = str(document.get("layout_guide") or "").strip()
+    background_guide = str(document.get("background_guide") or "").strip()
+    if not layout_guide or not background_guide:
+        raise BrandError("invalid_brand", "品牌排版指南和背景指南不能为空")
+    return BrandStyle(
+        id=brand_id,
+        name=name,
+        short_name=str(document.get("short_name") or name).strip(),
+        summary=str(document.get("summary") or "").strip(),
+        is_default=_as_bool(document.get("is_default")),
+        cover_path=None,
+        logo_keywords=_normalize_keywords(document.get("logo_keywords")),
+        layout_guide=layout_guide,
+        background_guide=background_guide,
+        cover_asset_id=str(document.get("cover_asset_id") or "").strip() or None,
+        reference_asset_ids=_normalize_asset_ids(document.get("reference_asset_ids")),
     )
 
 
-def list_brands(skills_dir: Path) -> list[BrandStyle]:
-    return list(_discover_cached(str(skills_dir)))
+def list_brands(db: Any) -> list[BrandStyle]:
+    if db is None:
+        return []
+    brands: list[BrandStyle] = []
+    for document in db.brands.find({}):
+        try:
+            brands.append(brand_from_document(document))
+        except Exception as exc:  # noqa: BLE001 - one bad brand must not hide the rest
+            message = exc.message if isinstance(exc, BrandError) else str(exc)
+            logger.warning("skip invalid brand document %s: %s", document.get("_id"), message)
+    return sorted(
+        brands,
+        key=lambda item: (not item.is_default, item.name.lower(), item.id),
+    )
 
 
-def clear_brand_cache() -> None:
-    _discover_cached.cache_clear()
-
-
-def get_brand(skills_dir: Path, brand_id: str | None = None) -> BrandStyle:
-    brands = list_brands(skills_dir)
+def get_brand(db: Any, brand_id: str | None = None) -> BrandStyle:
+    if db is None:
+        raise BrandError("brand_not_found", "品牌数据库不可用")
     if brand_id:
-        for brand in brands:
-            if brand.id == brand_id:
-                return brand
-        raise BrandError("brand_not_found", "品牌风格不存在")
+        document = db.brands.find_one({"_id": brand_id})
+        if document is None:
+            raise BrandError("brand_not_found", "品牌风格不存在")
+        return brand_from_document(document)
+    brands = list_brands(db)
+    if not brands:
+        raise BrandError("brand_not_found", "没有可用的品牌配置")
     for brand in brands:
         if brand.is_default:
             return brand
-    if brands:
-        return brands[0]
-    logger.warning("no brand skills found; using built-in fallback brand")
-    return _default_brand()
+    return brands[0]
 
 
 def brand_from_snapshot(snapshot: Any) -> BrandStyle | None:
@@ -284,46 +296,269 @@ def brand_from_snapshot(snapshot: Any) -> BrandStyle | None:
     brand_id = str(snapshot.get("id") or "").strip()
     if not brand_id:
         return None
-    palette = _normalize_palette(snapshot.get("palette"))
-    fonts = _normalize_fonts(snapshot.get("fonts"))
     layout_guide = str(snapshot.get("layout_guide") or "").strip()
     background_guide = str(snapshot.get("background_guide") or "").strip()
     if not layout_guide or not background_guide:
         return None
-    try:
-        version = int(snapshot.get("version") or 1)
-    except (TypeError, ValueError):
-        version = 1
-    keywords_raw = snapshot.get("logo_keywords")
-    keywords = tuple(
-        str(item).strip().lower()
-        for item in keywords_raw
-        if isinstance(item, str) and item.strip()
-    ) if isinstance(keywords_raw, list) else ()
+    reference_asset_ids = _normalize_asset_ids(snapshot.get("reference_asset_ids"))
+    if not reference_asset_ids:
+        reference_asset_ids = _normalize_asset_ids(
+            [
+                item.get("asset_id")
+                for item in snapshot.get("references") or []
+                if isinstance(item, dict)
+            ]
+        )
+    cover_asset_id = str(snapshot.get("cover_asset_id") or "").strip() or None
+    if cover_asset_id is None and reference_asset_ids:
+        cover_asset_id = reference_asset_ids[0]
     return BrandStyle(
         id=brand_id,
         name=str(snapshot.get("name") or brand_id),
         short_name=str(snapshot.get("short_name") or snapshot.get("name") or brand_id),
         summary=str(snapshot.get("summary") or ""),
-        version=max(1, version),
         is_default=False,
         cover_path=None,
-        logo_keywords=keywords,
-        palette=palette,
-        fonts=fonts,
+        logo_keywords=_normalize_keywords(snapshot.get("logo_keywords")),
         layout_guide=layout_guide,
         background_guide=background_guide,
+        cover_asset_id=cover_asset_id,
+        reference_asset_ids=reference_asset_ids,
     )
 
 
-def brand_for_task(task: dict[str, Any], skills_dir: Path) -> BrandStyle:
+def _reference_entry(asset: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "asset_id": asset["_id"],
+        "sha256": asset.get("sha256") or "",
+        "original_name": asset.get("original_name") or "",
+        "width": int(asset.get("width") or 0),
+        "height": int(asset.get("height") or 0),
+    }
+
+
+def _asset_for_path(
+    db: Any,
+    store: Any,
+    settings: Any,
+    path: Path,
+    *,
+    kind: str = "brand_reference",
+) -> dict[str, Any]:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise BrandError("brand_reference_missing", f"品牌参考图无法读取：{path.name}") from exc
+    digest = hashlib.sha256(data).hexdigest()
+    asset = db.assets.find_one({"kind": kind, "sha256": digest})
+    if asset is not None:
+        return asset
+    prepared = storage.prepare_upload(settings, store, data, path.name, kind)
+    document = {
+        "_id": prepared.id,
+        "kind": prepared.kind,
+        "original_name": prepared.original_name,
+        "path": prepared.path,
+        "prepared_path": prepared.prepared_path,
+        "mime_type": prepared.mime_type,
+        "width": prepared.width,
+        "height": prepared.height,
+        "bytes": prepared.bytes,
+        "sha256": prepared.sha256,
+        "created_at": datetime.now(timezone.utc),
+    }
+    db.assets.insert_one(document)
+    return document
+
+
+def snapshot_brand(
+    brand: BrandStyle,
+    db: Any,
+    store: Any,
+    settings: Any,
+) -> dict[str, Any]:
+    """Create an immutable task snapshot from Mongo brand assets."""
+    references: list[dict[str, Any]] = []
+    if brand.reference_asset_ids:
+        for asset_id in brand.reference_asset_ids[:3]:
+            asset = db.assets.find_one({"_id": asset_id})
+            if asset is None:
+                raise BrandError(
+                    "brand_reference_missing",
+                    f"品牌参考图不存在：{asset_id}",
+                )
+            references.append(_reference_entry(asset))
+    elif brand.reference_paths:
+        # Compatibility path for old code/tests that construct BrandStyle from files.
+        for path in brand.reference_paths[:3]:
+            references.append(
+                _reference_entry(_asset_for_path(db, store, settings, path))
+            )
+
+    cover_asset_id = brand.cover_asset_id
+    if cover_asset_id and db.assets.find_one({"_id": cover_asset_id}) is None:
+        logger.warning("brand cover asset missing: %s", cover_asset_id)
+        cover_asset_id = None
+    if cover_asset_id is None and brand.cover_path is not None:
+        cover_asset_id = _asset_for_path(db, store, settings, brand.cover_path)["_id"]
+    if cover_asset_id is None and references:
+        cover_asset_id = references[0]["asset_id"]
+
+    snapshot = brand.snapshot(references)
+    snapshot["cover_asset_id"] = cover_asset_id
+    snapshot["reference_asset_ids"] = [item["asset_id"] for item in references]
+    return snapshot
+
+
+def _reference_inputs_from_asset_ids(
+    asset_ids: tuple[str, ...],
+    db: Any,
+    store: Any,
+) -> tuple[ImageRef, ...]:
+    if db is None or store is None:
+        return ()
+    references: list[ImageRef] = []
+    for asset_id in asset_ids[:3]:
+        try:
+            references.append(image_ref_from_asset(db, store, asset_id))
+        except Exception as exc:  # noqa: BLE001 - legacy tasks tolerate missing assets
+            logger.warning("brand reference asset unavailable %s: %s", asset_id, exc)
+    return tuple(references)
+
+
+def brand_for_task(
+    task: dict[str, Any],
+    db: Any | None = None,
+    store: Any | None = None,
+) -> BrandStyle | None:
     snapshot = brand_from_snapshot(task.get("brand"))
     if snapshot is not None:
-        return snapshot
-    input_data = task.get("input") or {}
-    brand_id = input_data.get("brand_id")
+        references = _reference_inputs_from_asset_ids(snapshot.reference_asset_ids, db, store)
+        return replace(
+            snapshot,
+            reference_paths=tuple(ref.path for ref in references if ref.path is not None),
+            reference_inputs=references,
+        )
+    raw_brand_id = (task.get("input") or {}).get("brand_id")
+    if not raw_brand_id:
+        return None
+    brand_id = str(raw_brand_id)
     try:
-        return get_brand(skills_dir, str(brand_id) if brand_id else None)
+        brand = get_brand(db, brand_id)
     except BrandError:
-        logger.warning("task brand %s is unavailable; using fallback", brand_id)
-        return _default_brand()
+        return None
+    references = _reference_inputs_from_asset_ids(brand.reference_asset_ids, db, store)
+    return replace(
+        brand,
+        reference_paths=tuple(ref.path for ref in references if ref.path is not None),
+        reference_inputs=references,
+    )
+
+
+def _import_loaded_brand(
+    db: Any,
+    store: Any,
+    settings: Any,
+    brand: BrandStyle,
+    *,
+    force: bool,
+) -> dict[str, Any]:
+    existing = db.brands.find_one({"_id": brand.id})
+    if existing is not None and not force:
+        return {
+            "brand_id": brand.id,
+            "status": "skipped",
+            "reference_count": len(existing.get("reference_asset_ids") or []),
+        }
+
+    reference_docs = [
+        _asset_for_path(db, store, settings, path)
+        for path in brand.reference_paths[:3]
+    ]
+    reference_asset_ids = [document["_id"] for document in reference_docs]
+    cover_asset_id: str | None = None
+    if brand.cover_path is not None:
+        cover_asset_id = _asset_for_path(db, store, settings, brand.cover_path)["_id"]
+    if cover_asset_id is None and reference_asset_ids:
+        cover_asset_id = reference_asset_ids[0]
+
+    now = datetime.now(timezone.utc)
+    document = {
+        "_id": brand.id,
+        "name": brand.name,
+        "short_name": brand.short_name,
+        "summary": brand.summary,
+        "is_default": brand.is_default,
+        "layout_guide": brand.layout_guide,
+        "background_guide": brand.background_guide,
+        "logo_keywords": list(brand.logo_keywords),
+        "cover_asset_id": cover_asset_id,
+        "reference_asset_ids": reference_asset_ids,
+        "created_at": (existing or {}).get("created_at") or now,
+        "updated_at": now,
+    }
+    db.brands.replace_one({"_id": brand.id}, document, upsert=True)
+    return {
+        "brand_id": brand.id,
+        "status": "imported",
+        "reference_count": len(reference_asset_ids),
+        "cover_asset_id": cover_asset_id,
+    }
+
+
+def import_brand_skill(
+    db: Any,
+    store: Any,
+    settings: Any,
+    skill_dir: Path,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    return _import_loaded_brand(
+        db,
+        store,
+        settings,
+        load_brand_skill(skill_dir),
+        force=force,
+    )
+
+
+def import_brand_skills(
+    db: Any,
+    store: Any,
+    settings: Any,
+    skills_dir: Path,
+    *,
+    force: bool = False,
+    only: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    root = Path(skills_dir)
+    result: dict[str, list[dict[str, Any]]] = {
+        "imported": [],
+        "skipped": [],
+        "errors": [],
+    }
+    if not root.is_dir():
+        result["errors"].append(
+            {"skill": str(root), "error": "品牌 skill 目录不存在"}
+        )
+        return result
+    for manifest in sorted(root.glob("*/brand.json")):
+        try:
+            brand = load_brand_skill(manifest.parent)
+            if only and brand.id != only:
+                continue
+            item = _import_loaded_brand(
+                db,
+                store,
+                settings,
+                brand,
+                force=force,
+            )
+            result[item["status"]].append(item)
+        except Exception as exc:  # noqa: BLE001 - one bad skill must not hide the rest
+            message = exc.message if isinstance(exc, BrandError) else str(exc)
+            result["errors"].append(
+                {"skill": manifest.parent.name, "error": message}
+            )
+    return result

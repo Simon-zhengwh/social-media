@@ -10,7 +10,7 @@ type Props = {
   selectedIds?: string[]
   max?: number
   onClose: () => void
-  onSelect: (asset: Asset) => void
+  onSelect?: (asset: Asset) => void
   onConfirm?: (assets: Asset[]) => void
   onGoAssets: () => void
 }
@@ -47,10 +47,12 @@ export default function AssetPicker({
     return null
   }
 
-  const matching = assets.filter((asset) => asset.kind === kind)
-  const title = kind === 'product' ? '选择商品图' : '选择 Logo'
+  const matching = assets.filter(
+    (asset) => asset.kind === kind || (kind === 'product' && asset.kind === 'logo'),
+  )
+  const title = kind === 'product' ? '选择参考素材' : '选择素材'
   const emptyCopy =
-    kind === 'product' ? '资产管理中还没有商品图' : '资产管理中还没有 Logo'
+    kind === 'product' ? '资产管理中还没有可用素材' : '资产管理中还没有素材'
 
   const toggle = (assetId: string) => {
     setSelected((previous) => {
@@ -86,7 +88,7 @@ export default function AssetPicker({
             <h2>{multi ? `${title}（可多选）` : title}</h2>
             <p>
               {multi
-                ? `最多选择 ${max} 张，第一张作为主视觉。`
+                ? `最多选择 ${max} 张，由 AI 自由组合。`
                 : '从资产管理中选择一张素材。'}
             </p>
           </div>
@@ -122,7 +124,7 @@ export default function AssetPicker({
                     if (multi) {
                       toggle(asset.id)
                     } else {
-                      onSelect(asset)
+                      onSelect?.(asset)
                     }
                   }}
                 >

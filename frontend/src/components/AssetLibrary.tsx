@@ -7,7 +7,6 @@ type Props = {
   error: string | null
   uploadingKind: AssetKind | null
   selectedProductIds: string[]
-  selectedLogoId: string | null
   onUpload: (kind: AssetKind, file: File) => Promise<boolean>
   onUseSamples: () => Promise<string | null>
   onUseForPoster: (asset: Asset) => void
@@ -16,7 +15,7 @@ type Props = {
 }
 
 function kindLabel(kind: AssetKind) {
-  return kind === 'product' ? '商品图' : 'Logo'
+  return kind === 'product' ? '图片素材' : '参考图'
 }
 
 function formatDate(value: string) {
@@ -36,7 +35,6 @@ export default function AssetLibrary({
   error,
   uploadingKind,
   selectedProductIds,
-  selectedLogoId,
   onUpload,
   onUseSamples,
   onUseForPoster,
@@ -48,7 +46,7 @@ export default function AssetLibrary({
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const productCount = assets.filter((asset) => asset.kind === 'product').length
-  const logoCount = assets.filter((asset) => asset.kind === 'logo').length
+  const referenceCount = assets.length - productCount
 
   const handleSamples = async () => {
     setSampleBusy(true)
@@ -67,7 +65,7 @@ export default function AssetLibrary({
     setNotice(null)
     const ok = await onUpload(kind, file)
     if (ok) {
-      setNotice(kind === 'product' ? '商品图已上传' : 'Logo 已上传')
+      setNotice(kind === 'product' ? '图片已上传' : '素材已上传')
     }
   }
 
@@ -93,14 +91,14 @@ export default function AssetLibrary({
         <div>
           <span className="eyebrow">02 · 资产库</span>
           <h1>资产管理</h1>
-          <p className="panel-lead">管理商品图与品牌 Logo，生成海报时从这里选择。</p>
+          <p className="panel-lead">管理图片素材；品牌参考图请在「品牌风格」中维护。</p>
         </div>
         <div className="asset-stats">
           <span>
-            <strong className="tnum">{productCount}</strong> 商品图
+            <strong className="tnum">{productCount}</strong> 图片素材
           </span>
           <span>
-            <strong className="tnum">{logoCount}</strong> Logo
+            <strong className="tnum">{referenceCount}</strong> 参考素材
           </span>
         </div>
       </div>
@@ -119,22 +117,7 @@ export default function AssetLibrary({
               event.target.value = ''
             }}
           />
-          上传商品图
-        </label>
-        <label className={`mp-btn-secondary mp-btn-small upload-trigger${disabled ? ' is-disabled' : ''}`}>
-          <input
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            disabled={disabled}
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              if (file) {
-                void handleFile('logo', file)
-              }
-              event.target.value = ''
-            }}
-          />
-          上传 Logo
+          上传图片
         </label>
         <button
           type="button"
@@ -166,24 +149,17 @@ export default function AssetLibrary({
       ) : assets.length === 0 ? (
         <div className="asset-empty">
           <strong>还没有素材</strong>
-          <span>上传商品图和 Logo，或载入示例素材后开始生成。</span>
+          <span>上传图片，或载入示例素材后开始生成。</span>
         </div>
       ) : (
         <div className="asset-grid">
           {assets.map((asset) => {
-            const selected =
-              asset.kind === 'product'
-                ? selectedProductIds.includes(asset.id)
-                : selectedLogoId === asset.id
+            const selected = selectedProductIds.includes(asset.id)
             return (
               <article className={`asset-card${selected ? ' is-selected' : ''}`} key={asset.id}>
                 <div className={`asset-thumb asset-thumb-${asset.kind}`}>
                   <img src={asset.url} alt={asset.original_name} />
-                  {selected ? (
-                    <span className="asset-selected">
-                      {asset.kind === 'product' ? '已选' : '当前使用'}
-                    </span>
-                  ) : null}
+                  {selected ? <span className="asset-selected">已选</span> : null}
                 </div>
                 <div className="asset-card-head">
                   <span className={`asset-kind asset-kind-${asset.kind}`}>
@@ -207,7 +183,7 @@ export default function AssetLibrary({
                   </button>
                   {confirmingId === asset.id ? (
                     <span className="asset-confirm">
-                      <span>确定删除？</span>
+                      <span>删除后历史记录中的图片将无法显示，确定删除？</span>
                       <button
                         type="button"
                         className="asset-confirm-cancel"

@@ -10,12 +10,13 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db import create_client, get_database
-from app.routes import assets, brands, samples, tasks
+from app.routes import assets, brands, platforms, samples, tasks, whole_image
+from app.services.core_ai import CoreAIClient
 from app.services import storage
 from app.services.object_store import create_object_store
 from app.services.pipeline import mark_interrupted
+from app.services import whole_image as whole_image_service
 from app.services.storage import StorageError
-from app.services.toapis import ToAPIsClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -30,18 +31,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.db = db
     app.state.store = create_object_store(settings)
-    app.state.toapis = ToAPIsClient(settings)
+    app.state.core_ai = CoreAIClient(settings)
     try:
         db.command("ping")
         mark_interrupted(db)
+        whole_image_service.mark_interrupted(db)
     except Exception:  # noqa: BLE001 - health endpoint reports the failure
         logger.warning("MongoDB is not available at startup")
     yield
-    app.state.toapis.close()
+    app.state.core_ai.close()
     mongo_client.close()
 
 
-app = FastAPI(title="Social Media Poster Agent", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Social Media Poster Agent", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
@@ -50,8 +52,10 @@ app.add_middleware(
 )
 app.include_router(assets.router)
 app.include_router(brands.router)
+app.include_router(platforms.router)
 app.include_router(samples.router)
 app.include_router(tasks.router)
+app.include_router(whole_image.router)
 
 
 @app.exception_handler(StorageError)
@@ -95,6 +99,6 @@ def health(request: Request) -> JSONResponse:
             "mongo": "ok",
             "storage": "ok",
             "storage_backend": request.app.state.store.describe(),
-            "model": settings.toapis_image_model,
+            "model": settings.core_ai_image_model,
         }
     )

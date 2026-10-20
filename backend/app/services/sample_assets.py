@@ -19,8 +19,7 @@ def iter_sample_files(settings: Settings) -> Iterator[tuple[Path, str]]:
     for path in sorted(settings.sample_path.iterdir()):
         if not path.is_file() or path.suffix.lower() not in IMAGE_SUFFIXES:
             continue
-        kind = "logo" if "logo" in path.stem.lower() else "product"
-        yield path, kind
+        yield path, "product"
 
 
 def _asset_out(doc: dict[str, Any]) -> dict[str, Any]:

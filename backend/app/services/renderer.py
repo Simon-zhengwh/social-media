@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageStat
 
 from app.config import BACKEND_DIR, Settings
 
@@ -296,20 +296,39 @@ def _text_block(
         layer_image.alpha_composite(shadow_layer)
         draw = ImageDraw.Draw(layer_image)
 
-    line_y = top
-    for line in lines:
-        line_width = _measure(line, font, spacing)
-        _draw_spaced_text(
-            draw,
-            (_line_x(box, line_width, str(style.get("align") or "left")), line_y),
-            line,
-            font,
-            fill,
-            spacing,
-            stroke_width,
-            stroke_color,
-        )
-        line_y += used_size * line_height
+    runs = style.get("runs")
+    run_text = "".join(str(item.get("text") or "") for item in runs) if isinstance(runs, list) else ""
+    if isinstance(runs, list) and runs and "\n" not in content and run_text == content:
+        total_width = _measure(content, font, spacing)
+        cursor_x = _line_x(box, total_width, str(style.get("align") or "left"))
+        for run in runs:
+            run_text_value = str(run.get("text") or "")
+            _draw_spaced_text(
+                draw,
+                (cursor_x, top),
+                run_text_value,
+                font,
+                _parse_color(run.get("color"), style.get("color") or "#FFFFFF"),
+                spacing,
+                stroke_width,
+                stroke_color,
+            )
+            cursor_x += _measure(run_text_value, font, spacing)
+    else:
+        line_y = top
+        for line in lines:
+            line_width = _measure(line, font, spacing)
+            _draw_spaced_text(
+                draw,
+                (_line_x(box, line_width, str(style.get("align") or "left")), line_y),
+                line,
+                font,
+                fill,
+                spacing,
+                stroke_width,
+                stroke_color,
+            )
+            line_y += used_size * line_height
 
     opacity = float(_clamp(float(style.get("opacity", 1.0)), 0.05, 1.0))
     if opacity < 1.0:
@@ -394,6 +413,247 @@ def _logo_image(
     }
 
 
+def _image_element(
+    source: Image.Image,
+    *,
+    position: dict[str, Any],
+    size: dict[str, Any],
+    opacity: float,
+    rotation: float,
+    fit: str,
+    crop: dict[str, Any] | None,
+) -> tuple[Image.Image, dict[str, int]]:
+    image = source.copy().convert("RGBA")
+    if isinstance(crop, dict):
+        try:
+            left = int(float(crop.get("x", 0)) * image.width)
+            top = int(float(crop.get("y", 0)) * image.height)
+            right = int((float(crop.get("x", 0)) + float(crop.get("width", 1))) * image.width)
+            bottom = int((float(crop.get("y", 0)) + float(crop.get("height", 1))) * image.height)
+            image = image.crop((max(0, left), max(0, top), min(image.width, right), min(image.height, bottom)))
+        except (TypeError, ValueError):
+            pass
+    box_width = max(1, int(size.get("width") or image.width))
+    box_height = max(1, int(size.get("height") or image.height))
+    if fit == "cover":
+        fitted = ImageOps.fit(image, (box_width, box_height), method=Image.Resampling.LANCZOS)
+        offset_x = 0
+        offset_y = 0
+    else:
+        fitted = image.copy()
+        fitted.thumbnail((box_width, box_height), Image.Resampling.LANCZOS)
+        offset_x = (box_width - fitted.width) // 2
+        offset_y = (box_height - fitted.height) // 2
+    if rotation:
+        fitted = fitted.rotate(float(rotation), expand=True, resample=Image.Resampling.BICUBIC)
+    if opacity < 1.0:
+        alpha = fitted.getchannel("A").point(lambda value: int(value * opacity))
+        fitted.putalpha(alpha)
+    x = int(position.get("x", 0)) + offset_x
+    y = int(position.get("y", 0)) + offset_y
+    if rotation:
+        x = int(position.get("x", 0)) + (box_width - fitted.width) // 2
+        y = int(position.get("y", 0)) + (box_height - fitted.height) // 2
+    return fitted, {"x": x, "y": y, "width": fitted.width, "height": fitted.height}
+
+
+def _shape_element(layer: dict[str, Any]) -> tuple[Image.Image, dict[str, int]]:
+    position = layer.get("position") or {}
+    size = layer.get("size") or {}
+    width = max(8, int(size.get("width") or 100))
+    height = max(8, int(size.get("height") or 100))
+    scale = 3
+    canvas = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    fill = _parse_color(layer.get("fill"), "#00000000") if layer.get("fill") else None
+    stroke = layer.get("stroke") or {}
+    stroke_width = int(stroke.get("width") or 0) * scale
+    stroke_color = _parse_color(stroke.get("color"), "#000000") if stroke_width else None
+    shape = str(layer.get("shape") or "rect")
+    box = (stroke_width, stroke_width, width * scale - stroke_width - 1, height * scale - stroke_width - 1)
+    if shape == "ellipse":
+        draw.ellipse(box, fill=fill, outline=stroke_color, width=stroke_width)
+    elif shape == "polygon":
+        points = layer.get("points") or []
+        coords = [(float(p[0]) * width * scale, float(p[1]) * height * scale) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if len(coords) >= 3:
+            draw.polygon(coords, fill=fill)
+            if stroke_color:
+                draw.line(coords + [coords[0]], fill=stroke_color, width=max(1, stroke_width))
+    elif shape == "line":
+        points = layer.get("points") or []
+        coords = [(float(p[0]) * width * scale, float(p[1]) * height * scale) for p in points if isinstance(p, (list, tuple)) and len(p) >= 2]
+        if len(coords) >= 2:
+            draw.line(coords, fill=stroke_color or fill or (255, 255, 255, 255), width=max(1, stroke_width or 2 * scale))
+    else:
+        radius = int(layer.get("radius") or 0) * scale
+        if radius:
+            draw.rounded_rectangle(box, radius=radius, fill=fill, outline=stroke_color, width=stroke_width)
+        else:
+            draw.rectangle(box, fill=fill, outline=stroke_color, width=stroke_width)
+    canvas = canvas.resize((width, height), Image.Resampling.LANCZOS)
+    opacity = float(_clamp(float(layer.get("opacity", 1.0)), 0.05, 1.0))
+    if opacity < 1.0:
+        alpha = canvas.getchannel("A").point(lambda value: int(value * opacity))
+        canvas.putalpha(alpha)
+    rotation = float(layer.get("rotation") or 0)
+    if rotation:
+        canvas = canvas.rotate(-rotation, expand=True, resample=Image.Resampling.BICUBIC)
+    x = int(position.get("x", 0)) + (width - canvas.width) // 2
+    y = int(position.get("y", 0)) + (height - canvas.height) // 2
+    return canvas, {"x": x, "y": y, "width": canvas.width, "height": canvas.height}
+
+
+def _component_element(
+    layer: dict[str, Any],
+    assets: dict[str, Image.Image],
+) -> tuple[Image.Image, dict[str, int], list[dict[str, Any]]]:
+    position = layer.get("position") or {}
+    size = layer.get("size") or {}
+    width = max(8, int(size.get("width") or 100))
+    height = max(8, int(size.get("height") or 100))
+    mode = str(layer.get("render_mode") or "native")
+    compositing = layer.get("compositing") if isinstance(layer.get("compositing"), dict) else {}
+    feather = float(compositing.get("feather_px") or 0)
+    metrics: list[dict[str, Any]] = []
+    if mode in {"flattened", "regeneratable"}:
+        source = assets.get(str(layer.get("asset_id") or ""))
+        if source is None:
+            return Image.new("RGBA", (width, height), (0, 0, 0, 0)), {"x": int(position.get("x", 0)), "y": int(position.get("y", 0)), "width": width, "height": height}, [{"error": "asset_missing"}]
+        image_element, box = _image_element(source, position={"x": 0, "y": 0}, size={"width": width, "height": height}, opacity=1.0, rotation=0.0, fit=str(layer.get("fit") or "contain"), crop=layer.get("crop"))
+    else:
+        local = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        for child in sorted(layer.get("children") or [], key=lambda item: int(item.get("z_index", 0))):
+            if not isinstance(child, dict) or not child.get("visible", True):
+                continue
+            child_type = child.get("type")
+            if child_type == "text":
+                child_image, child_metrics = _text_block(child, (width, height))
+                local.alpha_composite(child_image)
+                metrics.append({"type": "text", **child_metrics})
+            elif child_type == "shape":
+                child_image, child_box = _shape_element(child)
+                local.alpha_composite(child_image, (max(0, child_box["x"]), max(0, child_box["y"])))
+                metrics.append({"type": "shape", "id": child.get("id"), "box": child_box})
+            elif child_type in {"image", "logo"}:
+                source = assets.get(str(child.get("asset_id") or ""))
+                if source is None:
+                    metrics.append({"type": "image", "id": child.get("id"), "error": "asset_missing"})
+                    continue
+                child_image, child_box = _image_element(source, position=child.get("position") or {}, size=child.get("size") or {}, opacity=float(child.get("opacity", 1.0)), rotation=float(child.get("rotation", 0.0)), fit=str(child.get("fit") or "contain"), crop=child.get("crop"))
+                if feather > 0:
+                    alpha = child_image.getchannel("A").filter(ImageFilter.GaussianBlur(feather))
+                    child_image.putalpha(alpha)
+                local.alpha_composite(child_image, (max(0, child_box["x"]), max(0, child_box["y"])))
+                metrics.append({"type": "image", "id": child.get("id"), "box": child_box})
+        image_element = local
+        box = {"x": 0, "y": 0, "width": width, "height": height}
+    if mode != "native" and feather > 0:
+        alpha = image_element.getchannel("A").filter(ImageFilter.GaussianBlur(feather))
+        image_element.putalpha(alpha)
+    rotation = float(layer.get("rotation") or 0)
+    if rotation:
+        image_element = image_element.rotate(-rotation, expand=True, resample=Image.Resampling.BICUBIC)
+    opacity_value = layer.get("opacity")
+    if opacity_value is None:
+        opacity_value = compositing.get("opacity", 1.0)
+    opacity = float(_clamp(float(opacity_value), 0.05, 1.0))
+    if opacity < 1.0:
+        alpha = image_element.getchannel("A").point(lambda value: int(value * opacity))
+        image_element.putalpha(alpha)
+    x = int(position.get("x", 0)) + (width - image_element.width) // 2
+    y = int(position.get("y", 0)) + (height - image_element.height) // 2
+    return image_element, {"x": x, "y": y, "width": image_element.width, "height": image_element.height}, metrics
+
+
+def _apply_color_match(
+    canvas: Image.Image,
+    image_element: Image.Image,
+    x: int,
+    y: int,
+    amount: float,
+) -> Image.Image:
+    if amount <= 0:
+        return image_element
+    x = max(0, int(x))
+    y = max(0, int(y))
+    width = min(image_element.width, max(0, canvas.width - x))
+    height = min(image_element.height, max(0, canvas.height - y))
+    if width <= 0 or height <= 0:
+        return image_element
+    region = canvas.crop((x, y, x + width, y + height)).convert("RGB")
+    stats = ImageStat.Stat(region.resize((1, 1), Image.Resampling.BOX))
+    tint = tuple(int(channel) for channel in stats.mean[:3])
+    rgb = image_element.convert("RGB")
+    overlay = Image.new("RGB", rgb.size, tint)
+    matched = Image.blend(rgb, overlay, float(_clamp(amount, 0.0, 0.35)))
+    matched_rgba = matched.convert("RGBA")
+    matched_rgba.putalpha(image_element.getchannel("A"))
+    return matched_rgba
+
+
+def _composite_with_mode(
+    canvas: Image.Image,
+    overlay: Image.Image,
+    x: int,
+    y: int,
+    mode: str,
+) -> None:
+    x = max(0, int(x))
+    y = max(0, int(y))
+    if x >= canvas.width or y >= canvas.height:
+        return
+    width = min(overlay.width, canvas.width - x)
+    height = min(overlay.height, canvas.height - y)
+    if width <= 0 or height <= 0:
+        return
+    layer = overlay.crop((0, 0, width, height))
+    if mode == "normal":
+        canvas.alpha_composite(layer, (x, y))
+        return
+    region = canvas.crop((x, y, x + width, y + height))
+    base_rgb = region.convert("RGB")
+    layer_rgb = layer.convert("RGB")
+    if mode == "multiply":
+        blended = ImageChops.multiply(base_rgb, layer_rgb)
+    elif mode == "screen":
+        blended = ImageChops.screen(base_rgb, layer_rgb)
+    elif mode == "soft_light":
+        blended = ImageChops.soft_light(base_rgb, layer_rgb)
+    else:
+        canvas.alpha_composite(layer, (x, y))
+        return
+    blended_rgba = blended.convert("RGBA")
+    blended_rgba.putalpha(layer.getchannel("A"))
+    region.alpha_composite(blended_rgba)
+    canvas.paste(region, (x, y))
+
+
+def _component_shadow(
+    canvas: Image.Image,
+    image_element: Image.Image,
+    x: int,
+    y: int,
+    shadow: dict[str, Any],
+) -> None:
+    alpha = image_element.getchannel("A")
+    if alpha.getextrema()[1] == 0:
+        return
+    try:
+        blur = int(_clamp(float(shadow.get("blur", 0)), 0, 80))
+        offset_x = int(_clamp(float(shadow.get("offset_x", 0)), -80, 80))
+        offset_y = int(_clamp(float(shadow.get("offset_y", 0)), -80, 80))
+    except (TypeError, ValueError):
+        return
+    color = _parse_color(shadow.get("color"), "#00000040")
+    shadow_layer = Image.new("RGBA", image_element.size, color[:3] + (0,))
+    shadow_alpha = alpha.point(lambda value: int(value * (color[3] / 255.0)))
+    shadow_layer.putalpha(shadow_alpha)
+    if blur:
+        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(blur))
+    canvas.alpha_composite(shadow_layer, (max(0, x + offset_x), max(0, y + offset_y)))
+
+
 def render_design(
     settings: Settings,
     background: Image.Image,
@@ -424,29 +684,76 @@ def render_design(
             canvas.alpha_composite(text_image)
             metrics.append({"type": "text", **text_metrics})
             continue
-        if layer_type == "logo":
-            if layer.get("mode") == "model_integrated":
+        if layer_type in {"logo", "image"}:
+            hint = layer.get("render_hint") or ("baked" if layer.get("mode") == "model_integrated" else "overlay")
+            if hint == "baked":
                 metrics.append(
-                    {"type": "logo", "id": layer.get("id"), "skipped": "model_integrated"}
+                    {"type": "image", "id": layer.get("id"), "skipped": "baked"}
                 )
                 continue
             asset_id = str(layer.get("asset_id") or "")
-            logo = assets.get(asset_id)
-            if logo is None:
+            source = assets.get(asset_id)
+            if source is None:
                 metrics.append(
-                    {"type": "logo", "id": layer.get("id"), "skipped": "asset_missing"}
+                    {"type": "image", "id": layer.get("id"), "skipped": "asset_missing"}
                 )
                 continue
-            logo_image, box = _logo_image(
-                logo,
+            image_element, box = _image_element(
+                source,
                 position=layer.get("position") or {},
                 size=layer.get("size") or {},
                 opacity=float(layer.get("opacity", 1.0)),
                 rotation=float(layer.get("rotation", 0.0)),
+                fit=str(layer.get("fit") or "contain"),
+                crop=layer.get("crop"),
             )
-            canvas.alpha_composite(logo_image, (box["x"], box["y"]))
-            metrics.append({"type": "logo", "id": layer.get("id"), "box": box})
-            logo_box = box
+            canvas.alpha_composite(image_element, (max(0, box["x"]), max(0, box["y"])))
+            metrics.append({"type": "image", "id": layer.get("id"), "role": layer.get("role"), "box": box})
+            if layer.get("role") == "logo" or layer_type == "logo":
+                logo_box = box
+            continue
+        if layer_type == "shape":
+            shape_image, shape_box = _shape_element(layer)
+            canvas.alpha_composite(shape_image, (max(0, shape_box["x"]), max(0, shape_box["y"])))
+            metrics.append({"type": "shape", "id": layer.get("id"), "box": shape_box})
+            continue
+        if layer_type == "visual_component":
+            component_image, component_box, child_metrics = _component_element(layer, assets)
+            compositing = layer.get("compositing") if isinstance(layer.get("compositing"), dict) else {}
+            component_image = _apply_color_match(
+                canvas,
+                component_image,
+                max(0, component_box["x"]),
+                max(0, component_box["y"]),
+                float(compositing.get("color_match") or 0),
+            )
+            shadow = compositing.get("shadow")
+            if isinstance(shadow, dict):
+                _component_shadow(
+                    canvas,
+                    component_image,
+                    max(0, component_box["x"]),
+                    max(0, component_box["y"]),
+                    shadow,
+                )
+            _composite_with_mode(
+                canvas,
+                component_image,
+                max(0, component_box["x"]),
+                max(0, component_box["y"]),
+                str(compositing.get("blend_mode") or "normal"),
+            )
+            metrics.append({
+                "type": "visual_component",
+                "id": layer.get("id"),
+                "box": component_box,
+                "children": child_metrics,
+                "compositing": {
+                    "blend_mode": compositing.get("blend_mode") or "normal",
+                    "feather_px": compositing.get("feather_px") or 0,
+                },
+            })
+            continue
 
     return DesignResult(
         image=canvas.convert("RGB"),

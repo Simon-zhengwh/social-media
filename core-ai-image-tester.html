@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Core-AI 生图快速验证</title>
+<style>
+:root{
+  --p:#592bce;--pd:#4822c5;--deep:#312974;--soft:#eee7fa;--ink:#201b30;--muted:#6b7280;
+  --line:#e5e7eb;--bg:#f6f5fa;--danger:#b42318;--danger-bg:#fef3f2;--ok:#087443;--ok-bg:#ecfdf3;
+  --warn:#744000;--warn-bg:#fffaeb;--font:Inter,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}[hidden]{display:none!important}
+html{min-height:100%}
+body{margin:0;min-height:100vh;color:var(--ink);font:14px/1.55 var(--font);
+  background:radial-gradient(1000px 480px at 12% -8%,rgba(89,43,206,.12),transparent 62%),radial-gradient(800px 420px at 98% 8%,rgba(89,43,206,.07),transparent 58%),var(--bg);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+button,input,textarea,select{font:inherit;color:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.62}
+img{display:block;max-width:100%}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}
+.page{width:min(1400px,100%);margin:0 auto;padding:28px 28px 40px}
+.hero{display:flex;align-items:center;justify-content:space-between;gap:24px;margin-bottom:18px}
+.brand{display:flex;align-items:center;gap:14px;min-width:0}
+.brand-mark{display:grid;place-items:center;flex:0 0 auto;width:48px;height:48px;border-radius:15px;color:#fff;
+  background:linear-gradient(145deg,#7551e9,var(--p) 58%,#3d1c9b);box-shadow:0 12px 24px rgba(89,43,206,.24)}
+.brand-mark svg{width:26px;height:26px}
+h1{margin:0;font-size:clamp(20px,2.2vw,28px);line-height:1.18;letter-spacing:-.035em;color:var(--deep)}
+.brand p{margin:4px 0 0;color:var(--muted);font-size:12.5px}
+.chips{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:7px 10px;border:1px solid rgba(89,43,206,.14);border-radius:999px;
+  background:rgba(255,255,255,.72);color:var(--pd);font-size:11px;font-weight:650;backdrop-filter:blur(10px);white-space:nowrap}
+.chip:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--p);box-shadow:0 0 0 3px rgba(89,43,206,.12)}
+.notice{display:flex;align-items:flex-start;gap:10px;margin-bottom:20px;padding:12px 14px;border:1px solid #f2d59a;border-radius:14px;
+  background:var(--warn-bg);color:var(--warn);font-size:12.5px}
+.notice svg{flex:0 0 auto;width:18px;height:18px;margin-top:1px}
+.workspace{display:grid;grid-template-columns:minmax(0,.92fr) minmax(0,1.08fr);gap:20px;align-items:start}
+.panel{border:1px solid rgba(229,231,235,.92);border-radius:20px;background:rgba(255,255,255,.93);
+  box-shadow:0 8px 28px rgba(49,41,116,.07);backdrop-filter:blur(16px);overflow:hidden}
+.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:20px 22px 16px;border-bottom:1px solid var(--line)}
+.ptitle{display:flex;align-items:center;gap:10px}.step{display:inline-grid;place-items:center;width:27px;height:27px;border-radius:9px;
+  background:var(--soft);color:var(--p);font-size:10.5px;font-weight:800;letter-spacing:.04em}
+.ptitle h2{margin:0;font-size:15px;letter-spacing:-.015em}.ptitle p{margin:2px 0 0;color:var(--muted);font-size:11px}
+.badge{max-width:55%;padding:5px 8px;overflow:hidden;border-radius:8px;background:#f5f3fb;color:var(--pd);
+  font:10.5px ui-monospace,SFMono-Regular,Consolas,monospace;text-overflow:ellipsis;white-space:nowrap}
+.panel-body{padding:20px 22px 22px}.section+.section{margin-top:22px;padding-top:20px;border-top:1px solid var(--line)}
+.stitle{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 12px;color:#3d3552;font-size:12px;font-weight:750}
+.stitle small{color:var(--muted);font-size:10.5px;font-weight:500}
+.field+.field{margin-top:13px}.field label{display:flex;justify-content:space-between;gap:10px;margin-bottom:6px;color:#4b455c;font-size:11.5px;font-weight:650}
+.field label span{color:var(--muted);font-size:10px;font-weight:500}
+.field input,.field select,.field textarea{width:100%;border:1px solid #ddd9e8;border-radius:11px;outline:none;background:#fff;
+  transition:border-color .16s,box-shadow .16s}
+.field input,.field select{height:41px;padding:0 12px}.field textarea{min-height:168px;padding:12px 13px;resize:vertical;line-height:1.62}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:rgba(89,43,206,.62);box-shadow:0 0 0 3px rgba(89,43,206,.11)}
+.field input::placeholder,.field textarea::placeholder{color:#aaa5b7}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.row .field+.field{margin-top:0}
+.iwrap{position:relative}.iwrap input{padding-right:70px}.mini{position:absolute;top:50%;right:7px;transform:translateY(-50%);padding:5px 8px;
+  border:0;border-radius:7px;background:#f3f1f8;color:var(--pd);font-size:10.5px;font-weight:650}
+.endpoint{display:flex;align-items:center;gap:8px;margin-top:11px;padding:9px 11px;border-radius:10px;background:#f8f7fc;color:var(--muted);font-size:10.5px}
+.endpoint code{min-width:0;overflow:hidden;color:var(--deep);font-size:10.5px;text-overflow:ellipsis;white-space:nowrap}
+.dropzone{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:132px;padding:18px;
+  border:1.5px dashed #cfc7e3;border-radius:14px;background:linear-gradient(180deg,#fcfbff,#f8f6fd);text-align:center;cursor:pointer;
+  transition:border-color .16s,background .16s,transform .16s}
+.dropzone:hover,.dropzone:focus-visible,.dropzone.drag{border-color:var(--p);background:#f7f3ff;outline:none}.dropzone.drag{transform:translateY(-1px)}
+.dropzone svg{width:30px;height:30px;color:var(--p)}.dropzone strong{font-size:12.5px}.dropzone span{color:var(--muted);font-size:10.5px}
+.dropzone input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.gallery{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:11px}
+.ref-grid{display:grid;grid-template-columns:1fr;gap:14px}.ref-block{min-width:0}
+.ref-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 7px;color:#4b455c;font-size:11px;font-weight:700}
+.ref-title small{color:var(--muted);font-size:9.5px;font-weight:500}
+.ref-grid .gallery{grid-template-columns:repeat(3,minmax(0,1fr))}
+.dropzone.compact{min-height:112px;padding:14px}
+.style-zone{border-color:#b9d7c8;background:linear-gradient(180deg,#fbfefc,#f4fbf6)}
+.style-zone:hover,.style-zone:focus-visible,.style-zone.drag{border-color:#2f8f62;background:#f0faf5}
+.style-zone svg{color:#2f8f62}
+.thumb{position:relative;aspect-ratio:1;overflow:hidden;border:1px solid #e3dfeb;border-radius:11px;background:#f7f6fa}
+.thumb img{width:100%;height:100%;object-fit:cover}
+.thumb-meta{position:absolute;right:0;bottom:0;left:0;padding:14px 6px 5px;overflow:hidden;background:linear-gradient(transparent,rgba(20,16,35,.72));
+  color:#fff;font-size:8.5px;text-overflow:ellipsis;white-space:nowrap}
+.thumb-x{position:absolute;top:5px;right:5px;display:grid;place-items:center;width:23px;height:23px;border:0;border-radius:50%;
+  background:rgba(24,20,37,.72);color:#fff;font-size:15px;line-height:1}
+.thumb-x:hover{background:var(--danger)}
+.order-badge{position:absolute;top:5px;left:5px;padding:2px 6px;border-radius:6px;background:rgba(89,43,206,.88);color:#fff;font-size:9px;font-weight:750;letter-spacing:.02em}
+.thumb-move{position:absolute;right:5px;bottom:25px;display:flex;gap:3px}
+.thumb-move button{display:grid;place-items:center;width:22px;height:22px;border:0;border-radius:6px;background:rgba(24,20,37,.72);color:#fff;font-size:11px;line-height:1}
+.thumb-move button:hover:not(:disabled){background:var(--p)}.thumb-move button:disabled{opacity:.28;cursor:not-allowed}
+.hint{margin:8px 0 0;color:var(--muted);font-size:10.5px}.hint code{color:#655b79;font-size:10px}
+.head-actions{display:flex;align-items:center;gap:10px}.counter{color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+.link{padding:0;border:0;background:transparent;color:var(--pd);font-size:10.5px;font-weight:650}.link:hover{text-decoration:underline}
+details{border:1px solid #ece9f2;border-radius:11px;background:#faf9fc}summary{padding:10px 12px;color:#5d556d;font-size:10.5px;font-weight:650;cursor:pointer}
+details pre{max-height:220px;margin:0;padding:0 12px 12px;overflow:auto;color:#4f4861;font-size:10px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.generate{display:flex;align-items:center;justify-content:center;gap:9px;width:100%;min-height:48px;margin-top:16px;padding:0 18px;border:0;border-radius:13px;
+  background:linear-gradient(135deg,#6c45e0,var(--p) 50%,#4e27c0);box-shadow:0 12px 26px rgba(89,43,206,.24);color:#fff;font-size:13px;font-weight:750;
+  transition:transform .16s,box-shadow .16s}
+.generate:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 16px 32px rgba(89,43,206,.3)}
+.spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.36);border-top-color:#fff;border-radius:50%;animation:spin .72s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.result-panel{min-height:690px}.rhead-meta{display:flex;align-items:center;gap:8px}
+.status{display:inline-flex;align-items:center;gap:7px;padding:5px 9px;border-radius:999px;background:#f4f3f8;color:var(--muted);
+  font-size:10.5px;font-weight:650;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:#a8a3b5}
+.status.loading{background:var(--soft);color:var(--pd)}.status.loading .dot{background:var(--p);animation:pulse 1.2s infinite}
+.status.success{background:var(--ok-bg);color:var(--ok)}.status.success .dot{background:var(--ok)}
+.status.error{background:var(--danger-bg);color:var(--danger)}.status.error .dot{background:var(--danger)}
+@keyframes pulse{50%{transform:scale(.62);opacity:.55}}
+.duration{color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums}
+.result-body{display:flex;flex-direction:column;min-height:615px;padding:20px 22px 22px}
+.stage{position:relative;display:grid;flex:1;min-height:460px;place-items:center;overflow:hidden;border:1px solid #e8e4ef;border-radius:16px;
+  background:linear-gradient(45deg,#f2f0f6 25%,transparent 25%),linear-gradient(-45deg,#f2f0f6 25%,transparent 25%),
+  linear-gradient(45deg,transparent 75%,#f2f0f6 75%),linear-gradient(-45deg,transparent 75%,#f2f0f6 75%),#faf9fc;
+  background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
+.empty,.loading,.error{display:flex;flex-direction:column;align-items:center;max-width:420px;padding:34px 24px;text-align:center}
+.empty-icon,.error-icon{display:grid;place-items:center;width:64px;height:64px;margin-bottom:14px;border-radius:20px;background:rgba(255,255,255,.82);
+  box-shadow:0 10px 28px rgba(49,41,116,.1);color:var(--p)}
+.empty-icon svg,.error-icon svg{width:30px;height:30px}.error-icon{color:var(--danger)}
+.empty h3,.loading h3,.error h3{margin:0 0 5px;font-size:14px}.empty p,.loading p,.error p{margin:0;color:var(--muted);font-size:11.5px}
+.loading .spinner{width:34px;height:34px;margin-bottom:16px;border-width:3px;border-color:rgba(89,43,206,.18);border-top-color:var(--p)}
+.error pre{width:100%;max-height:170px;margin:14px 0 0;padding:10px 12px;overflow:auto;border-radius:10px;background:rgba(255,255,255,.8);
+  color:#7a271a;font-size:10px;text-align:left;white-space:pre-wrap;word-break:break-word}
+.result-wrap{display:flex;flex-direction:column;width:100%;height:100%;padding:14px;gap:10px}
+.image-meta{display:flex;flex-wrap:wrap;gap:6px;color:var(--muted);font-size:10px}
+.image-meta span{padding:3px 7px;border-radius:6px;background:rgba(255,255,255,.78)}
+.result-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;width:100%;align-content:start}
+.result-card{overflow:hidden;border:1px solid #ded9ea;border-radius:12px;background:#fff;box-shadow:0 10px 28px rgba(49,41,116,.09)}
+.result-card-head{display:flex;justify-content:space-between;gap:6px;padding:8px 9px;color:#4f4861;font-size:9.5px;font-weight:700}
+.result-card-head span:last-child{color:var(--muted);font-weight:500}
+.result-card img{width:100%;max-height:340px;object-fit:contain;background:#f4f2f8}
+.result-card-actions{display:flex;gap:6px;padding:8px;border-top:1px solid #f0edf5}
+.result-card-actions button{flex:1;min-height:29px;padding:0 6px;border:1px solid #ddd9e8;border-radius:7px;background:#fff;color:#4f4861;font-size:9.5px;font-weight:650}
+.result-card-actions button:hover{border-color:rgba(89,43,206,.36);color:var(--pd)}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:13px}
+.action{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 12px;border:1px solid #ddd9e8;border-radius:9px;background:#fff;
+  color:#4f4861;font-size:11px;font-weight:650;text-decoration:none}.action:hover{border-color:rgba(89,43,206,.36);color:var(--pd)}
+.action.primary{border-color:transparent;background:var(--soft);color:var(--pd)}
+.footer{display:flex;justify-content:space-between;gap:18px;margin-top:18px;padding:0 2px;color:#8b8499;font-size:10.5px;line-height:1.6}
+.footer code{color:#655b79}
+.toast{position:fixed;right:24px;bottom:24px;z-index:50;max-width:min(360px,calc(100vw - 48px));padding:10px 13px;border-radius:10px;
+  background:#251f37;box-shadow:0 12px 32px rgba(20,16,35,.25);color:#fff;font-size:11.5px;opacity:0;transform:translateY(8px);
+  pointer-events:none;transition:opacity .18s,transform .18s}.toast.show{opacity:1;transform:none}
+@media(max-width:980px){.workspace{grid-template-columns:1fr}.result-panel{min-height:auto}.result-body{min-height:520px}.stage{min-height:380px}}
+@media(max-width:640px){.page{padding:18px 14px 30px}.hero{align-items:flex-start;flex-direction:column}.chips{justify-content:flex-start}
+.panel-head,.panel-body{padding-right:16px;padding-left:16px}.row{grid-template-columns:1fr}.row .field+.field{margin-top:13px}
+.badge{display:none}.gallery{grid-template-columns:repeat(2,minmax(0,1fr))}.ref-grid{grid-template-columns:1fr}.ref-grid .gallery{grid-template-columns:repeat(2,minmax(0,1fr))}.result-grid{grid-template-columns:1fr}.footer{flex-direction:column;gap:6px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="hero">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="4"></rect><circle cx="8.5" cy="8.5" r="1.4"></circle>
+          <path d="m5.5 17 4.2-4.4 2.7 2.6 2.1-2.1 4 3.9"></path>
+        </svg>
+      </div>
+      <div><h1>Core-AI 生图快速验证</h1><p>单文件静态页面 · 本地图片直传 · 不经过本项目后端</p></div>
+    </div>
+    <div class="chips"><span class="chip">纯前端</span><span class="chip">支持参考图</span><span class="chip">无需安装依赖</span></div>
+  </header>
+
+  <div class="notice" role="note">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10.3 3.5 2.4 17.2A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.8L13.7 3.5a2 2 0 0 0-3.4 0Z"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path>
+    </svg>
+    <div><strong>请使用测试用途的 API Key。</strong> Key 只保存在当前页面内存中，不会写入文件或 localStorage；但浏览器直连会把 Key 放进请求头。生成会消耗 core-ai 额度，请勿把填好 Key 的页面发给其他人。</div>
+  </div>
+
+  <main class="workspace">
+    <section class="panel">
+      <div class="panel-head">
+        <div class="ptitle"><span class="step">01</span><div><h2>输入与配置</h2><p>上传参考图，填写提示词后直接请求网关</p></div></div>
+        <span class="badge" id="endpointBadge">请先上传主图</span>
+      </div>
+      <div class="panel-body">
+        <form id="generateForm" novalidate>
+          <div class="section">
+            <div class="stitle">连接配置 <small>Gateway 默认 UAT · 模型 / Quality / 超时已固定</small></div>
+            <div class="field">
+              <label for="baseUrl">Gateway Base URL</label>
+              <input id="baseUrl" type="url" autocomplete="off" spellcheck="false" value="https://core-ai-server.connexup-uat.net/api/gateway/v1">
+            </div>
+            <div class="field">
+              <label for="apiKey">CORE_AI_API_KEY <span>仅保存在页面内存</span></label>
+              <div class="iwrap"><input id="apiKey" type="password" autocomplete="new-password" spellcheck="false" placeholder="粘贴测试 Key">
+                <button class="mini" id="toggleKey" type="button" aria-label="显示 API Key">显示</button></div>
+            </div>
+            <div class="field" style="margin-top:13px">
+              <label for="ratio">比例 <span>模型 / Quality / 超时已固定</span></label>
+              <select id="ratio">
+                <option value="1:1" selected>1:1 方形</option><option value="3:4">3:4 竖版</option><option value="4:5">4:5 社媒竖版</option>
+                <option value="9:16">9:16 手机竖屏</option><option value="2:3">2:3 海报竖版</option><option value="4:3">4:3 横版</option>
+                <option value="3:2">3:2 横版</option><option value="16:9">16:9 宽屏</option>
+              </select>
+            </div>
+            <div class="endpoint"><span>请求地址</span><code id="endpointPreview">请至少上传一张主图</code></div>
+          </div>
+
+          <div class="section">
+            <div class="stitle">图片输入 <small>主图必填 · 主图最多 3 张 · 风格参考最多 3 张</small></div>
+            <div class="ref-grid">
+              <div class="ref-block">
+                <div class="ref-title"><span>主图</span><small>决定内容和主体 · 最多 3 张</small></div>
+                <label class="dropzone compact" id="mainDrop" for="mainInput" tabindex="0">
+                  <input id="mainInput" type="file" accept="image/png,image/jpeg,image/webp,image/avif" multiple>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M20 15v3a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-3"></path>
+                  </svg>
+                  <strong>上传主图</strong><span>菜品、产品、人物、活动信息等实际内容</span>
+                </label>
+                <div class="gallery" id="mainGallery" aria-live="polite"></div>
+              </div>
+              <div class="ref-block">
+                <div class="ref-title"><span>风格参考</span><small>只参考风格 · 最多 3 张</small></div>
+                <label class="dropzone compact style-zone" id="styleDrop" for="styleInput" tabindex="0">
+                  <input id="styleInput" type="file" accept="image/png,image/jpeg,image/webp,image/avif" multiple>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 3a9 9 0 1 0 0 18h1.2a2.3 2.3 0 0 0 0-4.6H12a2 2 0 0 1 0-4h4.2A4.8 4.8 0 0 0 21 7.6C21 5 17 3 12 3Z"></path><circle cx="7.5" cy="9" r="1"></circle><circle cx="10" cy="6.5" r="1"></circle><circle cx="14.5" cy="6.5" r="1"></circle>
+                  </svg>
+                  <strong>上传风格参考</strong><span>色调、光影、质感、构图、版式与氛围</span>
+                </label>
+                <div class="gallery" id="styleGallery" aria-live="polite"></div>
+              </div>
+            </div>
+            <p class="hint">主图排在 <code>input_images</code> 前面，风格参考排在其后。页面会自动补充图片角色说明，要求模型只借鉴风格图中的色调、光影、材质、构图和氛围，不复制其中的主体、菜品、人物、文字或 Logo。</p>
+          </div>
+
+          <div class="section">
+            <div class="stitle"><span>提示词</span><div class="head-actions"><button class="link" id="fillSample" type="button">填入示例</button><span class="counter" id="promptCounter">0 / 20000</span></div></div>
+            <div class="field"><textarea id="prompt" maxlength="20000" spellcheck="false" placeholder="描述你希望生成的画面，例如：参考菜品图，生成一张暖色餐厅场景的社媒海报，真实摄影质感，深绿色背景，留出上方文案区域，不要生成文字。"></textarea></div>
+          </div>
+
+          <button class="generate" id="generateBtn" type="submit"><span class="spinner" id="generateSpinner" hidden></span><span id="generateLabel">生成 3 张图片</span></button>
+          <details style="margin-top:12px"><summary>请求预览（不包含 Key 和图片 base64）</summary><pre id="payloadPreview"></pre></details>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel result-panel">
+      <div class="panel-head">
+        <div class="ptitle"><span class="step">02</span><div><h2>结果预览</h2><p>图片只显示在当前浏览器中</p></div></div>
+        <div class="rhead-meta"><span class="status" id="status" role="status" aria-live="polite"><span class="dot"></span><span id="statusText">等待生成</span></span><span class="duration" id="duration"></span></div>
+      </div>
+      <div class="result-body">
+        <div class="stage">
+          <div class="empty" id="emptyState">
+            <div class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"></rect><circle cx="8.5" cy="9" r="1.4"></circle><path d="m5 17 4.2-4.4 2.7 2.6 2.1-2.1 4 3.9"></path></svg></div>
+            <h3>3 张生成方案会显示在这里</h3><p>填写提示词后点击「生成 3 张图片」。三张图可能在同一次请求中返回。</p>
+          </div>
+          <div class="loading" id="loadingState" hidden><span class="spinner" aria-hidden="true"></span><h3>core-ai 正在生成 3 张</h3><p>三张图可能需要 1–3 分钟，请保持页面打开，不要重复提交。</p></div>
+          <div class="error" id="errorState" hidden>
+            <div class="error-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 17h.01"></path></svg></div>
+            <h3 id="errorTitle">生成失败</h3><p id="errorHint">请检查 Key、模型名、比例和网络连接。</p><pre id="errorText"></pre><button class="action" id="retryBtn" type="button" style="margin-top:14px">↻ 重试本次请求</button>
+          </div>
+          <div class="result-wrap" id="resultState" hidden><div class="image-meta" id="imageMeta"></div><div class="result-grid" id="resultGrid"></div></div>
+        </div>
+        <div class="actions" id="resultActions" hidden>
+          <button class="action primary" id="downloadAllBtn" type="button">↓ 全部下载</button>
+          <button class="action" id="openFirstBtn" type="button">↗ 打开第 1 张</button>
+        </div>
+        <details style="margin-top:12px" id="responseDetails" hidden><summary>查看响应摘要</summary><pre id="responsePreview"></pre></details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>请求直接发送到 core-ai 网关；页面不保存生成结果，刷新后即丢失。</span>
+    <span>如遇 <code>Failed to fetch</code>，先检查网络、VPN、Key 和网关 CORS 配置。</span>
+  </footer>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+
+
+<script>
+(() => {
+"use strict";
+const MAX_MAIN = 3, MAX_STYLE = 3, MAX_TOTAL = 7_600_000, VARIANTS = 3;
+const FIXED_MODEL = "gpt-image-2.5-sunburst";
+const FIXED_QUALITY = "high";
+const FIXED_TIMEOUT_SECONDS = 600;
+const RATIO_SIZES = {
+  "1:1": "1024x1024", "3:4": "1152x1536", "4:5": "1152x1440", "9:16": "1152x2048",
+  "2:3": "1024x1536", "4:3": "1536x1152", "3:2": "1536x1024", "16:9": "2048x1152"
+};
+const SAMPLE = "参考上传图片中的主体，生成一张用于餐饮品牌社媒的海报。真实商业摄影质感，暖色灯光与深绿色背景，主体清晰、有食欲感，画面右上留出文案区域，不要生成任何文字、Logo 或水印。";
+const $ = (s, r = document) => r.querySelector(s);
+const el = {
+  form: $("#generateForm"), baseUrl: $("#baseUrl"), apiKey: $("#apiKey"), toggleKey: $("#toggleKey"),
+  ratio: $("#ratio"),
+  endpointBadge: $("#endpointBadge"), endpointPreview: $("#endpointPreview"), mainInput: $("#mainInput"), mainDrop: $("#mainDrop"), mainGallery: $("#mainGallery"),
+  styleInput: $("#styleInput"), styleDrop: $("#styleDrop"), styleGallery: $("#styleGallery"), prompt: $("#prompt"), promptCounter: $("#promptCounter"),
+  fillSample: $("#fillSample"), generateBtn: $("#generateBtn"), generateSpinner: $("#generateSpinner"),
+  generateLabel: $("#generateLabel"), payloadPreview: $("#payloadPreview"), status: $("#status"),
+  statusText: $("#statusText"), duration: $("#duration"), emptyState: $("#emptyState"),
+  loadingState: $("#loadingState"), errorState: $("#errorState"), errorTitle: $("#errorTitle"), errorHint: $("#errorHint"), errorText: $("#errorText"), retryBtn: $("#retryBtn"),
+  resultState: $("#resultState"), resultGrid: $("#resultGrid"), imageMeta: $("#imageMeta"),
+  resultActions: $("#resultActions"), downloadAllBtn: $("#downloadAllBtn"), openFirstBtn: $("#openFirstBtn"),
+  responseDetails: $("#responseDetails"), responsePreview: $("#responsePreview"), toast: $("#toast")
+};
+const state = { main: [], style: [], seq: 0, busy: false, last: null, outputUrls: [], toastTimer: null };
+const allFiles = () => [...state.main, ...state.style];
+
+
+const baseUrl = () => el.baseUrl.value.trim().replace(/\/+$/, "");
+const formatSize = b => !Number.isFinite(b) || b <= 0 ? "0 B" : b < 1024 ? `${b} B` : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`;
+function toast(msg) {
+  clearTimeout(state.toastTimer);
+  el.toast.textContent = msg; el.toast.classList.add("show");
+  state.toastTimer = setTimeout(() => el.toast.classList.remove("show"), 2600);
+}
+function status(kind, text) {
+  el.status.className = `status${kind ? " " + kind : ""}`;
+  el.statusText.textContent = text;
+}
+function view(name) {
+  el.emptyState.hidden = name !== "empty"; el.loadingState.hidden = name !== "loading";
+  el.errorState.hidden = name !== "error"; el.resultState.hidden = name !== "result";
+  el.resultActions.hidden = name !== "result"; el.responseDetails.hidden = name !== "result" && name !== "error";
+}
+function busy(on) {
+  state.busy = on; el.generateBtn.disabled = on; el.generateSpinner.hidden = !on;
+  el.generateLabel.textContent = on ? `正在生成 ${VARIANTS} 张…` : `生成 ${VARIANTS} 张图片`;
+}
+function syncEndpoint() {
+  const hasMain = state.main.length > 0;
+  el.endpointBadge.textContent = hasMain ? "主图 + 风格参考 · /images/edits" : "请先上传主图";
+  el.endpointPreview.textContent = !baseUrl() ? "请填写 Gateway Base URL" : hasMain ? `${baseUrl()}/images/edits` : "请至少上传一张主图";
+}
+function previewPayload() {
+  const payload = {
+    model: FIXED_MODEL,
+    prompt: el.prompt.value.trim(), n: VARIANTS, size: RATIO_SIZES[el.ratio.value] || RATIO_SIZES["1:1"],
+    quality: FIXED_QUALITY, output_format: "png"
+  };
+  const files = allFiles();
+  if (files.length) {
+    payload.input_images = files.map(f => ({ b64Json: `data:${f.file.type || "image/png"};base64,<省略 ${formatSize(f.file.size)}>` }));
+  }
+  return payload;
+}
+function syncPreview() {
+  el.payloadPreview.textContent = JSON.stringify(previewPayload(), null, 2);
+  el.promptCounter.textContent = `${el.prompt.value.length} / 20000`;
+  syncEndpoint();
+}
+function buildRequestPrompt(userPrompt) {
+  const mainCount = state.main.length, styleCount = state.style.length;
+  if (!styleCount) return userPrompt;
+  const mainLabel = mainCount === 1 ? "图1" : `图1-图${mainCount}`;
+  const styleStart = mainCount + 1;
+  const styleLabel = styleCount === 1 ? `图${styleStart}` : `图${styleStart}-图${mainCount + styleCount}`;
+  return `${userPrompt}\n\n图片角色说明：${mainLabel}是主图，用于提供必须保留的主体、产品、人物、活动信息和文案内容；${styleLabel}是风格参考，只参考其色调、光影、材质、构图、版式和整体氛围，严禁复制风格参考中的主体、菜品、人物、产品、文字、Logo或品牌元素。`;
+}
+
+function clearOutput() {
+  for (const url of state.outputUrls) URL.revokeObjectURL(url);
+  state.outputUrls = [];
+}
+function addFiles(list, role) {
+  const incoming = Array.from(list || []);
+  if (!incoming.length) return;
+  const limit = role === "main" ? MAX_MAIN : MAX_STYLE;
+  const label = role === "main" ? "主图" : "风格参考";
+  const room = limit - state[role].length;
+  if (room <= 0) return toast(`${label}最多 ${limit} 张`);
+  let added = 0, skipped = 0;
+  for (const file of incoming) {
+    if (added >= room) { skipped++; continue; }
+    if (!file.type.startsWith("image/")) { skipped++; continue; }
+    if (file.size > 30 * 1048576) { skipped++; continue; }
+    state[role].push({ id: ++state.seq, file, preview: URL.createObjectURL(file) });
+    added++;
+  }
+  renderGallery(role); syncPreview();
+  if (skipped) toast(`有 ${skipped} 个文件被跳过，或超过${label} ${limit} 张上限`);
+}
+function removeFile(role, id) {
+  const i = state[role].findIndex(f => f.id === id);
+  if (i < 0) return;
+  URL.revokeObjectURL(state[role][i].preview);
+  state[role].splice(i, 1); renderGallery(role); syncPreview();
+}
+function moveFile(role, id, direction) {
+  const i = state[role].findIndex(f => f.id === id), j = i + direction;
+  if (i < 0 || j < 0 || j >= state[role].length) return;
+  [state[role][i], state[role][j]] = [state[role][j], state[role][i]];
+  renderGallery(role); syncPreview();
+}
+function renderGallery(role) {
+  const gallery = role === "main" ? el.mainGallery : el.styleGallery;
+  gallery.replaceChildren();
+  state[role].forEach((item, index) => {
+    const card = document.createElement("div"); card.className = "thumb";
+    const img = document.createElement("img"); img.src = item.preview; img.alt = item.file.name;
+    const prefix = role === "main" ? "主图" : "风格";
+    const order = document.createElement("span"); order.className = "order-badge"; order.textContent = `${prefix} ${index + 1}`;
+    const meta = document.createElement("div"); meta.className = "thumb-meta";
+    meta.textContent = `${item.file.name} · ${formatSize(item.file.size)}`;
+    const x = document.createElement("button"); x.type = "button"; x.className = "thumb-x";
+    x.textContent = "×"; x.setAttribute("aria-label", `移除${prefix} ${index + 1}`);
+    x.addEventListener("click", () => removeFile(role, item.id));
+    const moves = document.createElement("div"); moves.className = "thumb-move";
+    const left = document.createElement("button"); left.type = "button"; left.textContent = "←";
+    left.disabled = index === 0; left.title = "前移"; left.setAttribute("aria-label", `${prefix} ${index + 1} 前移`);
+    left.addEventListener("click", () => moveFile(role, item.id, -1));
+    const right = document.createElement("button"); right.type = "button"; right.textContent = "→";
+    right.disabled = index === state[role].length - 1; right.title = "后移"; right.setAttribute("aria-label", `${prefix} ${index + 1} 后移`);
+    right.addEventListener("click", () => moveFile(role, item.id, 1));
+    moves.append(left, right);
+    card.append(img, order, meta, x, moves); gallery.append(card);
+  });
+}
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.decoding = "async";
+    img.onload = () => resolve({ img, url });
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`无法读取图片：${file.name}`)); };
+    img.src = url;
+  });
+}
+function detectAlpha(img) {
+  const s = 64, c = document.createElement("canvas"); c.width = c.height = s;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.clearRect(0, 0, s, s); ctx.drawImage(img, 0, 0, s, s);
+  try {
+    const d = ctx.getImageData(0, 0, s, s).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] < 250) return true;
+  } catch { return false; }
+  return false;
+}
+function draw(img, w, h, opaque) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  if (opaque) { ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); }
+  ctx.drawImage(img, 0, 0, w, h); return c;
+}
+async function prepare(file) {
+  const { img, url } = await loadImage(file);
+  try {
+    const alpha = detectAlpha(img), maxSide = alpha ? 1024 : 1536;
+    let scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    let w = Math.max(1, Math.round(img.naturalWidth * scale));
+    let h = Math.max(1, Math.round(img.naturalHeight * scale));
+    let canvas = draw(img, w, h, !alpha), dataUrl;
+    if (alpha) {
+      dataUrl = canvas.toDataURL("image/png");
+      for (let i = 0; dataUrl.length > 1_400_000 && i < 6; i++) {
+        w = Math.max(128, Math.round(w * .82)); h = Math.max(128, Math.round(h * .82));
+        canvas = draw(img, w, h, false); dataUrl = canvas.toDataURL("image/png");
+      }
+    } else {
+      let q = .9; dataUrl = canvas.toDataURL("image/jpeg", q);
+      for (let i = 0; dataUrl.length > 1_400_000 && i < 12; i++) {
+        if (q > .56) q -= .07;
+        else { w = Math.max(160, Math.round(w * .84)); h = Math.max(160, Math.round(h * .84)); canvas = draw(img, w, h, true); }
+        dataUrl = canvas.toDataURL("image/jpeg", q);
+      }
+    }
+    return { dataUrl, width: w, height: h, mime: alpha ? "image/png" : "image/jpeg" };
+  } finally { URL.revokeObjectURL(url); }
+}
+function normalizeBase(value) {
+  const v = value.trim().replace(/\/+$/, "");
+  if (!v) throw new Error("请填写 Gateway Base URL");
+  let u; try { u = new URL(v); } catch { throw new Error("Gateway Base URL 格式不正确，请包含 http:// 或 https://"); }
+  if (!["http:", "https:"].includes(u.protocol)) throw new Error("Gateway Base URL 只支持 http:// 或 https://");
+  return v;
+}
+function errorText(response, raw, body) {
+  const code = body?.errorCode || body?.error?.code || "";
+  let msg = body && typeof body.error === "object" ? String(body.error?.message || "") : typeof body?.error === "string" ? body.error : "";
+  msg = msg || String(body?.message || "").trim() || raw.slice(0, 600).trim() || `HTTP ${response.status}`;
+  return [code ? `[${code}]` : "", msg].filter(Boolean).join(" ");
+}
+function imagePayloads(body) {
+  return (Array.isArray(body?.data) ? body.data : []).map(item => {
+    if (!item || typeof item !== "object") return null;
+    const b64 = item.b64_json || item.b64Json;
+    const remote = item.url;
+    return {
+      b64: typeof b64 === "string" ? b64.trim() : "",
+      remote: typeof remote === "string" ? remote.trim() : ""
+    };
+  }).filter(item => item && (item.b64 || item.remote));
+}
+function base64Blob(value) {
+  let mime = "image/png", encoded = value;
+  if (value.startsWith("data:")) {
+    const comma = value.indexOf(",");
+    if (comma < 0) throw new Error("图片 data URL 格式不正确");
+    mime = value.slice(5, comma).split(";")[0] || mime;
+    encoded = value.slice(comma + 1);
+  }
+  const bin = atob(encoded), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+function safeResponse(body) {
+  if (!body || typeof body !== "object") return String(body || "");
+  const copy = JSON.parse(JSON.stringify(body));
+  if (Array.isArray(copy.data)) copy.data = copy.data.map(item => {
+    if (!item || typeof item !== "object") return item;
+    const next = { ...item };
+    for (const key of ["b64_json", "b64Json"]) if (typeof next[key] === "string") next[key] = `<base64 已省略，共 ${next[key].length.toLocaleString()} 字符>`;
+    if (typeof next.url === "string") next.url = next.url.slice(0, 120) + (next.url.length > 120 ? "…" : "");
+    return next;
+  });
+  return JSON.stringify(copy, null, 2);
+}
+function tsName() {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `core-ai-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+function saveBlob(blob, suffix = "") {
+  const url = URL.createObjectURL(blob), a = document.createElement("a");
+  a.href = url; a.download = `${tsName()}${suffix}.png`; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function renderResults(items, metaLines, details) {
+  clearOutput();
+  el.imageMeta.replaceChildren();
+  for (const line of metaLines) { const s = document.createElement("span"); s.textContent = line; el.imageMeta.append(s); }
+  el.resultGrid.replaceChildren();
+  items.forEach((item, index) => {
+    if (item.objectUrl) state.outputUrls.push(item.objectUrl);
+    const card = document.createElement("article"); card.className = "result-card";
+    const head = document.createElement("div"); head.className = "result-card-head";
+    const title = document.createElement("span"); title.textContent = `方案 ${index + 1}`;
+    const dimension = document.createElement("span"); dimension.textContent = "加载中…";
+    head.append(title, dimension);
+    const img = document.createElement("img"); img.alt = `生成方案 ${index + 1}`;
+    img.onload = () => { if (img.naturalWidth) dimension.textContent = `${img.naturalWidth} × ${img.naturalHeight}`; };
+    img.src = item.objectUrl || item.remote;
+    const actions = document.createElement("div"); actions.className = "result-card-actions";
+    const download = document.createElement("button"); download.type = "button"; download.textContent = "↓ 下载";
+    download.addEventListener("click", () => downloadItem(index));
+    const open = document.createElement("button"); open.type = "button"; open.textContent = "↗ 查看";
+    open.addEventListener("click", () => openItem(index));
+    actions.append(download, open);
+    card.append(head, img, actions); el.resultGrid.append(card);
+  });
+  state.last = { items };
+  el.responsePreview.textContent = details; view("result");
+}
+function makeApiError(response, raw, body) {
+  const err = new Error(errorText(response, raw, body));
+  err.status = response.status; err.body = body; err.raw = raw;
+  return err;
+}
+function classifyError(err) {
+  const msg = String(err?.message || err || "生成失败");
+  const status = Number(err?.status || 0);
+  const idMatch = msg.match(/request ID\s+([0-9a-f-]+)/i);
+  const requestId = idMatch ? idMatch[1] : "";
+  if (/请求超时/.test(msg)) return { title: "请求超时", hint: "结果未知，可能已经产生费用。请先确认网关是否已经出图，再决定是否重试。" };
+  if (status === 401 || status === 403 || /core_ai_auth|unauthorized|invalid.*key/i.test(msg)) return { title: "鉴权失败", hint: "请检查 API Key 是否正确、是否过期，以及是否有该模型权限。" };
+  if (status === 429 || /rate.?limit|HTTP 429/i.test(msg)) return { title: "请求过于频繁", hint: "core-ai 正在限流，请等待几十秒后重试。" };
+  if (status >= 500 || /INTERNAL_ERROR|server_error|HTTP 500|server had an error/i.test(msg)) {
+    return { title: "core-ai 上游临时失败", hint: `网关或模型服务返回 ${status || 500}，通常是 Azure 上游偶发错误，不是前端请求格式问题。请等待 10–30 秒后重试。${requestId ? ` 请求 ID：${requestId}` : ""}` };
+  }
+  if (/无法连接|Failed to fetch|CORS/i.test(msg)) return { title: "连接失败", hint: "请检查网络、VPN、Gateway Base URL 和网关 CORS 配置。" };
+  if (status >= 400) return { title: "请求被拒绝", hint: "请检查模型名、尺寸、Quality、图片格式和提示词。" };
+  return { title: "生成失败", hint: "请检查输入、Key、模型和网络后重试。" };
+}
+function showError(err) {
+  const msg = String(err?.message || err || "生成失败");
+  const friendly = classifyError(err);
+  el.errorTitle.textContent = friendly.title;
+  el.errorHint.textContent = friendly.hint;
+  el.errorText.textContent = msg; el.responsePreview.textContent = msg;
+  status("error", "生成失败"); view("error"); toast(friendly.title);
+}
+async function downloadItem(index) {
+  const item = state.last?.items?.[index]; if (!item) return;
+  const suffix = `-${index + 1}`;
+  if (item.blob) return saveBlob(item.blob, suffix);
+  if (!item.remote) return;
+  try {
+    const r = await fetch(item.remote, { mode: "cors" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    saveBlob(await r.blob(), suffix);
+  } catch {
+    const a = document.createElement("a"); a.href = item.remote; a.target = "_blank"; a.rel = "noopener noreferrer"; a.click();
+    toast("图片地址不支持跨域下载，已改为新窗口打开");
+  }
+}
+function openItem(index) {
+  const item = state.last?.items?.[index]; if (!item) return;
+  const src = item.objectUrl || item.remote; if (!src) return;
+  const a = document.createElement("a"); a.href = src; a.target = "_blank"; a.rel = "noopener noreferrer"; a.click();
+}
+function downloadAll() {
+  const count = state.last?.items?.length || 0;
+  if (!count) return;
+  for (let i = 0; i < count; i += 1) setTimeout(() => downloadItem(i), i * 350);
+  toast(`已开始下载 ${count} 张图片`);
+}
+async function submit(event) {
+  event.preventDefault(); if (state.busy) return;
+  el.errorText.textContent = "";
+  const prompt = el.prompt.value.trim(), key = el.apiKey.value.trim();
+  const ratio = el.ratio.value;
+  const size = RATIO_SIZES[ratio];
+  const timeout = FIXED_TIMEOUT_SECONDS;
+  try {
+    if (!state.main.length) throw new Error("请至少上传一张主图");
+    if (!prompt) throw new Error("请填写提示词");
+    if (!key) throw new Error("请填写 CORE_AI_API_KEY");
+    if (!size) throw new Error("请选择一个有效比例");
+    const base = normalizeBase(el.baseUrl.value);
+    busy(true); status("loading", `正在生成 ${VARIANTS} 张`); el.duration.textContent = ""; view("loading");
+    const started = performance.now(), prepared = [];
+    for (const item of allFiles()) prepared.push(await prepare(item.file));
+    if (prepared.reduce((n, p) => n + p.dataUrl.length, 0) > MAX_TOTAL) throw new Error("参考图总大小仍然过大，请减少图片数量或换用更小的图片");
+    const requestPrompt = buildRequestPrompt(prompt);
+    const payload = { model: FIXED_MODEL, prompt: requestPrompt, n: VARIANTS, size, quality: FIXED_QUALITY, output_format: "png" };
+    if (prepared.length) payload.input_images = prepared.map(p => ({ b64Json: p.dataUrl }));
+    const endpoint = `${base}/images/edits`;
+    el.endpointPreview.textContent = endpoint;
+    const controller = new AbortController(); let timeoutHit = false;
+    const timer = setTimeout(() => { timeoutHit = true; controller.abort(); }, timeout * 1000);
+    let response, raw = "", body = null;
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+        body: JSON.stringify(payload), signal: controller.signal
+      });
+      raw = await response.text();
+    } catch (err) {
+      if (timeoutHit || err?.name === "AbortError") throw new Error("请求超时。结果未知，可能已经产生费用，请先确认后再重试。");
+      throw new Error(`无法连接 core-ai 网关：${err?.message || "Failed to fetch"}。请检查网络、VPN 和 CORS。`);
+    } finally { clearTimeout(timer); }
+    try { body = raw ? JSON.parse(raw) : null; } catch { body = null; }
+    if (!response.ok) throw makeApiError(response, raw, body);
+    const payloads = imagePayloads(body);
+    if (!payloads.length) throw new Error(`core-ai 返回成功，但没有图片数据。原始响应：${raw.slice(0, 600)}`);
+    const elapsed = (performance.now() - started) / 1000;
+    el.duration.textContent = `${elapsed.toFixed(1)}s`;
+    const details = safeResponse(body), mode = state.style.length ? "主图 + 风格参考" : "主图生图";
+    const items = payloads.map(image => {
+      if (image.b64) {
+        const blob = base64Blob(image.b64);
+        return { blob, objectUrl: URL.createObjectURL(blob), remote: "" };
+      }
+      return { blob: null, objectUrl: "", remote: image.remote };
+    });
+    renderResults(items, [`${items.length} 张`, ratio, `主图 ${state.main.length} / 风格 ${state.style.length}`, mode, `${elapsed.toFixed(1)}s`], details);
+    status("success", items.length === VARIANTS ? "生成成功" : `仅返回 ${items.length} 张`);
+  } catch (err) { showError(err); }
+  finally { busy(false); }
+}
+
+el.form.addEventListener("submit", submit);
+el.prompt.addEventListener("input", syncPreview);
+el.fillSample.addEventListener("click", () => { el.prompt.value = SAMPLE; syncPreview(); el.prompt.focus(); });
+el.toggleKey.addEventListener("click", () => {
+  const showing = el.apiKey.type === "text";
+  el.apiKey.type = showing ? "password" : "text";
+  el.toggleKey.textContent = showing ? "显示" : "隐藏";
+  el.toggleKey.setAttribute("aria-label", showing ? "显示 API Key" : "隐藏 API Key");
+});
+function bindDropzone(drop, input, role) {
+  input.onchange = () => { addFiles(input.files, role); input.value = ""; };
+  drop.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+  for (const name of ["dragenter", "dragover"]) drop.addEventListener(name, e => { e.preventDefault(); drop.classList.add("drag"); });
+  for (const name of ["dragleave", "drop"]) drop.addEventListener(name, e => { e.preventDefault(); drop.classList.remove("drag"); });
+  drop.addEventListener("drop", e => addFiles(e.dataTransfer?.files, role));
+}
+bindDropzone(el.mainDrop, el.mainInput, "main");
+bindDropzone(el.styleDrop, el.styleInput, "style");
+for (const input of [el.baseUrl, el.ratio]) { input.addEventListener("input", syncPreview); input.addEventListener("change", syncPreview); }
+el.downloadAllBtn.addEventListener("click", downloadAll); el.openFirstBtn.addEventListener("click", () => openItem(0)); el.retryBtn.addEventListener("click", () => { if (!state.busy) el.form.requestSubmit(); });
+window.addEventListener("beforeunload", () => { clearOutput(); allFiles().forEach(f => URL.revokeObjectURL(f.preview)); });
+syncPreview(); status("", "等待生成"); view("empty");
+})();
+</script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

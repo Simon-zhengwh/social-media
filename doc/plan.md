@@ -4,13 +4,15 @@
 > 目标：先做出可以实际使用的单张海报生成流程。  
 > 执行说明：按第 10 节逐项开发；如由 AI 编码助手执行，可使用 `superpowers:executing-plans` 逐项验收。本文是开发计划，所列代码文件尚未实现。
 
-> **实施更新（2026-10-19）**：本地 MongoDB 改用根目录 `docker-compose.yml` 启动，映射到 `127.0.0.1:27018`（27017 已被本机其他服务占用）；图片对象改用腾讯云 COS，MongoDB 只保存对象键，预览和下载通过 COS 预签名 URL；首版生图使用 `gpt-image-2.5-flare`，设计模型暂未启用。前端增加左侧菜单「海报生成 / 资产管理」，生成海报时必须从资产库选择商品图；海报生成页保留提示词输入并传给 ToAPIs，标题、副标题、价格字段移除。扩展支持最多 4 张商品图融合、1:1/9:16/4:5/16:9 比例、资产删除，以及从 `素材/` 同步素材到 COS；提示词中的文案由生图模型渲染，需人工校对。其余范围以本文为准。
+> **实施更新（2026-10-19）**：本地 MongoDB 改用根目录 `docker-compose.yml` 启动，映射到 `127.0.0.1:27018`（27017 已被本机其他服务占用）；图片对象改用腾讯云 COS，MongoDB 只保存对象键，预览和下载通过 COS 预签名 URL；首版生图使用 `gpt-image-2.5-flare`，设计模型暂未启用。前端增加左侧菜单「海报生成 / 资产管理」，生成海报时必须从资产库选择商品图；海报生成页保留提示词输入并传给生图服务（当时为 ToAPIs，2026-10-20 已迁移到 core-ai），标题、副标题、价格字段移除。扩展支持最多 4 张商品图融合、1:1/9:16/4:5/16:9 比例、资产删除，以及从 `素材/` 同步素材到 COS；提示词中的文案由生图模型渲染，需人工校对。其余范围以本文为准。
+
+> **迁移更新（2026-10-20）**：运行时已不再调用 ToAPIs。生图、改图、设计规划、排版规划和自然语言编辑统一走 core-ai 网关（`CORE_AI_GATEWAY_BASE_URL`，默认 UAT 地址）。参考图不再上传，直接以 `input_images: [{"b64Json": "data:image/...;base64,..."}]` 提交；生图与改图为同步请求，不再有提交、轮询、下载阶段。接口、配置与调用链以本节和第 4 节为准。
 
 **Goal：**上传商品实拍图、可选 Logo 和风格参考，填写需求及文案，由 Agent 自主设计，输出可预览、可下载的 PNG。
 
-**Architecture：**一个 React 页面、一个 FastAPI 服务、通过 Docker 运行的本地 MongoDB（27017）和图片目录。Agent 负责创意与排版；ToAPIs 负责生成底图；Pillow 确定性合成文字和原始 Logo。
+**Architecture：**一个 React 页面、一个 FastAPI 服务、通过 Docker 运行的本地 MongoDB（27018）和 COS/本地图片存储。Agent 负责创意与排版；core-ai 网关负责生成底图、局部改图和对话模型；Pillow 确定性合成文字和原始 Logo。
 
-**Tech Stack：**React + TypeScript + Vite；Python 3.12 + FastAPI + Pydantic + PyMongo + HTTPX + Pillow；ToAPIs GPT-Image-2.5 普通版。设计模型默认建议通过 ToAPIs 接入 `gpt-5.4`，通过配置替换。
+**Tech Stack：**React + TypeScript + Vite；Python 3.12 + FastAPI + Pydantic + PyMongo + HTTPX + Pillow；core-ai 网关：图像模型 `gpt-image-2.5-flare`，设计模型 `gpt-6.1-sol`，编辑模型 `deepseek-v4-flash`，均通过配置替换。
 
 本文按用户最新要求收敛范围。[design.md](./design.md) 保留长期设计方向；本次开发范围以本文为准。
 
@@ -25,7 +27,7 @@
 5. 显示处理阶段、失败原因，支持查看原图和下载 PNG。
 6. 保存输入、设计结果、模型任务 ID、底图和成品，刷新页面仍能查看当前任务。
 
-首版固定输出 **1024 × 1024**，对应 ToAPIs 普通版 `size=1:1`、`resolution=1K`。先用单一尺寸验证流程与视觉效果，不加入平台规则。
+首版画布为 **1024 × 1024**，后续扩展到 9:16、4:5、16:9。core-ai 图像接口使用 OpenAI 风格像素尺寸 `WxH`：按画布或裁切区域计算，向下取 16 的倍数，最长边不超过 3840（如 1080×1920 发送 `1072x1920`）。
 
 ### 1.2 暂缓开发
 
@@ -52,7 +54,7 @@
 | 参数校验 | Pydantic v2 + pydantic-settings | 请求、Agent 输出和环境变量校验 |
 | 数据库 | Docker MongoDB + 同步 PyMongo | 本地 27017 端口，保存任务、输入快照、设计 JSON、素材元数据 |
 | 文件 | 本地 `storage/` | 原图、生成底图、最终 PNG |
-| 模型请求 | HTTPX 同步客户端 | ToAPIs 上传、对话、提交生图、轮询与下载 |
+| 模型请求 | HTTPX 同步客户端 | core-ai `/chat/completions`、`/images/generations`、`/images/edits` |
 | 图像合成 | Pillow | 图片尺寸处理、中文字体、文本和 Logo 合成 |
 | 任务执行 | FastAPI BackgroundTasks | 返回任务 ID 后在当前进程执行，首版无需 Redis/Celery |
 | 测试 | pytest + HTTPX MockTransport | 验证关键解析、排版与失败分支，默认不调用付费模型 |
@@ -113,13 +115,11 @@ FastAPI 支持返回响应后执行后台函数。这里统一采用同步 `def`
   "design": null,
   "repair_count": 0,
   "provider": {
-    "name": "toapis",
+    "name": "core-ai",
     "model": "gpt-image-2.5-flare",
-    "business_id": "task_001",
     "task_id": null,
-    "submission_started_at": null,
     "status": null,
-    "expires_at": null
+    "progress": 0
   },
   "background_asset_id": null,
   "output_asset_id": null,
@@ -135,67 +135,46 @@ FastAPI 支持返回响应后执行后台函数。这里统一采用同步 `def`
 
 ## 4. 生图与设计模型接入
 
-### 4.1 生图：采用用户指定的 ToAPIs 普通版
+### 4.1 生图：core-ai 同步图像接口
 
-以 [GPT-Image-2.5 生成文档](https://docs.toapis.com/docs/cn/api-reference/images/gpt-image-2.5/generation) 为准。首版默认 `gpt-image-2.5-flare`，也可配置为 `gpt-image-2.5-sunburst`；这只是初始接入选择，不代表已比较二者效果。
+实现见 `backend/app/services/core_ai.py`。无参考图时调用 `POST {CORE_AI_GATEWAY_BASE_URL}/images/generations`；有参考图（底图生成、背景重生成、Logo 局部融合）时调用 `POST {CORE_AI_GATEWAY_BASE_URL}/images/edits`。两者都是同步请求，默认 `n=1`、`quality=high`、`output_format=png`，不传 `background`。
 
-**必须遵守的接口差异：**
+**接口约束：**
 
-- 使用完整模型名，不能发送系列名称 `gpt-image-2.5`。
-- 生成接口是异步任务；提交后拿 `id`，再查询结果。
-- 普通版 `size` 使用比例，分辨率单独传 `resolution`；不能照搬原生 OpenAI 或 VIP 的像素尺寸参数。
-- 普通版质量固定为 `high`，没有必要提供质量下拉框。
-- 参考图使用 `reference_images: string[]`，值是外部可访问的 URL。生成接口不接收本地路径或 Base64。
+- 鉴权使用 `Authorization: Bearer <CORE_AI_API_KEY>`，密钥只从 `backend/.env` 读取。
+- `size` 使用 OpenAI 风格 `WxH`：按实际画布或裁切区域计算，向下取 16 的倍数，最长边不超过 3840。例如 `1080×1920` 发送 `1072x1920`，`1080×1350` 发送 `1072x1344`。
+- 网关对过小的区域会返回“低于最小像素预算”。Logo 局部融合等小裁切会按比例放大到至少 `1024×1024` 像素后再请求，返回结果再缩回原裁切尺寸。
+- 改图请求体使用 `input_images: [{"b64Json": "data:image/...;base64,..."}]`，顺序即参考图顺序；Logo 融合固定为“图1局部底图、图2透明 Logo”。
+- 商品图与裁切图转为最长边 1536、JPEG 质量 88 的 data URL；带透明通道的 Logo 转最长边 1024 的 PNG data URL。单张超过约 1.5 MB 时递减质量或尺寸，单次请求总大小限制 8 MB。
+- 响应兼容 `data[0].b64_json` 和 `data[0].url`。URL 仅允许 HTTPS 公网地址，拒绝内网/回环目标，限制重定向次数和下载体积。
 
-本地素材必须先通过 [上传接口](https://docs.toapis.com/docs/cn/api-reference/uploads/images) 获取 `data.url`。上传使用 multipart 字段 `file`，可传 `purpose=generation`。本站 `/api/assets/...` 或 `localhost` 地址不能直接传给远端生图服务。
-
-请求示例（URL 为占位值，运行时替换成上传结果）：
+请求示例：
 
 ```json
 {
   "model": "gpt-image-2.5-flare",
-  "client_business_id": "task_001",
-  "prompt": "以参考图中的菜品为主体，保留其数量、外观和摆盘特点。设计暖色餐厅氛围和适合后续排版的留白。不要生成促销文案、价格、Logo 或二维码。",
-  "reference_images": ["https://files.toapis.com/uploads/example.jpg"],
-  "size": "1:1",
-  "resolution": "1K",
+  "prompt": "以图1中的菜品为主体，保持数量、外观和摆盘，设计暖色餐厅氛围和适合排版的留白。",
+  "n": 1,
+  "size": "1072x1024",
   "quality": "high",
-  "n": 1
+  "output_format": "png",
+  "input_images": [{"b64Json": "data:image/jpeg;base64,..."}]
 }
 ```
 
-接口流程：
+### 4.2 结果、超时与失败
 
-| 操作 | 请求 | 需要读取的结果 |
-|---|---|---|
-| 上传参考图 | `POST {upload_base}/v1/uploads/images` | `success`、`data.url` |
-| 创建生图任务 | `POST {image_base}/v1/images/generations` | `id`、`status` |
-| 查询生图结果 | `GET {image_base}/v1/images/generations/{id}` | `status`、`result.data[0].url`、`error` |
-
-全部请求在后端执行，使用 `Authorization: Bearer ...`。不要给生成接口发送未经文档确认的 `mask`、`input_fidelity` 等参数。
-
-**地址分开配置：**生成文档使用 `https://api.toapis.com`，上传及对话文档使用 `https://toapis.com`。按各自文档分别配置，联调时验证；国内地址分别可配置为文档所列的 `api.toapis.cn`、`toapis.cn`，不要假定不同域名完全等价。
-
-### 4.2 状态查询与下载
-
-按 [图片任务状态文档](https://docs.toapis.com/docs/cn/api-reference/tasks/image-status) 实现：
-
-- `pending`、`queued`、`in_progress`：继续等待。
-- `completed`：读取 **`result.data[0].url`**，下载并验证图片。文档部分旧代码示例读取顶层 `url`，本项目以字段定义和完成响应为准。
-- `failed`：保存错误码和简洁错误信息。
-- 后端轮询间隔 5–10 秒并加入少量随机抖动；遇到 429 遵循 `Retry-After`。
-- 生成 URL 有有效期，下载到本地后再进入排版。不能只把临时 URL 存入数据库作为最终交付。
-- `client_business_id` 可用于按本地任务 ID 查找，但文档未保证它具有提交幂等性，不能据此自动重复 POST。
-
-参考图上传地址的有效期在已读上传文档中没有明确保证。首版每个新生成任务重新上传需要的参考图，避免依赖长期 URL 有效性。
+- 成功：保存 `provider.name=core-ai`、`provider.model=gpt-image-2.5-flare`、`provider.task_id=null`、`provider.status=completed`。
+- 网关超时、连接中断或上游 5xx：任务标记 `failed`，提示“结果未知，可能已产生费用，请确认后重新生成”，不进入 `waiting`。
+- 429 按 `Retry-After` 最多重试一次；5xx 不自动重试，避免重复计费。
+- 旧 `waiting` / `interrupted` 任务和已有底图任务仍标记 `can_resume=true`；恢复会重新发起一次网关请求。
+- 网关错误统一解析 core-ai 的 `errorCode` / `error.message` 与 OpenAI 风格 `error`，对 401、403、429、5xx、超时和非 JSON 响应给出可读提示。
 
 ### 4.3 设计：视觉语言模型，负责创意和排版
 
-建议先使用 ToAPIs 的 `gpt-5.4` 与 `POST /v1/chat/completions`，`stream=false`。该文档包含视觉输入示例；API Key 的模型权限仍需在实际账号验证。[GPT-5.4 接入](https://docs.toapis.com/docs/cn/api-reference/chat/gpt-5.4/chat)
+设计规划、排版规划和自然语言编辑统一使用 `POST {CORE_AI_GATEWAY_BASE_URL}/chat/completions`，`stream=false`，读取 `choices[0].message.content`。设计模型为 `gpt-6.1-sol`，编辑模型为 `deepseek-v4-flash`，通过 `CORE_AI_DESIGN_MODEL` / `CORE_AI_EDIT_MODEL` 配置。
 
-图像输入使用文字与 `image_url` 内容块。对话接口文档支持图片 URL 或 Base64；这与生图接口仅支持参考图 URL 的规则不同。首版设计模型可使用本地派生图的 data URL，避免为布局分析重复上传。[Chat Completions 参数](https://docs.toapis.com/docs/cn/api-reference/chat/chat)
-
-提示词要求只输出 JSON，然后用 Pydantic 校验。已读 ToAPIs 页面没有明确列出 `response_format=json_schema` 的兼容保证，因此首版不依赖该参数。解析或业务校验失败最多修正一次，仍失败就结束任务；不循环调用模型。
+图像输入使用文字与 `image_url` 内容块，图片为本机派生图的 data URL。提示词要求只输出 JSON；解析兼容 Markdown 代码块，业务校验失败最多修正一次，仍失败就结束任务，不循环调用模型。
 
 统一用 HTTPX 请求即可，不需要 LangChain、LangGraph、Agents SDK 或通用供应商插件系统。
 
@@ -207,8 +186,8 @@ flowchart TD
     B --> C[设计模型理解素材和创意需求]
     C --> D{底图处理方式}
     D -->|直接使用照片| E[等比缩放与留白]
-    D -->|参考图生成| F[上传参考图并提交 ToAPIs 任务]
-    F --> G[查询同一任务并下载底图]
+    D -->|参考图生成| F[参考图转 data URL 并调用 core-ai /images/edits]
+    F --> G[同步返回底图]
     E --> H[设计模型查看实际底图并给出排版]
     G --> H
     H --> I[Pillow 渲染文字与原始 Logo]
@@ -239,9 +218,9 @@ flowchart TD
 ### 5.2 底图处理 `build_background(task, creative_plan)`
 
 - 原图路径：读取原始素材的派生图，按计划缩放放入画布。
-- 生图路径：上传商品和可选风格参考；明确参考图顺序与角色；提交任务一次，立即保存供应商 ID，再轮询、下载。
+- 生图路径：读取商品和可选风格参考；明确参考图顺序与角色；参考图转 data URL 后同步调用 core-ai，保存返回底图。
 - 两条路径都产出本地底图文件和实际宽高，写入 `assets`。
-- 首版预期 1024 × 1024；供应商返回尺寸异常时明确报错，不能静默拉伸商品。
+- 画布尺寸由后端确定；网关返回尺寸异常时明确报错，不能静默拉伸商品。
 
 ### 5.3 排版规划 `make_layout(background, input)`
 
@@ -314,7 +293,7 @@ flowchart TD
 
 右侧：素材缩略图、生成阶段、最终海报、下载按钮。生成期间保留表单，禁用重复提交。失败时显示原因，允许保留输入后创建新任务；等待超时则提供继续查询入口。
 
-URL 用 `?task=<id>` 保存当前任务 ID，无需路由库。刷新后通过 API 恢复任务；首次没有任务 ID 时显示空表单。前端每 2 秒查询**本地后端**，它与后端每 5–10 秒查询供应商是两条独立轮询。
+URL 用 `?task=<id>` 保存当前任务 ID，无需路由库。刷新后通过 API 恢复任务；首次没有任务 ID 时显示空表单。前端每 2 秒查询**本地后端**，后端在后台线程同步调用 core-ai 网关。
 
 ### 6.2 API 合约
 
@@ -328,7 +307,7 @@ URL 用 `?task=<id>` 保存当前任务 ID，无需路由库。刷新后通过 A
 | `POST /api/tasks/{id}/resume` | 无 | `202`，继续已有任务的查询／下载／合成 |
 | `GET /api/tasks/{id}/download` | 无 | 成功任务的 PNG，附件下载 |
 
-`resume` 只是恢复一次生成流程，不是多轮编辑。只允许 `waiting` / `interrupted` 状态，使用条件更新领取任务，重复调用不创建多个执行器，也不重新提交生图。
+`resume` 只是恢复一次生成流程，不是多轮编辑。兼容旧的 `waiting` / `interrupted` 任务，也允许已有底图但未完成渲染的任务恢复；使用条件更新领取任务，重复调用不创建多个执行器。恢复会重新发起一次 core-ai 网关请求。
 
 ```json
 {
@@ -344,7 +323,7 @@ URL 用 `?task=<id>` 保存当前任务 ID，无需路由库。刷新后通过 A
 
 上传仅接收 JPEG、PNG、WebP，单文件不超过 **10,000,000 字节**，解码像素上限 2500 万。校验实际图片格式，生成自己的 UUID 文件名；服务端纠正 EXIF 方向，保留原文件；Logo 保留透明通道。SVG 和 GIF 首版不接受。
 
-外部下载使用单独的 HTTPX 客户端，不携带 ToAPIs Authorization。仅处理供应商结果 URL，限制 HTTPS、公网目标、重定向、超时和最大体积，不提供用户任意 URL 下载接口。文件服务只能通过资产 ID 读取 storage 内的文件。
+外部下载使用单独的 HTTPX 客户端，不携带 core-ai Authorization。仅处理网关返回的图片 URL，限制 HTTPS、公网目标、重定向、超时和最大体积，不提供用户任意 URL 下载接口。文件服务只能通过资产 ID 读取 storage 内的文件。
 
 ## 7. 项目目录与核心函数
 
@@ -383,7 +362,7 @@ social-media/
 │   │   ├── services/
 │   │   │   ├── __init__.py
 │   │   │   ├── storage.py
-│   │   │   ├── toapis.py
+│   │   │   ├── core_ai.py
 │   │   │   ├── designer.py
 │   │   │   ├── renderer.py
 │   │   │   └── pipeline.py
@@ -396,7 +375,7 @@ social-media/
 │   │   └── LICENSE
 │   └── tests/
 │       ├── test_assets.py
-│       ├── test_toapis.py
+│       ├── test_core_ai.py
 │       ├── test_layout.py
 │       ├── test_renderer.py
 │       └── test_pipeline.py
@@ -414,7 +393,7 @@ social-media/
 |---|---|
 | `db.py` | 初始化一个 MongoClient；访问 assets / tasks |
 | `storage.py` | `save_upload`、`prepare_image`、`save_generated_image`、受限路径解析 |
-| `toapis.py` | `upload_reference`、`submit_image`、`get_image_task`、`download_result`、`chat_json` |
+| `core_ai.py` | `generate_image`、`edit_image`、`chat_json`、参考图编码、结果下载与安全校验 |
 | `designer.py` | `make_creative_plan`、`make_layout`、输出业务校验 |
 | `renderer.py` | `build_photo_background`、`fit_text`、`render_poster` |
 | `pipeline.py` | `run_task(task_id)`，读写阶段、处理失败和恢复 |
@@ -422,21 +401,21 @@ social-media/
 
 ## 8. 状态、超时与失败处理
 
-本地任务状态：`queued` → `running` → `succeeded` / `failed`。另外有 `waiting`（停止等待但供应商可能仍在处理）、`interrupted`（本地服务重启）。
+本地任务状态：`queued` → `running` → `succeeded` / `failed`。兼容旧的 `waiting`（历史异步任务停止等待）和 `interrupted`（本地服务重启）。
 
-`stage`：`pending`、`planning`、`uploading`、`submitting`、`generating`、`downloading`、`layout`、`rendering`、`done`。对用户显示“生成底图中”等阶段，不伪造整体百分比。
+`stage`：`pending`、`planning`、`generating`、`layout`、`integrating_logo`、`rendering`、`done`。新任务不再出现 `uploading`、`submitting`、`downloading`。进度固定为：规划 5%、生成 20–70%、排版 82%、Logo 融合 90%、渲染 96%、完成 100%。
 
-默认建议：普通 HTTP 连接超时 10 秒，上传和提交读取超时 60 秒，设计模型读取超时 120 秒；一次后台生图等待窗口 600 秒。上述是应用初始配置，不是供应商时效承诺。
+默认超时：连接 15 秒，图像请求读取 300 秒（`CORE_AI_IMAGE_TIMEOUT_SECONDS`），对话请求 120 秒（`LLM_TIMEOUT_SECONDS`）。
 
 必要规则：
 
-1. POST 前先持久化 `stage=submitting` 和 `submission_started_at`；收到供应商 task ID 立即持久化。所有后续轮询都查询同一个 ID，`repair_count` 也持久化，恢复任务不重置修正预算。
-2. 超过等待窗口标记 `waiting`，保留 ID。继续查询只查询原任务，不自动重新生成。
-3. 生图 POST 超时属于提交结果未知。用已保存的 `client_business_id` 查询；暂时 404 不能证明提交失败。保留等待／待核对状态，不自动重发 POST。
+1. 生图/改图请求前先把任务写成 `running`，持久化当前阶段与进度；同步请求返回后直接保存底图并进入排版。
+2. 网关超时或连接中断视为结果未知：任务标记 `failed`，提示“结果未知，可能已产生费用，请确认后重新生成”，不自动重发。
+3. 上游 5xx 直接标记失败；429 按 `Retry-After` 最多重试一次。
 4. 下载失败可重试下载；排版失败可使用已有底图重新排版，不重新生图。超过本次修正预算则记录失败。
-5. 服务启动时将旧 `queued/running` 标记 `interrupted`，不自动发起付费请求。恢复优先读取已保存成品、底图或供应商 task ID；只有 business ID 时先查询。无法确定是否已提交时，不重新提交。
-6. 如果中断明确发生在生图提交之前，可让用户保留输入重新创建任务。首版不做通用断点恢复引擎。
-7. 未知供应商状态、缺少 ID、completed 但没有图片 URL，都作为明确协议异常处理，不当作成功。
+5. 服务启动时将旧 `queued/running` 标记 `interrupted`，不自动发起付费请求。恢复优先读取已保存成品或底图；需要重新生成时明确提示会再次调用网关。
+6. 如果中断明确发生在生图请求之前，可让用户保留输入重新创建任务。首版不做通用断点恢复引擎。
+7. 网关返回成功但没有图片数据或 URL，作为明确协议异常处理，不当作成功。
 8. 本地任务更新使用条件状态更新，成功和失败都写 `updated_at`；前端断网不能把服务器任务改成失败。
 
 普通 GET 遇网络错误可有限退避重试；401、402、参数错误直接提示。错误响应只返回代码和简洁说明，原始诊断保留服务端，日志不写 API Key 或完整图片 Base64。
@@ -448,31 +427,30 @@ social-media/
 - Node.js 22.12+ 的 22.x 版本，或满足 Vite 当前要求的更新受支持版本。[Vite 要求](https://vite.dev/guide/)
 - Python 3.12。
 - Docker Desktop 已运行并使用 Linux containers；MongoDB 按第 9.2 节启动，固定映射本机 27017 端口。
-- 用户已提供 ToAPIs API Key，保存在本地 `backend/.env`；所选生图及设计模型的账号权限在接入时验证。
+- core-ai API Key 从本机 `~/.core-ai/auth.json` 读取后写入已被 gitignore 忽略的 `backend/.env`；不要提交或打印密钥。所选模型的账号权限在接入时验证。
 - 两个可用的中文字体文件。
 
 `.env.example`：
 
 ```dotenv
-MONGODB_URI=mongodb://127.0.0.1:27017
+MONGODB_URI=mongodb://127.0.0.1:27018
 MONGODB_DATABASE=social_media
 STORAGE_DIR=../storage
+SAMPLE_DIR=../素材
+SKILLS_DIR=../.agents/skills
 
-TOAPIS_API_KEY=replace_me
-TOAPIS_IMAGE_BASE_URL=https://api.toapis.com
-TOAPIS_UPLOAD_BASE_URL=https://toapis.com
-TOAPIS_CHAT_BASE_URL=https://toapis.com
-TOAPIS_IMAGE_MODEL=gpt-image-2.5-flare
-TOAPIS_DESIGN_MODEL=gpt-5.4
+CORE_AI_GATEWAY_BASE_URL=https://core-ai-server.connexup-uat.net/api/gateway/v1
+CORE_AI_API_KEY=replace_me
+CORE_AI_IMAGE_MODEL=gpt-image-2.5-flare
+CORE_AI_DESIGN_MODEL=gpt-6.1-sol
+CORE_AI_EDIT_MODEL=deepseek-v4-flash
+CORE_AI_IMAGE_QUALITY=high
+CORE_AI_IMAGE_TIMEOUT_SECONDS=300
 
-IMAGE_RATIO=1:1
-IMAGE_RESOLUTION=1K
-IMAGE_POLL_INTERVAL_SECONDS=7
-IMAGE_WAIT_TIMEOUT_SECONDS=600
 LLM_TIMEOUT_SECONDS=120
 ```
 
-三个 base URL 都不带 `/v1`，代码统一拼接文档中的路径。`STORAGE_DIR` 相对 backend 目录解析成绝对路径，不能随启动工作目录变化。字体路径也相对 backend 目录定位。
+`CORE_AI_GATEWAY_BASE_URL` 已包含 `/api/gateway/v1`，代码只拼接 `/chat/completions`、`/images/generations`、`/images/edits`。`STORAGE_DIR` 相对 backend 目录解析成绝对路径，不能随启动工作目录变化。字体路径也相对 backend 目录定位。
 
 密钥已放入本地 `backend/.env`，由 config 明确加载。计划文档及 `backend/.env.example` 只保留 `replace_me` 占位符。根目录 `.gitignore` 已排除 `.env`、其他本地环境文件、虚拟环境、node_modules、storage 和测试缓存，同时保留 `.env.example`。开发时沿用现有 `.env`，不要用模板覆盖已填写的密钥。首版不读取或修改 MySQL 配置。
 
@@ -535,7 +513,7 @@ npm install
 npm run dev -- --host 127.0.0.1
 ```
 
-`vite.config.ts` 将 `/api` 代理到 `http://127.0.0.1:8000`；前端统一请求相对路径 `/api/...`，不直接访问 MongoDB 或 ToAPIs。
+`vite.config.ts` 将 `/api` 代理到 `http://127.0.0.1:8000`；前端统一请求相对路径 `/api/...`，不直接访问 MongoDB 或 core-ai 网关。
 
 后端创建虚拟环境并安装依赖（在 `backend` 目录执行）：
 
@@ -578,17 +556,17 @@ if (-not (Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example
 
 **验证：**`.\.venv\Scripts\python.exe -m pytest tests/test_assets.py -q`；上传 JPEG 与透明 PNG，预览正确，原文件哈希不变。
 
-### Task 3：先跑通 ToAPIs 生图，不等前端
+### Task 3：先跑通 core-ai 生图，不等前端
 
-**文件：**`backend/app/services/toapis.py`、`backend/tests/test_toapis.py`。
+**文件：**`backend/app/services/core_ai.py`、`backend/tests/test_core_ai.py`。
 
-- [ ] 使用 MockTransport 测试上传响应、创建任务 ID、pending 到 completed、failed 和缺失 URL。
-- [ ] 实现参考图上传、单次生图提交、状态查询、结果下载。
-- [ ] 测试 `size=1:1`、`resolution=1K`、`reference_images` 为字符串数组；不发未知参数。
-- [ ] 加入 business ID、轮询间隔、429 退避、等待上限和超时禁止自动重提的测试。
+- [ ] 使用 MockTransport 测试 `/images/generations` 请求体、Bearer 鉴权与 `b64_json` 解码。
+- [ ] 测试 `/images/edits` 的 `input_images` 数量、顺序、data URL 格式，以及 Logo 保留透明通道。
+- [ ] 测试 URL 结果下载、HTTPS/内网地址拒绝、超时和 core-ai 错误格式解析。
+- [ ] 测试 `/chat/completions` 的 JSON 提取与 Markdown 代码块兼容，以及 429 退避。
 - [ ] 用一张真实商品图人工联调一次，保存生成底图，记录模型名和耗时。
 
-**验证：**`.\.venv\Scripts\python.exe -m pytest tests/test_toapis.py -q`；真实请求能够从上传走到本地图片。若接口权限或域名不通，先解决本任务再继续，不用伪结果宣称链路成功。
+**验证：**`.\.venv\Scripts\python.exe -m pytest tests/test_core_ai.py -q`；真实请求能够从本地素材走到本地图片。若接口权限或域名不通，先解决本任务再继续，不用伪结果宣称链路成功。
 
 ### Task 4：文字和 Logo 合成
 
@@ -619,9 +597,9 @@ if (-not (Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example
 
 - [ ] 实现创建、查询、恢复、下载接口；创建后返回 202。
 - [ ] BackgroundTasks 执行同步流水线，分阶段写 MongoDB。
-- [ ] 加入中断标记、已有供应商任务继续查询、条件领取和成功文件落盘顺序。
+- [ ] 加入中断标记、已有底图恢复、条件领取和成功文件落盘顺序。
 - [ ] 用假模型响应跑通原图路径和参考生成路径。
-- [ ] 验证上游失败、轮询超时、提交结果未知、渲染失败不会触发重复生图。
+- [ ] 验证上游失败、网关超时、结果未知、渲染失败不会触发重复生图。
 
 **验证：**`.\.venv\Scripts\python.exe -m pytest tests/test_pipeline.py -q`；Swagger `/docs` 中可以完成上传、生成、查询和下载。
 
@@ -634,7 +612,7 @@ if (-not (Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example
 - [ ] 调用本地上传 API，再用资产 ID 创建任务。
 - [ ] 显示阶段、错误、结果和下载；轮询请求不重叠，组件卸载时清理。
 - [ ] 用 URL 记录任务 ID，刷新恢复显示。
-- [ ] waiting / interrupted 显示继续查询；网络失败保留表单和任务 ID。
+- [ ] 旧 waiting / interrupted 任务可恢复，提示会重新调用网关；网络失败保留表单和任务 ID。
 
 **验证：**在 frontend 执行 `npm run build`、`npm run lint`；浏览器手动跑完整流程。首版不增加与实现重复的 UI 单元测试。
 
@@ -644,7 +622,7 @@ if (-not (Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example
 
 - [ ] 用 3 组真实素材：餐饮促销、普通商品、带风格参考和透明 Logo 的海报。
 - [ ] 每组至少生成 1 张，记录总耗时、失败情况、商品偏差和排版问题。
-- [ ] 增加长标题、服务重启、供应商超时、刷新页面四种操作检查。
+- [ ] 增加长标题、服务重启、网关超时、刷新页面四种操作检查。
 - [ ] README 写明启动命令、环境配置、模型权限、字体准备和当前边界。
 - [ ] 在干净虚拟环境安装锁定依赖，运行必要检查；不要把真实付费调用加入默认测试套件。
 
@@ -657,8 +635,8 @@ if (-not (Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example
 - [ ] 标题、副标题和价格与输入一致，没有截断或缺字。
 - [ ] Logo 来自原始资产，比例正确，没有被模型重新绘制。
 - [ ] 原始素材、生成底图和最终 PNG 分别保存。
-- [ ] MongoDB 能查到输入、设计数据、任务状态和供应商 ID。
-- [ ] 预览和下载使用同一份本地 PNG，不依赖供应商临时 URL。
+- [ ] MongoDB 能查到输入、设计数据、任务状态和 provider 元数据。
+- [ ] 预览和下载使用同一份已保存 PNG，不依赖网关临时 URL。
 - [ ] 生成中刷新页面可恢复任务显示；超时／中断不会自动重复付费提交。
 - [ ] 三组真实样例整体可读、构图合理，并完成原图对照；明显商品失真视为质量未通过。
 - [ ] pytest 关键用例、前端 build 和 lint 通过。
@@ -667,4 +645,4 @@ if (-not (Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example
 
 先根据实际结果选择下一步：文字／Logo 对话修改，或商品保护与局部编辑。多尺寸、任务复用和品牌库继续后置。
 
-本计划已核对相关接口文档，已保存本地 API Key 配置并确定 Docker MongoDB 的启动方式；本轮尚未启动 MongoDB、验证 ToAPIs 账户权限、调用付费模型或测量真实效果。实际开发先完成 Task 1–3，尽早消除环境和模型接入问题。
+本计划已核对 core-ai 网关接口并保存本地 API Key 配置；运行时不再包含 ToAPIs 回退。真实模型效果和费用以实际浏览器验收记录为准。

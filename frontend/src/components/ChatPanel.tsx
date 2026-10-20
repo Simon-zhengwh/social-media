@@ -13,7 +13,6 @@ const QUICK_COMMANDS = [
   '标题改成周末限时特惠',
   '价格改成 169 元',
   '标题再大一点',
-  'Logo 移到右上角',
   '背景换成夜晚餐厅',
   '重新排版，广告感强一点',
 ]
@@ -77,7 +76,7 @@ export default function ChatPanel({ messages, edit, stage, disabled, onSend }: P
             {stage === 'regenerating_background'
               ? '重生成底图'
               : stage === 'integrating_logo'
-                ? '融合 Logo'
+                ? '合成素材'
                 : '识别修改'}
           </span>
         ) : null}
@@ -87,7 +86,7 @@ export default function ChatPanel({ messages, edit, stage, disabled, onSend }: P
         {messages.length === 0 ? (
           <li className="chat-empty">
             <strong>生成完成后，可以继续说想改什么</strong>
-            <span>改字、改价格、调 Logo 都不会重画整张图。</span>
+            <span>改字、改价格、移动图片都不会重画整张图。</span>
           </li>
         ) : (
           messages.map((message) => <MessageItem key={message.id} message={message} />)

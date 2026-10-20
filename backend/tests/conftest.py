@@ -15,10 +15,10 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         storage_dir=str(tmp_path / "storage"),
         sample_dir=str(PROJECT_DIR / "素材"),
-        toapis_api_key="test-key",
-        image_poll_interval_seconds=0.01,
-        image_wait_timeout_seconds=5,
+        core_ai_api_key="test-key",
+        core_ai_image_timeout_seconds=5,
         design_model_enabled=False,
+        reference_guided_enabled=False,
         logo_integration_enabled=False,
     )
 

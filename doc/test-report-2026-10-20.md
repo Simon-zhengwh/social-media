@@ -5,6 +5,8 @@
 > 测试方式：pytest + 真实 ToAPIs 生成 + 内置浏览器（Codex In-app Browser）E2E + 版本不变量审计  
 > 结论：两项需求已实现并通过端到端验证；测试过程中发现并修复 11 项问题。当前最终交付任务 `task_7ee792ddc6fa43c0ad5152105bf24f3d` 的 `v2` 无质量告警、无未授权图层改动，并已完成广告感重排版。
 
+> **迁移说明（2026-10-20 晚）**：第 1–9 节保留 ToAPIs 时期的测试记录，作为多轮编辑与 Logo 融合的历史证据。运行时已迁移到 core-ai 网关，模型、环境变量和调用链路以第 10 节为准；旧的 `test_toapis.py` 已由 `test_core_ai.py` 取代。
+
 ---
 
 ## 1. 本次交付
@@ -323,3 +325,83 @@ Set-Location D:\ai_project\social-media\backend
 ## 9. 执行说明
 
 本次尝试派发 3 个子代理（图片审计、渲染引擎、前端工作台），但当前运行时只把环境上下文传给子代理，任务正文没有送达，子代理返回“没有收到任务”。为避免阻塞交付，最终由主代理完成实现与测试，并使用独立审计脚本、真实 ToAPIs 调用和内置浏览器完成交叉验证。
+
+---
+
+## 10. core-ai 迁移验收（2026-10-20 晚）
+
+### 10.1 自动化测试
+
+| 命令 | 结果 |
+|---|---|
+| `backend/.venv/Scripts/python.exe -m pytest` | **92 passed** |
+| `npm run build` | 通过，Vite 产物正常生成 |
+| `npm run lint` | 通过，无报错 |
+
+新增/更新的覆盖：
+
+- `tests/test_core_ai.py`：`/images/generations` 请求体与 Bearer 鉴权、`b64_json` 解码、`/images/edits` 的 `input_images` 顺序与 data URL、Logo 透明通道保留、URL 结果下载、HTTPS/内网地址拒绝、超时、core-ai 错误格式、`/chat/completions` JSON 提取与 Markdown 代码块兼容。
+- `tests/test_canvas.py`：`1080×1920 → 1072x1920`、`1080×1350 → 1072x1344`、小裁切区域放大到最小像素预算、超长边限制。
+- `tests/test_pipeline.py`：core-ai 同步生图、Logo 融合调用、失败状态和恢复行为。
+
+### 10.2 运行环境与模型
+
+| 项 | 值 |
+|---|---|
+| 网关 | `https://core-ai-server.connexup-uat.net/api/gateway/v1` |
+| 图像模型 | `gpt-image-2.5-flare`（`quality=high`，`output_format=png`） |
+| 设计模型 | `gpt-6.1-sol` |
+| 编辑模型 | `deepseek-v4-flash` |
+| 图像超时 | 300 秒 |
+| 数据库 | MongoDB 8.0，`127.0.0.1:27018` |
+| 后端 / 前端 | `127.0.0.1:8000` / `127.0.0.1:5173` |
+| 浏览器 | Codex In-app Browser（可见） |
+
+API Key 只存在于 gitignore 的 `backend/.env`，未写入文档或日志。
+
+### 10.3 内置浏览器端到端结果
+
+最终验收任务：`task_17e6407788ea4baf97d2adc4bc915c97`。
+
+1. 进入「资产管理」，点击「载入示例素材」，返回“已载入 4 个素材”，商品图 2 张、Logo 2 个正常显示。
+2. 进入「海报生成」，选择 `seejoy火锅.png` 与 `logo.png`，比例选择 `1:1`，输入秋季火锅促销提示词后点击「生成海报」。
+3. 阶段与进度：`排队中` → `理解需求与文案 4%` → `生成场景底图 20%` → `排版 88%` → `Logo 融合 92%` → `渲染 96%` → `完成 100%`。界面没有出现参考图上传、供应商提交、下载阶段，也没有“继续查询供应商任务”文案。
+4. 成品元数据：`provider.name=core-ai`、`provider.model=gpt-image-2.5-flare`、`provider.task_id=null`、`provider.status=completed`；`background.logo_integrated=true`，Logo 图层 `mode=model_integrated`，且 `render_asset_id` 与 `clean_asset_id` 不同。
+5. 对话区发送“标题改成周末限时特惠”：任务进入 `v2`，主标题变为“周末限时特惠”，其他图层保持不变；`background.render_asset_id` 仍是 `asset_ae25ecdd949c4dd6b647cf024c0f1565`，底图没有重新生成。
+6. 点击「下载 PNG」，下载文件为 `poster-task_17e6407788ea4baf97d2adc4bc915c97.png`，PIL 验证为 `PNG 1024×1024 RGB`，大小 1,799,225 字节，可正常打开。
+7. 浏览器控制台无 error/warning。
+
+后端日志证据：
+
+- `10:54:00 POST https://core-ai-server.connexup-uat.net/api/gateway/v1/chat/completions "HTTP/1.1 200 OK"`（设计规划）
+- `10:55:40 POST https://core-ai-server.connexup-uat.net/api/gateway/v1/images/edits "HTTP/1.1 200 OK"`（Logo 局部融合）
+- 另有一次 `/chat/completions` 200 用于排版规划。
+- 文本修改期间（`10:56:39`–`10:56:41`）只有 COS 读取/写入，没有新的图像或对话请求，证明纯文字修改不重新生图。
+- 全仓库运行时代码与前端已无 ToAPIs 引用；日志中没有 ToAPIs 请求。
+
+截图与文件：
+
+- 生成中：`../storage/e2e-core-ai-generating-progress.png`
+- 成品：`../storage/e2e-core-ai-final.png`
+- 改字后：`../storage/e2e-core-ai-edited.png`
+- 下载文件：`../storage/e2e-core-ai-download.png`
+
+### 10.4 验收中发现并修复的问题
+
+第一次生成（`task_d7e0786ab55149e1b349b7e74fbd9353`）时，Logo 局部裁切区域只有 `176×128`，`/images/edits` 返回 500：
+
+```text
+Invalid size '176x128'. Requested resolution is below the current minimum pixel budget.
+```
+
+任务按设计退化为透明叠加并成功出图，但 Logo 模型融合路径未生效。修复方式：
+
+- `canvas.gateway_image_size()` 增加最小像素预算（`1024×1024`），小区域按比例放大后再请求，保持 16 像素对齐且最长边不超过 3840。
+- 新增 `tests/test_canvas.py` 防止回归。
+- 重启后端后重新执行完整浏览器流程，第二次生成 `task_17e...` 的 `/images/edits` 返回 200，`logo_integrated=true`。
+
+第一次任务保留为历史记录；由于该缺陷，验收多消耗了一次底图生成费用。
+
+### 10.5 结论
+
+core-ai 迁移的自动化与真实浏览器链路均已通过：设计/排版走 `/chat/completions`，底图与 Logo 融合走 `/images/edits`，纯文字修改不触发生图，下载文件可用。ToAPIs 已从运行时调用链和配置中移除。

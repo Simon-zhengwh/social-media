@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import io
+from types import SimpleNamespace
 
+import mongomock
 import pytest
+from fastapi import HTTPException
 from PIL import Image
 
+from app.routes.assets import delete_asset
 from app.services import storage
 from tests.conftest import png_bytes
 
@@ -78,3 +82,59 @@ def test_local_object_store_delete(store):
     assert store.exists("probe/delete.txt")
     store.delete("probe/delete.txt")
     assert not store.exists("probe/delete.txt")
+
+
+def test_delete_asset_can_force_remove_referenced_asset(settings, store, product_png):
+    prepared = storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+    db = mongomock.MongoClient().db
+    db.assets.insert_one(
+        {
+            "_id": prepared.id,
+            "kind": "product",
+            "path": prepared.path,
+            "prepared_path": prepared.prepared_path,
+        }
+    )
+    db.tasks.insert_one(
+        {"_id": "task_1", "design": {"layers": [{"asset_id": prepared.id}]}}
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(db=db, store=store))
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        delete_asset(prepared.id, request)
+    assert exc.value.status_code == 409
+
+    response = delete_asset(prepared.id, request, force=True)
+
+    assert response.status_code == 204
+    assert db.assets.find_one({"_id": prepared.id}) is None
+    assert not store.exists(prepared.path)
+    assert not store.exists(prepared.prepared_path)
+
+
+def test_delete_asset_is_blocked_when_whole_image_task_uses_it(
+    settings, store, product_png
+):
+    prepared = storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+    db = mongomock.MongoClient().db
+    db.assets.insert_one(
+        {
+            "_id": prepared.id,
+            "kind": "product",
+            "path": prepared.path,
+            "prepared_path": prepared.prepared_path,
+        }
+    )
+    db.whole_tasks.insert_one(
+        {"_id": "wtask_1", "input": {"product_asset_ids": [prepared.id]}}
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(db=db, store=store))
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        delete_asset(prepared.id, request)
+
+    assert exc.value.status_code == 409

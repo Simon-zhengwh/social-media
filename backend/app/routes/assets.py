@@ -26,12 +26,12 @@ def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("")
 def list_assets(request: Request, kind: str | None = None) -> list[dict[str, Any]]:
-    if kind is not None and kind not in {"product", "logo"}:
-        raise HTTPException(status_code=422, detail="kind 只支持 product 或 logo")
+    if kind is not None and kind not in {"product", "logo", "decoration"}:
+        raise HTTPException(status_code=422, detail="kind 只支持 product、logo 或 decoration")
     query: dict[str, Any] = (
         {"kind": kind}
         if kind is not None
-        else {"kind": {"$in": ["product", "logo"]}}
+        else {"kind": {"$in": ["product", "logo", "decoration"]}}
     )
     docs = (
         request.app.state.db.assets.find(query)
@@ -97,15 +97,52 @@ def get_asset_file(asset_id: str, request: Request) -> FileResponse:
     return RedirectResponse(url, status_code=302)
 
 
+def _asset_referenced(db: Any, asset_id: str) -> bool:
+    layer_query = {"design.layers": {"$elemMatch": {"asset_id": asset_id}}}
+    if db.tasks.find_one(layer_query):
+        return True
+    if db.versions.find_one(layer_query):
+        return True
+    if db.candidates.find_one(layer_query):
+        return True
+    background_query = {
+        "$or": [
+            {"design.background.clean_asset_id": asset_id},
+            {"design.background.render_asset_id": asset_id},
+        ]
+    }
+    if db.tasks.find_one(background_query):
+        return True
+    if db.versions.find_one(background_query):
+        return True
+    if db.candidates.find_one(background_query):
+        return True
+    if db.whole_tasks.find_one(
+        {
+            "$or": [
+                {"input.product_asset_ids": asset_id},
+                {"input.style_reference_asset_ids": asset_id},
+            ]
+        }
+    ):
+        return True
+    return False
+
+
 @router.delete("/{asset_id}", status_code=204)
-def delete_asset(asset_id: str, request: Request) -> Response:
+def delete_asset(asset_id: str, request: Request, force: bool = False) -> Response:
     db = request.app.state.db
     store = request.app.state.store
     asset = db.assets.find_one({"_id": asset_id})
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")
-    if asset.get("kind") not in {"product", "logo", "style"}:
-        raise HTTPException(status_code=422, detail="只能删除商品图、Logo 或风格参考")
+    if asset.get("kind") not in {"product", "logo", "decoration", "style", "brand_reference"}:
+        raise HTTPException(status_code=422, detail="只能删除商品图、Logo、装饰或风格参考")
+    if not force and _asset_referenced(db, asset_id):
+        raise HTTPException(
+            status_code=409,
+            detail="该素材正被任务或历史版本引用；如确认历史记录可失效，请使用强制删除。",
+        )
     keys = {asset.get("path"), asset.get("prepared_path")}
     for key in keys:
         if key:
