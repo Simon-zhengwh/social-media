@@ -179,3 +179,35 @@ class WholeImageEditRequest(BaseModel):
         if value is None:
             return ""
         return str(value).strip()
+
+
+class PromptOptimizeRequest(BaseModel):
+    workflow: Literal["layered", "whole_image"] = "layered"
+    prompt: str = Field(default="", max_length=2000)
+    brand_mode: Literal["preset", "reference", "none"] = "none"
+    brand_id: str | None = Field(default=None, max_length=64)
+    style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)
+    product_asset_ids: list[str] = Field(default_factory=list, max_length=4)
+    platform_id: str | None = Field(default=None, max_length=64)
+    placement_id: str | None = Field(default=None, max_length=64)
+    merchant_info: MerchantInfo | None = None
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def normalize_optimizer_prompt(cls, value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @field_validator("brand_id", mode="before")
+    @classmethod
+    def normalize_optimizer_brand_id(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        return text or None
+
+    @field_validator("style_reference_asset_ids", "product_asset_ids")
+    @classmethod
+    def normalize_optimizer_asset_ids(cls, value: list[str]) -> list[str]:
+        return [str(item).strip() for item in value if str(item).strip()]
