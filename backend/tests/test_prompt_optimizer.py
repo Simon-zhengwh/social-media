@@ -85,7 +85,6 @@ def optimizer_db(settings, store):
 
 def _optimize(db, settings, store, client, **overrides):
     payload = {
-        "workflow": "layered",
         "prompt": "",
         "brand_mode": "preset",
         "brand_id": "seejoy",
@@ -139,6 +138,18 @@ def test_blank_prompt_uses_products_brand_reference_and_xiaohongshu_rules(
     assert "品牌参考图 1" in text
 
 
+def test_unselected_platform_uses_freeform_guidance(settings, store, optimizer_db):
+    db, products, _ = optimizer_db
+    client = FakeCoreAI()
+
+    _optimize(db, settings, store, client, product_asset_ids=products)
+
+    content = client.calls[0]["messages"][-1]["content"]
+    text = "\n".join(item.get("text", "") for item in content if item.get("type") == "text")
+    assert "发布平台未指定" in text
+    assert "自主选择最合适的构图" in text
+
+
 def test_reference_mode_uses_uploaded_style_images_without_preset_guide(
     settings, store, optimizer_db
 ):
@@ -155,7 +166,6 @@ def test_reference_mode_uses_uploaded_style_images_without_preset_guide(
         brand_id=None,
         style_reference_asset_ids=[brand_reference],
         product_asset_ids=products[:1],
-        workflow="whole_image",
     )
 
     content = client.calls[0]["messages"][-1]["content"]
@@ -245,7 +255,6 @@ def test_route_returns_prompt_and_maps_configuration_error(settings, store, opti
     db, products, _ = optimizer_db
     client = FakeCoreAI({"prompt": "路由返回的提示词"})
     payload = PromptOptimizeRequest(
-        workflow="layered",
         prompt="",
         brand_mode="preset",
         brand_id="seejoy",

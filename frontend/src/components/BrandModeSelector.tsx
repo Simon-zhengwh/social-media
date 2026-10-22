@@ -135,7 +135,7 @@ export default function BrandModeSelector({
                 <input
                   type="file"
                   multiple
-                  accept="image/jpeg,image/png,image/webp"
+                  accept="image/jpeg,image/png,image/apng,image/webp,image/gif,image/bmp,image/tiff,image/avif,image/heic,image/heif,image/jp2,image/x-icon,image/x-tga,.jpg,.jpeg,.jfif,.png,.apng,.webp,.gif,.bmp,.dib,.tif,.tiff,.avif,.avifs,.heic,.heif,.jp2,.j2k,.jpf,.jpx,.ico,.tga,.vda,.vst"
                   disabled={busy || referencesUploading}
                   onChange={(event) => {
                     const files = Array.from(event.target.files ?? []).slice(0, 3 - references.length)

@@ -6,10 +6,8 @@ type Props = {
   loading: boolean
   error: string | null
   uploadingKind: AssetKind | null
-  selectedProductIds: string[]
   onUpload: (kind: AssetKind, file: File) => Promise<boolean>
   onUseSamples: () => Promise<string | null>
-  onUseForPoster: (asset: Asset) => void
   onDelete: (asset: Asset) => Promise<boolean>
   onRefresh: () => void
 }
@@ -34,10 +32,8 @@ export default function AssetLibrary({
   loading,
   error,
   uploadingKind,
-  selectedProductIds,
   onUpload,
   onUseSamples,
-  onUseForPoster,
   onDelete,
   onRefresh,
 }: Props) {
@@ -107,7 +103,7 @@ export default function AssetLibrary({
         <label className={`mp-btn-secondary mp-btn-small upload-trigger${disabled ? ' is-disabled' : ''}`}>
           <input
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            accept="image/jpeg,image/png,image/apng,image/webp,image/gif,image/bmp,image/tiff,image/avif,image/heic,image/heif,image/jp2,image/x-icon,image/x-tga,.jpg,.jpeg,.jfif,.png,.apng,.webp,.gif,.bmp,.dib,.tif,.tiff,.avif,.avifs,.heic,.heif,.jp2,.j2k,.jpf,.jpx,.ico,.tga,.vda,.vst"
             disabled={disabled}
             onChange={(event) => {
               const file = event.target.files?.[0]
@@ -154,12 +150,10 @@ export default function AssetLibrary({
       ) : (
         <div className="asset-grid">
           {assets.map((asset) => {
-            const selected = selectedProductIds.includes(asset.id)
             return (
-              <article className={`asset-card${selected ? ' is-selected' : ''}`} key={asset.id}>
+              <article className="asset-card" key={asset.id}>
                 <div className={`asset-thumb asset-thumb-${asset.kind}`}>
                   <img src={asset.url} alt={asset.original_name} />
-                  {selected ? <span className="asset-selected">已选</span> : null}
                 </div>
                 <div className="asset-card-head">
                   <span className={`asset-kind asset-kind-${asset.kind}`}>
@@ -174,13 +168,6 @@ export default function AssetLibrary({
                   {asset.width} × {asset.height}
                 </span>
                 <div className="asset-actions">
-                  <button
-                    type="button"
-                    className="mp-btn-secondary mp-btn-small asset-use"
-                    onClick={() => onUseForPoster(asset)}
-                  >
-                    用于海报
-                  </button>
                   {confirmingId === asset.id ? (
                     <span className="asset-confirm">
                       <span>删除后历史记录中的图片将无法显示，确定删除？</span>

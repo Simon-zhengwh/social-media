@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import AssetPicker from './AssetPicker'
 import WholeChatPanel from './WholeChatPanel'
 import WholeImageForm from './WholeImageForm'
+import WholeModelInputPanel from './WholeModelInputPanel'
 import WholeImageResultPanel from './WholeImageResultPanel'
 import WholeVersionPanel from './WholeVersionPanel'
 import {
@@ -21,9 +22,11 @@ import type {
   BrandStyle,
   MerchantInfo,
   PlatformPreset,
+  Ratio,
   WholeImageTask,
   WholeImageVersion,
 } from '../types'
+import { DEFAULT_IMAGE_MODEL } from '../imageModels'
 
 type Props = {
   brands: BrandStyle[]
@@ -38,11 +41,12 @@ type Props = {
   onGoAssets: () => void
 }
 
-type StudioTab = 'chat' | 'versions'
+type StudioTab = 'chat' | 'versions' | 'model_input'
 
 const TABS: Array<{ key: StudioTab; label: string }> = [
   { key: 'chat', label: '对话' },
   { key: 'versions', label: '版本' },
+  { key: 'model_input', label: '模型输入' },
 ]
 
 function readWholeTaskId(): string | null {
@@ -108,9 +112,11 @@ export default function WholeImageStudio({
   const [products, setProducts] = useState<Asset[]>([])
   const [selectedPlatformId, setSelectedPlatformId] = useState('')
   const [selectedPlacementId, setSelectedPlacementId] = useState('')
+  const [selectedRatio, setSelectedRatio] = useState<Ratio>('9:16')
   const [merchantInfo, setMerchantInfo] = useState<MerchantInfo>({ address: '', phone: '' })
   const [prompt, setPrompt] = useState('')
-  const [candidateCount, setCandidateCount] = useState(1)
+  const [imageModel, setImageModel] = useState(DEFAULT_IMAGE_MODEL)
+  const [candidateCount, setCandidateCount] = useState(3)
   const [candidateTasks, setCandidateTasks] = useState<WholeImageTask[]>([])
   const [selectedBrandId, setSelectedBrandId] = useState('')
   const [brandMode, setBrandMode] = useState<BrandMode>('preset')
@@ -129,7 +135,7 @@ export default function WholeImageStudio({
   const effectiveBrandId =
     selectedBrandId || brands.find((brand) => brand.is_default)?.id || brands[0]?.id || ''
   const selectedPlatform =
-    platforms.find((item) => item.id === selectedPlatformId) ?? platforms[0] ?? null
+    platforms.find((item) => item.id === selectedPlatformId) ?? null
   const selectedPlacement =
     selectedPlatform?.placements.find((item) => item.id === selectedPlacementId) ??
     selectedPlatform?.placements.find((item) => item.id === selectedPlatform.default_placement_id) ??
@@ -159,7 +165,9 @@ export default function WholeImageStudio({
         }
         setTask(restored)
         setPrompt(restored.input.prompt ?? '')
-        setCandidateCount(restored.input.candidate_count ?? 1)
+        setSelectedRatio(restored.input.ratio ?? '9:16')
+        setImageModel(restored.input.image_model ?? DEFAULT_IMAGE_MODEL)
+        setCandidateCount(restored.input.candidate_count ?? 3)
         if (restored.platform?.id) {
           setSelectedPlatformId(restored.platform.id)
           setSelectedPlacementId(restored.placement?.id ?? restored.platform.default_placement_id)
@@ -277,6 +285,7 @@ export default function WholeImageStudio({
 
   const active = Boolean(task && (task.status === 'queued' || task.status === 'running'))
   const studioReady = Boolean(task?.status === 'succeeded' && task.current_version_id)
+  const showStudioInspector = Boolean(studioReady || task?.model_input)
   const busy = creating || active || editRunning
   const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id)
 
@@ -296,15 +305,8 @@ export default function WholeImageStudio({
       setError('请选择一个预设品牌风格')
       return
     }
-    if (!selectedPlatform || !selectedPlacement) {
-      setError('请先选择发布平台和用途')
-      return
-    }
-    if (
-      selectedPlatform.contact_policy === 'required' &&
-      (!merchantInfo.address.trim() || !merchantInfo.phone.trim())
-    ) {
-      setError('该平台必须填写商家地址和联系电话')
+    if (selectedPlatformId && (!selectedPlatform || !selectedPlacement)) {
+      setError('发布平台配置尚未就绪，请稍后重试或选择“由 AI 自由发挥”')
       return
     }
     submitLock.current = true
@@ -319,16 +321,20 @@ export default function WholeImageStudio({
       const created = await Promise.all(
         Array.from({ length: candidateCount }, (_, index) =>
           createWholeImageTask({
+            image_model: imageModel,
             prompt,
             brand_id: brandMode === 'preset' ? effectiveBrandId : null,
             brand_mode: brandMode,
             style_reference_asset_ids:
               brandMode === 'reference' ? styleReferences.map((asset) => asset.id) : [],
             product_asset_ids: products.map((asset) => asset.id),
-            platform_id: selectedPlatform.id,
-            placement_id: selectedPlacement.id,
+            ratio: selectedPlatform ? undefined : selectedRatio,
+            platform_id: selectedPlatform?.id ?? null,
+            placement_id: selectedPlacement?.id ?? null,
             merchant_info:
-              selectedPlatform.contact_policy === 'required' ? merchantInfo : null,
+              selectedPlatform && selectedPlatform.contact_policy !== 'forbidden'
+                ? merchantInfo
+                : null,
             candidate_count: candidateCount,
             candidate_batch_id: batchId,
             candidate_index: index,
@@ -441,7 +447,7 @@ export default function WholeImageStudio({
   }
 
   return (
-    <main className={`workspace${studioReady ? ' has-studio' : ''}`}>
+    <main className={`workspace${showStudioInspector ? ' has-studio' : ''}`}>
       <WholeImageForm
         brands={brands}
         selectedBrandId={effectiveBrandId}
@@ -453,10 +459,12 @@ export default function WholeImageStudio({
         platforms={platforms}
         platformsLoading={platformsLoading}
         platformsError={platformsError}
-        selectedPlatformId={selectedPlatform?.id ?? selectedPlatformId}
-        selectedPlacementId={selectedPlacement?.id ?? selectedPlacementId}
+        selectedPlatformId={selectedPlatformId}
+        selectedPlacementId={selectedPlacementId}
+        selectedRatio={selectedRatio}
         merchantInfo={merchantInfo}
         products={products}
+        imageModel={imageModel}
         prompt={prompt}
         candidateCount={candidateCount}
         busy={busy}
@@ -472,11 +480,13 @@ export default function WholeImageStudio({
           setSelectedPlacementId(next?.default_placement_id ?? '')
         }}
         onPlacementChange={setSelectedPlacementId}
+        onRatioChange={setSelectedRatio}
         onMerchantChange={setMerchantInfo}
         onPickProducts={openPicker}
         onRemoveProduct={(id) =>
           setProducts((previous) => previous.filter((item) => item.id !== id))
         }
+        onImageModelChange={setImageModel}
         onPromptChange={setPrompt}
         onCandidateCountChange={setCandidateCount}
         onGoAssets={onGoAssets}
@@ -491,7 +501,7 @@ export default function WholeImageStudio({
         onSelectCandidate={handleSelectCandidate}
       />
 
-      {studioReady ? (
+      {showStudioInspector ? (
         <aside className="studio-inspector" aria-label="整图编辑工作台">
           <div className="studio-tabs" role="tablist">
             {TABS.map((tab) => (
@@ -527,6 +537,9 @@ export default function WholeImageStudio({
                 busy={versionsLoading || busy}
                 onSelect={(versionId) => void handleSelectVersion(versionId)}
               />
+            ) : null}
+            {studioTab === 'model_input' ? (
+              <WholeModelInputPanel modelInput={task?.model_input ?? null} />
             ) : null}
           </div>
         </aside>

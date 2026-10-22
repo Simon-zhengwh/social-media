@@ -26,8 +26,9 @@ GENERATION_SYSTEM_PROMPT = (
     "complete design based on the user's request. You have full creative freedom over "
     "composition, typography, color, visual hierarchy, and art direction. Follow the "
     "requested content and constraints accurately. Reproduce any user-provided text "
-    "verbatim; do not add, omit, translate, or rewrite text. If reference images are "
-    "provided, preserve the subject and brand identity as faithfully as possible. "
+    "verbatim; do not add, omit, translate, or rewrite text. Follow the explicit "
+    "roles assigned to each input image; never treat a style reference as a source "
+    "of subjects or identity. "
     "Return the final complete image only."
 )
 
@@ -182,6 +183,7 @@ def _load_reference_images(
     db: Database,
     store: ObjectStore,
     input_data: dict[str, Any],
+    brand: dict[str, Any] | None = None,
 ) -> list[ImageRef]:
     references: list[ImageRef] = []
     for asset_id in list(input_data.get("product_asset_ids") or [])[:4]:
@@ -192,7 +194,10 @@ def _load_reference_images(
             references.append(image_ref_from_asset(db, store, str(asset_id)))
         except Exception as exc:  # noqa: BLE001 - surface a clear user error
             raise StudioError("reference_missing", str(exc), 422) from exc
-    for asset_id in list(input_data.get("style_reference_asset_ids") or [])[:3]:
+    style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
+    if input_data.get("brand_mode") == "preset" and brand:
+        style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
+    for asset_id in dict.fromkeys(style_ids):
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None or asset.get("kind") != "brand_reference":
             raise StudioError("style_reference_missing", "风格参考图不存在", 422)
@@ -201,6 +206,70 @@ def _load_reference_images(
         except Exception as exc:  # noqa: BLE001 - surface a clear user error
             raise StudioError("style_reference_missing", str(exc), 422) from exc
     return references
+
+
+def _reference_role_guidance(product_count: int, reference_count: int) -> str:
+    if not reference_count:
+        return ""
+
+    lines = ["Image roles, in the exact order the input images are attached:"]
+    if product_count:
+        product_range = "1" if product_count == 1 else f"1-{product_count}"
+        lines.append(
+            f"- Subject/content reference image(s): {product_range}. Use these as "
+            "the only source of featured people, faces, identities, and requested "
+            "subjects. Preserve their identity and details."
+        )
+    if reference_count > product_count:
+        style_start = product_count + 1
+        style_range = (
+            str(style_start)
+            if reference_count == style_start
+            else f"{style_start}-{reference_count}"
+        )
+        lines.append(
+            f"- Style-only reference image(s): {style_range}. Learn only their "
+            "color palette, lighting, typography feel, broad composition, and "
+            "atmosphere; do not take content from them."
+        )
+        lines.append(
+            "Never reuse people, faces, identities, poses, clothing, or subjects "
+            "from style references, and do not introduce or substitute a person "
+            "from a style reference."
+        )
+    return "\n".join(lines)
+
+
+def _model_input_images(
+    db: Database,
+    input_data: dict[str, Any],
+    brand: dict[str, Any] | None = None,
+    source_asset_id: str | None = None,
+) -> list[dict[str, str]]:
+    images: list[dict[str, str]] = []
+    asset_ids = [
+        (asset_id, None)
+        for asset_id in list(input_data.get("product_asset_ids") or [])[:4]
+    ]
+    style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
+    if input_data.get("brand_mode") == "preset" and brand:
+        style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
+    asset_ids.extend((asset_id, None) for asset_id in dict.fromkeys(style_ids))
+    if source_asset_id:
+        asset_ids.append((source_asset_id, "current_design"))
+
+    for asset_id, kind_override in asset_ids:
+        asset = db.assets.find_one({"_id": asset_id})
+        if asset is None:
+            continue
+        images.append(
+            {
+                "asset_id": str(asset_id),
+                "name": str(asset.get("original_name") or "参考图片"),
+                "kind": kind_override or str(asset.get("kind") or "reference"),
+            }
+        )
+    return images
 
 
 def _version_document(
@@ -213,6 +282,7 @@ def _version_document(
     operation: str,
     width: int,
     height: int,
+    model_input: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "_id": f"wver_{uuid.uuid4().hex}",
@@ -224,6 +294,7 @@ def _version_document(
         "operation": operation,
         "width": width,
         "height": height,
+        "model_input": model_input,
         "created_at": utcnow(),
     }
 
@@ -252,6 +323,8 @@ def _commit_version(
         "stage": "done",
         "progress": 100,
         "error": None,
+        "model_input_latest": version_doc.get("model_input"),
+        "model_input_attempt": None,
         "updated_at": utcnow(),
     }
     if generation:
@@ -320,13 +393,31 @@ def run_generation(
     asset_id: str | None = None
     try:
         input_data = claimed.get("input") or {}
-        reference_images = _load_reference_images(db, store, input_data)
+        image_model = str(input_data.get("image_model") or settings.core_ai_image_model)
         brand = claimed.get("brand") if isinstance(claimed.get("brand"), dict) else {}
+        reference_images = _load_reference_images(db, store, input_data, brand)
+        product_count = min(len(input_data.get("product_asset_ids") or []), 4)
+        reference_role_block = _reference_role_guidance(
+            product_count, len(reference_images)
+        )
+        reference_role_block = (
+            f"\n\n{reference_role_block}" if reference_role_block else ""
+        )
         brand_context = ""
         if brand.get("name"):
             brand_context = (
                 f"\n\nBrand context: {brand.get('name')}. "
-                f"{str(brand.get('summary') or '').strip()}"
+                f"{str(brand.get('summary') or '').strip()}\n"
+                f"Brand layout guide:\n{str(brand.get('layout_guide') or '').strip()}\n"
+                f"Brand photography and background guide:\n"
+                f"{str(brand.get('background_guide') or '').strip()}"
+                + (
+                    "\nUse attached brand reference images for brand colors, typography, "
+                    "composition, and decorative style. Keep product details faithful "
+                    "to the product reference images."
+                    if brand.get("reference_asset_ids")
+                    else ""
+                )
             )
         merchant_info = input_data.get("merchant_info") if isinstance(input_data.get("merchant_info"), dict) else None
         platform_context = platform_presets.prompt_from_task(
@@ -334,7 +425,8 @@ def run_generation(
         )
         platform_block = f"\n\n{platform_context}" if platform_context else ""
         prompt = (
-            f"{GENERATION_SYSTEM_PROMPT}{brand_context}{platform_block}\n\nUser request:\n"
+            f"{GENERATION_SYSTEM_PROMPT}{reference_role_block}"
+            f"{brand_context}{platform_block}\n\nUser request:\n"
             f"{str(input_data.get('prompt') or '').strip()}"
         ).strip()
         canvas = claimed.get("canvas") or {}
@@ -342,14 +434,34 @@ def run_generation(
             int(canvas.get("width") or 1024),
             int(canvas.get("height") or 1024),
         )
+        endpoint = "/images/edits" if reference_images else "/images/generations"
+        model_input = {
+            "endpoint": endpoint,
+            "model": image_model,
+            "prompt": prompt,
+            "parameters": {
+                "size": size,
+                "quality": settings.core_ai_image_quality,
+                "n": 1,
+                "output_format": "png",
+            },
+            "images": _model_input_images(db, input_data, brand),
+        }
         db.whole_tasks.update_one(
             {"_id": task_id},
-            {"$set": {"stage": "generating", "progress": 45, "updated_at": utcnow()}},
+            {
+                "$set": {
+                    "stage": "generating",
+                    "progress": 45,
+                    "model_input_attempt": model_input,
+                    "updated_at": utcnow(),
+                }
+            },
         )
         if reference_images:
-            data = client.edit_image(prompt, reference_images, size=size)
+            data = client.edit_image(prompt, reference_images, size=size, model=image_model)
         else:
-            data = client.generate_image(prompt, size=size)
+            data = client.generate_image(prompt, size=size, model=image_model)
         saved = _save_output_asset(
             db,
             settings,
@@ -368,6 +480,7 @@ def run_generation(
             operation="generate",
             width=saved["width"],
             height=saved["height"],
+            model_input=model_input,
         )
         _commit_version(
             db,
@@ -434,8 +547,12 @@ def run_edit(
         height = int(source.get("height") or source_asset.get("height") or 1024)
         size = gateway_image_size(width, height)
         task_input = task.get("input") or {}
-        original_refs = _load_reference_images(db, store, task_input)
+        image_model = str(task_input.get("image_model") or settings.core_ai_image_model)
+        brand = task.get("brand") if isinstance(task.get("brand"), dict) else {}
+        original_refs = _load_reference_images(db, store, task_input, brand)
         original_count = len(original_refs)
+        product_count = min(len(task_input.get("product_asset_ids") or []), 4)
+        reference_roles = _reference_role_guidance(product_count, original_count)
         history = _edit_history(db, task_id, source_version_id)
         merchant_info = task_input.get("merchant_info") if isinstance(task_input.get("merchant_info"), dict) else None
         platform_context = platform_presets.prompt_from_task(
@@ -443,30 +560,61 @@ def run_edit(
         )
         platform_block = f"\n\n{platform_context}" if platform_context else ""
         image_role = (
-            f"Original reference images: images 1-{original_count}. "
-            f"Current design reference: image {original_count + 1}."
+            f"{reference_roles}\nImage {original_count + 1} is the current design reference."
             if original_count
-            else "Current design reference: image 1. No original reference images are attached."
+            else "Image 1 is the current design reference. No original reference images are attached."
         )
         history_block = (
             "\n".join(f"{index}. {item}" for index, item in enumerate(history, 1))
             if history
             else "(none)"
         )
+        brand_block = (
+            f"Brand context: {brand.get('name', '')}. {brand.get('summary', '')}\n"
+            f"Brand layout guide:\n{brand.get('layout_guide', '')}\n"
+            f"Brand photography and background guide:\n{brand.get('background_guide', '')}\n\n"
+            if brand
+            else ""
+        )
         prompt = (
             f"{EDIT_SYSTEM_PROMPT}\n\nImage roles:\n{image_role}\n"
-            "Use the current design as the visual frame. Use the original references "
-            "to preserve the identity and details of the supplied subjects.\n\n"
+            f"{brand_block}"
+            "Use the current design as the visual frame. Preserve subject identity "
+            "from subject/content references only; style references are for styling only.\n\n"
             "Confirmed prior modifications already applied to the current design "
             f"(oldest to newest):\n{history_block}\n\n"
             f"Current requested modification (authoritative):\n{instruction.strip()}"
             f"{platform_block}"
         ).strip()
+        model_input = {
+            "endpoint": "/images/edits",
+            "model": image_model,
+            "prompt": prompt,
+            "parameters": {
+                "size": size,
+                "quality": settings.core_ai_image_quality,
+                "n": 1,
+                "output_format": "png",
+            },
+            "images": _model_input_images(
+                db,
+                task_input,
+                brand,
+                source_asset_id=str(source_asset["_id"]),
+            ),
+        }
         db.whole_tasks.update_one(
             {"_id": task_id},
-            {"$set": {"stage": "editing", "progress": 55, "updated_at": utcnow()}},
+            {
+                "$set": {
+                    "stage": "editing",
+                    "progress": 55,
+                    "model_input_attempt": model_input,
+                    "updated_at": utcnow(),
+                }
+            },
         )
-        data = client.edit_image(prompt, [*original_refs, source_ref], size=size)
+        data = client.edit_image(prompt, [*original_refs, source_ref], size=size, model=image_model)
         version = _next_version(db, task_id)
         saved = _save_output_asset(
             db,
@@ -486,6 +634,7 @@ def run_edit(
             operation="edit",
             width=saved["width"],
             height=saved["height"],
+            model_input=model_input,
         )
         _commit_version(
             db,

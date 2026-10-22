@@ -51,7 +51,7 @@ def upload_asset(
     store = request.app.state.store
     data = file.file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
-        raise HTTPException(status_code=413, detail="文件超过 10 MB 限制")
+        raise HTTPException(status_code=413, detail=f"文件超过 {settings.max_upload_bytes / 1_000_000:g} MB 限制")
     prepared = storage.prepare_upload(
         settings,
         store,
@@ -98,25 +98,6 @@ def get_asset_file(asset_id: str, request: Request) -> FileResponse:
 
 
 def _asset_referenced(db: Any, asset_id: str) -> bool:
-    layer_query = {"design.layers": {"$elemMatch": {"asset_id": asset_id}}}
-    if db.tasks.find_one(layer_query):
-        return True
-    if db.versions.find_one(layer_query):
-        return True
-    if db.candidates.find_one(layer_query):
-        return True
-    background_query = {
-        "$or": [
-            {"design.background.clean_asset_id": asset_id},
-            {"design.background.render_asset_id": asset_id},
-        ]
-    }
-    if db.tasks.find_one(background_query):
-        return True
-    if db.versions.find_one(background_query):
-        return True
-    if db.candidates.find_one(background_query):
-        return True
     if db.whole_tasks.find_one(
         {
             "$or": [

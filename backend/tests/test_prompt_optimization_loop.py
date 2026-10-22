@@ -86,28 +86,26 @@ def test_dry_run_records_reasons_and_completes(tmp_path, monkeypatch, settings):
 
     state = loop.load_state(run_dir)
     assert all(item["complete"] for item in state["workflows"].values())
-    assert state["workflows"]["layered"]["best_round"] == 2
+    assert state["workflows"][loop.WORKFLOW]["best_round"] == 2
     report = (run_dir / "index.html").read_text(encoding="utf-8")
     assert "高分原因" in report
     assert "低分原因" in report
     assert "主标题体量仍偏小" in report
     assert "按分数" in report
     curated = loop.curate_run(
-        argparse.Namespace(run_dir=str(run_dir), poster_limit=1, whole_limit=1)
+        argparse.Namespace(run_dir=str(run_dir), whole_limit=1)
     )
-    assert len(curated["curation"]["items"]["layered"]) == 1
-    assert len(curated["curation"]["items"]["whole_image"]) == 1
-    assert (run_dir / "curated" / "layered").is_dir()
-    assert (run_dir / "curated" / "whole_image").is_dir()
+    assert len(curated["curation"]["items"][loop.WORKFLOW]) == 1
+    assert (run_dir / "curated" / loop.WORKFLOW).is_dir()
     assert "CURATED FINAL SET" in (run_dir / "index.html").read_text(encoding="utf-8")
 
 
 def test_score_validation_requires_each_dimension_reason():
-    invalid = _score("layered", 1)
+    invalid = _score(loop.WORKFLOW, 1)
     invalid["dimensions"][0]["reason"] = ""
 
     try:
-        loop._validate_score(invalid, "layered", 1)
+        loop._validate_score(invalid, loop.WORKFLOW, 1)
     except loop.LoopError as exc:
         assert "必须提供具体评分原因" in str(exc)
     else:

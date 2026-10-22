@@ -1,20 +1,10 @@
 import type { ReactElement } from 'react'
 
-export type AppView = 'poster' | 'whole' | 'assets' | 'brands'
+export type AppView = 'whole' | 'assets' | 'brands'
 
 type Props = {
   view: AppView
   onChange: (view: AppView) => void
-}
-
-function PosterIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <rect x="2.8" y="3.8" width="14.4" height="12.4" rx="2.2" />
-      <circle cx="12.8" cy="7.8" r="1.2" />
-      <path d="M4.8 13.5l3.1-3.1 2.1 2.1 1.7-1.7 3.5 3.5" />
-    </svg>
-  )
 }
 
 function WholeImageIcon() {
@@ -53,12 +43,6 @@ const NAV_ITEMS: Array<{
   hint: string
   icon: () => ReactElement
 }> = [
-  {
-    key: 'poster',
-    label: '海报生成',
-    hint: '从素材库选择并生成',
-    icon: PosterIcon,
-  },
   {
     key: 'whole',
     label: '自由设计',
@@ -128,8 +112,8 @@ export default function Sidebar({ view, onChange }: Props) {
       </nav>
 
       <div className="sidebar-foot">
-        <span className="sidebar-chip">分层 / 整图</span>
-        <span>两种工作流可自由切换</span>
+        <span className="sidebar-chip">整图直出</span>
+        <span>模型直接生成完整设计</span>
         <span className="sidebar-sep" aria-hidden="true" />
         <span>core-ai GPT-Image-2.5</span>
       </div>

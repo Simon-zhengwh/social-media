@@ -48,8 +48,41 @@ def _version_for_task(
     return db.whole_versions.find_one({"task_id": task_id}, sort=[("version", -1)])
 
 
+def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
+    if not isinstance(snapshot, dict):
+        return None
+    images = []
+    for image in snapshot.get("images") or []:
+        if not isinstance(image, dict):
+            continue
+        asset_id = str(image.get("asset_id") or "")
+        asset = db.assets.find_one({"_id": asset_id}) if asset_id else None
+        images.append(
+            {
+                "asset_id": asset_id,
+                "name": str(image.get("name") or "参考图片"),
+                "kind": str(image.get("kind") or "reference"),
+                "preview_url": f"/api/assets/{asset_id}/file" if asset else None,
+            }
+        )
+    return {
+        "endpoint": str(snapshot.get("endpoint") or ""),
+        "model": str(snapshot.get("model") or ""),
+        "prompt": str(snapshot.get("prompt") or ""),
+        "parameters": snapshot.get("parameters") or {},
+        "images": images,
+    }
+
+
 def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
     version_doc = _version_for_task(db, str(doc["_id"]))
+    model_input = doc.get("model_input_attempt") or doc.get("model_input_latest")
+    if model_input is None:
+        latest_version = db.whole_versions.find_one(
+            {"task_id": str(doc["_id"]), "model_input": {"$exists": True}},
+            sort=[("version", -1)],
+        )
+        model_input = (latest_version or {}).get("model_input")
     output_id = (
         version_doc.get("output_asset_id") if version_doc else doc.get("output_asset_id")
     )
@@ -90,6 +123,7 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
             "model": provider.get("model"),
             "status": provider.get("status"),
         },
+        "model_input": _model_input_out(db, model_input),
         "selected_version_id": version_id,
         "current_version_id": version_id,
         "current_version": version_number,
@@ -209,6 +243,7 @@ def create_task(
         "stage": "pending",
         "progress": 0,
         "input": {
+            "image_model": payload.image_model,
             "prompt": payload.prompt,
             "ratio": ratio,
             "product_asset_ids": product_ids,
@@ -228,7 +263,7 @@ def create_task(
         "canvas": {"width": width, "height": height},
         "provider": {
             "name": "core-ai",
-            "model": settings.core_ai_image_model,
+            "model": payload.image_model,
             "status": "queued",
         },
         "generation": {"status": "queued", "error": None},

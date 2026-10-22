@@ -17,9 +17,6 @@ def settings(tmp_path: Path) -> Settings:
         sample_dir=str(PROJECT_DIR / "素材"),
         core_ai_api_key="test-key",
         core_ai_image_timeout_seconds=5,
-        design_model_enabled=False,
-        reference_guided_enabled=False,
-        logo_integration_enabled=False,
     )
 
 

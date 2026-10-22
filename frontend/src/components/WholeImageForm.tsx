@@ -2,7 +2,16 @@ import PlatformSelector from './PlatformSelector'
 import BrandModeSelector from './BrandModeSelector'
 import CandidateCountSelector from './CandidateCountSelector'
 import PromptField from './PromptField'
-import type { Asset, BrandMode, BrandStyle, MerchantInfo, PlatformPreset } from '../types'
+import ImageModelSelector from './ImageModelSelector'
+import type {
+  Asset,
+  BrandMode,
+  BrandStyle,
+  ImageModel,
+  MerchantInfo,
+  PlatformPreset,
+  Ratio,
+} from '../types'
 
 type Props = {
   brands: BrandStyle[]
@@ -17,8 +26,10 @@ type Props = {
   platformsError: string | null
   selectedPlatformId: string
   selectedPlacementId: string
+  selectedRatio: Ratio
   merchantInfo: MerchantInfo
   products: Asset[]
+  imageModel: ImageModel
   prompt: string
   candidateCount: number
   busy: boolean
@@ -28,9 +39,11 @@ type Props = {
   onRemoveStyleReference: (assetId: string) => void
   onPlatformChange: (platformId: string) => void
   onPlacementChange: (placementId: string) => void
+  onRatioChange: (ratio: Ratio) => void
   onMerchantChange: (merchant: MerchantInfo) => void
   onPickProducts: () => void
   onRemoveProduct: (id: string) => void
+  onImageModelChange: (value: ImageModel) => void
   onPromptChange: (value: string) => void
   onCandidateCountChange: (value: number) => void
   onGoAssets: () => void
@@ -50,8 +63,10 @@ export default function WholeImageForm({
   platformsError,
   selectedPlatformId,
   selectedPlacementId,
+  selectedRatio,
   merchantInfo,
   products,
+  imageModel,
   prompt,
   candidateCount,
   busy,
@@ -61,18 +76,17 @@ export default function WholeImageForm({
   onRemoveStyleReference,
   onPlatformChange,
   onPlacementChange,
+  onRatioChange,
   onMerchantChange,
   onPickProducts,
   onRemoveProduct,
+  onImageModelChange,
   onPromptChange,
   onCandidateCountChange,
   onGoAssets,
   onGenerate,
 }: Props) {
   const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId)
-  const contactReady =
-    selectedPlatform?.contact_policy !== 'required' ||
-    Boolean(merchantInfo.address.trim() && merchantInfo.phone.trim())
   const brandReady =
     brandMode !== 'preset' ||
     (!brandsLoading &&
@@ -81,15 +95,13 @@ export default function WholeImageForm({
   const optimizationReady =
     products.length > 0 &&
     brandReady &&
-    !platformsLoading &&
-    !platformsError &&
-    Boolean(selectedPlatform)
+    (!selectedPlatformId || Boolean(selectedPlatform))
   const optimizationBlockedReason =
     products.length === 0
       ? '请先选择参考素材'
       : !brandReady
         ? '请先选择有效的品牌风格'
-        : platformsLoading || platformsError || !selectedPlatform
+        : selectedPlatformId && !selectedPlatform
           ? '请先等待平台配置就绪'
           : undefined
 
@@ -107,12 +119,14 @@ export default function WholeImageForm({
         platforms={platforms}
         selectedPlatformId={selectedPlatformId}
         selectedPlacementId={selectedPlacementId}
+        selectedRatio={selectedRatio}
         merchantInfo={merchantInfo}
         loading={platformsLoading}
         error={platformsError}
         busy={busy}
         onPlatformChange={onPlatformChange}
         onPlacementChange={onPlacementChange}
+        onRatioChange={onRatioChange}
         onMerchantChange={onMerchantChange}
       />
 
@@ -129,6 +143,12 @@ export default function WholeImageForm({
         onBrandChange={onBrandChange}
         onUploadReferences={onUploadStyleReferences}
         onRemoveReference={onRemoveStyleReference}
+      />
+
+      <ImageModelSelector
+        value={imageModel}
+        busy={busy}
+        onChange={onImageModelChange}
       />
 
       <div className="product-block">
@@ -183,7 +203,6 @@ export default function WholeImageForm({
         canOptimize={optimizationReady}
         optimizationBlockedReason={optimizationBlockedReason}
         optimizeContext={{
-          workflow: 'whole_image',
           brand_mode: brandMode,
           brand_id: brandMode === 'preset' ? selectedBrandId : null,
           style_reference_asset_ids:
@@ -192,7 +211,7 @@ export default function WholeImageForm({
           platform_id: selectedPlatform?.id ?? selectedPlatformId ?? null,
           placement_id: selectedPlacementId || null,
           merchant_info:
-            selectedPlatform?.contact_policy === 'required' ? merchantInfo : null,
+            selectedPlatform?.contact_policy !== 'forbidden' ? merchantInfo : null,
         }}
         onPromptChange={onPromptChange}
       />
@@ -217,10 +236,7 @@ export default function WholeImageForm({
           !prompt.trim() ||
           !brandReady ||
           products.length === 0 ||
-          platformsLoading ||
-          Boolean(platformsError) ||
-          !selectedPlatform ||
-          !contactReady
+          (Boolean(selectedPlatformId) && !selectedPlatform)
         }
       >
         {busy ? (

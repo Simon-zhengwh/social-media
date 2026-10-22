@@ -1,1 +1,1 @@
-"""Social media poster service."""
+"""Social media visual design service."""

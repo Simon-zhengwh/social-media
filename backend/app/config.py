@@ -18,26 +18,16 @@ class Settings(BaseSettings):
         "https://core-ai-server.connexup-uat.net/api/gateway/v1"
     )
     core_ai_api_key: str = ""
-    core_ai_image_model: str = "gpt-image-2.5-flare"
+    core_ai_image_model: str = "gpt-image-2.5-sunburst"
     core_ai_design_model: str = "gpt-6.1-sol"
-    core_ai_edit_model: str = "deepseek-v4-flash"
     core_ai_image_quality: str = "high"
     core_ai_image_timeout_seconds: int = 300
     llm_timeout_seconds: int = 120
-    design_model_enabled: bool = True
-    visual_critic_enabled: bool = True
-    reference_guided_enabled: bool = True
-    component_generation_enabled: bool = True
-    component_generation_cache_enabled: bool = True
-    logo_integration_enabled: bool = False
-    logo_exact_overlay: bool = True
-    logo_integration_timeout_seconds: int = 420
-    max_versions: int = 40
 
-    canvas_width: int = 1024
-    canvas_height: int = 1024
-    max_upload_bytes: int = 10_000_000
-    max_image_pixels: int = 25_000_000
+    max_upload_bytes: int = 20_000_000
+    image_compress_threshold_bytes: int = 10_000_000
+    image_downscale_pixel_threshold: int = 25_000_000
+    max_image_pixels: int = 60_000_000
     max_download_bytes: int = 30_000_000
 
     cos_secret_id: str = ""

@@ -7,15 +7,39 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+from pillow_heif import register_heif_opener
+
+register_heif_opener()
 
 from app.config import Settings
 from app.services.object_store import ObjectStore
 
 ALLOWED_FORMATS = {
     "JPEG": (".jpg", "image/jpeg"),
+    "MPO": (".jpg", "image/jpeg"),
     "PNG": (".png", "image/png"),
+    "APNG": (".png", "image/apng"),
     "WEBP": (".webp", "image/webp"),
+    "GIF": (".gif", "image/gif"),
+    "BMP": (".bmp", "image/bmp"),
+    "TIFF": (".tiff", "image/tiff"),
+    "AVIF": (".avif", "image/avif"),
+    "HEIF": (".heic", "image/heic"),
+    "JPEG2000": (".jp2", "image/jp2"),
+    "ICO": (".ico", "image/x-icon"),
+    "TGA": (".tga", "image/x-tga"),
 }
+SUPPORTED_IMAGE_SUFFIXES = frozenset(
+    {
+        ".jpg", ".jpeg", ".jfif", ".png", ".apng", ".webp", ".gif",
+        ".bmp", ".dib", ".tif", ".tiff", ".avif", ".avifs", ".heic",
+        ".heif", ".jp2", ".j2k", ".jpf", ".jpx", ".ico", ".tga",
+        ".vda", ".vst",
+    }
+)
+SUPPORTED_IMAGE_LABEL = (
+    "JPEG、PNG、WebP、GIF、BMP、TIFF、AVIF、HEIC/HEIF、JPEG 2000、ICO、TGA"
+)
 STORAGE_SUBDIRS = ("originals", "prepared", "backgrounds", "outputs", "logs")
 
 
@@ -69,6 +93,14 @@ def encode_png(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
+def _upload_descriptor(image_format: str, original_name: str) -> tuple[str, str]:
+    if image_format == "HEIF":
+        suffix = Path(original_name).suffix.lower()
+        if suffix == ".heif":
+            return ".heif", "image/heif"
+    return ALLOWED_FORMATS[image_format]
+
+
 def prepare_upload(
     settings: Settings,
     store: ObjectStore,
@@ -81,7 +113,7 @@ def prepare_upload(
     if not data:
         raise StorageError("empty_file", "文件为空")
     if len(data) > settings.max_upload_bytes:
-        raise StorageError("file_too_large", "文件超过 10 MB 限制")
+        raise StorageError("file_too_large", f"文件超过 {settings.max_upload_bytes / 1_000_000:g} MB 限制")
 
     try:
         with Image.open(io.BytesIO(data)) as probe:
@@ -92,20 +124,34 @@ def prepare_upload(
         raise StorageError("invalid_image", "无法识别的图片文件") from exc
 
     if image_format not in ALLOWED_FORMATS:
-        raise StorageError("unsupported_format", "仅支持 JPEG、PNG、WebP")
-    if width <= 0 or height <= 0 or width * height > settings.max_image_pixels:
-        raise StorageError("image_too_large", "图片像素超过 2500 万限制")
+        raise StorageError("unsupported_format", f"仅支持 {SUPPORTED_IMAGE_LABEL}")
+    pixel_count = width * height
+    if width <= 0 or height <= 0 or pixel_count > settings.max_image_pixels:
+        raise StorageError(
+            "image_too_large",
+            f"图片像素超过 {settings.max_image_pixels / 10_000:g} 万安全上限",
+        )
+
+    needs_compression = (
+        len(data) > settings.image_compress_threshold_bytes
+        or pixel_count > settings.image_downscale_pixel_threshold
+    )
+    max_side = 2048 if kind == "product" else 1600 if kind == "brand_reference" else 1024
+    if needs_compression:
+        max_side = min(max_side, 1800)
 
     try:
         with Image.open(io.BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source)
-            image.load()
+            image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
             prepared = image.convert("RGBA" if kind in {"logo", "decoration"} else "RGB")
-    except (UnidentifiedImageError, OSError, SyntaxError) as exc:
+    except (
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        Image.DecompressionBombError,
+    ) as exc:
         raise StorageError("invalid_image", "图片解码失败") from exc
-
-    max_side = 2048 if kind == "product" else 1600 if kind == "brand_reference" else 1024
-    prepared.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
 
     if kind in {"logo", "decoration"} and prepared.mode == "RGBA":
         alpha = prepared.getchannel("A")
@@ -113,7 +159,7 @@ def prepare_upload(
             raise StorageError("blank_logo" if kind == "logo" else "blank_asset", "图片几乎全透明，请检查文件")
 
     asset_id = f"asset_{uuid.uuid4().hex}"
-    extension, mime_type = ALLOWED_FORMATS[image_format]
+    extension, mime_type = _upload_descriptor(image_format, original_name)
     original_key = object_key(settings, "originals", f"{asset_id}{extension}")
     prepared_key = object_key(settings, "prepared", f"{asset_id}.png")
     store.put_bytes(original_key, data, mime_type)

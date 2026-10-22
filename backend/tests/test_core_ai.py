@@ -43,7 +43,7 @@ def test_generate_image_payload_and_b64_response(settings):
         assert request.url.path.endswith("/images/generations")
         assert request.headers["Authorization"] == "Bearer test-key"
         body = json.loads(request.content)
-        assert body["model"] == "gpt-image-2.5-flare"
+        assert body["model"] == "gpt-image-2.5-sunburst"
         assert body["size"] == "1024x1024"
         assert body["quality"] == "high"
         assert "input_images" not in body

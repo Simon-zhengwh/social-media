@@ -19,6 +19,8 @@ type BrandDraft = {
   name: string
   short_name: string
   summary: string
+  platform: string
+  note: string
   layout_guide: string
   background_guide: string
   logo_keywords: string[]
@@ -31,6 +33,8 @@ function toDraft(detail: BrandDetail): BrandDraft {
     name: detail.name,
     short_name: detail.short_name,
     summary: detail.summary,
+    platform: detail.platform,
+    note: detail.note,
     layout_guide: detail.layout_guide,
     background_guide: detail.background_guide,
     logo_keywords: [...detail.logo_keywords],
@@ -62,6 +66,7 @@ export default function BrandStudio({
   const [coverBusyId, setCoverBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const referencesFull = (detail?.reference_images.length ?? 0) >= 5
 
   const openBrand = async (brandId: string) => {
     setSelectedId(brandId)
@@ -109,6 +114,8 @@ export default function BrandStudio({
         name: draft.name.trim(),
         short_name: draft.short_name.trim(),
         summary: draft.summary.trim(),
+        platform: draft.platform.trim(),
+        note: draft.note.trim(),
         layout_guide: draft.layout_guide.trim(),
         background_guide: draft.background_guide.trim(),
       })
@@ -231,8 +238,12 @@ export default function BrandStudio({
                   </span>
                   <span className="brand-card-title">
                     <strong>{brand.name}</strong>
+                    {brand.platform ? (
+                      <span className="brand-platform-chip">{brand.platform}</span>
+                    ) : null}
                   </span>
                   <span className="brand-card-summary">{brand.summary || '品牌专属视觉规范'}</span>
+                  {brand.note ? <span className="brand-card-note">{brand.note}</span> : null}
                   <span className="brand-card-action">查看与编辑 →</span>
                 </button>
             ))}
@@ -315,6 +326,28 @@ export default function BrandStudio({
                   onChange={(event) => updateDraft({ summary: event.target.value })}
                 />
               </label>
+              <label className="brand-field">
+                <span>平台</span>
+                <input
+                  value={draft.platform}
+                  maxLength={40}
+                  placeholder="如：小红书 / Instagram"
+                  onChange={(event) => updateDraft({ platform: event.target.value })}
+                />
+              </label>
+              <label className="brand-field">
+                <span>备注</span>
+                <textarea
+                  rows={2}
+                  maxLength={500}
+                  value={draft.note}
+                  placeholder="例如：适合节日促销、门店活动"
+                  onChange={(event) => updateDraft({ note: event.target.value })}
+                />
+              </label>
+              <small className="brand-management-hint">
+                平台和备注仅用于管理筛选与卡片展示，不会进入生图模型。
+              </small>
             </div>
           </section>
 
@@ -322,27 +355,17 @@ export default function BrandStudio({
             <div className="brand-section-head">
               <div>
                 <span className="eyebrow">GUIDES</span>
-                <h2>生成规范</h2>
+                <h2 id="brand-generation-guide-label">生成规范</h2>
               </div>
-              <span className="brand-section-hint">会直接注入模型 prompt</span>
+              <span className="brand-section-hint">Markdown 原文，可直接编辑</span>
             </div>
-            <div className="brand-guide-grid">
-              <label className="brand-field">
-                <span>排版 / 设计指南</span>
+            <div className="brand-field">
                 <textarea
-                  rows={12}
+                  aria-labelledby="brand-generation-guide-label"
+                  rows={24}
                   value={draft.layout_guide}
                   onChange={(event) => updateDraft({ layout_guide: event.target.value })}
                 />
-              </label>
-              <label className="brand-field">
-                <span>背景 / 摄影指南</span>
-                <textarea
-                  rows={12}
-                  value={draft.background_guide}
-                  onChange={(event) => updateDraft({ background_guide: event.target.value })}
-                />
-              </label>
             </div>
           </section>
 
@@ -353,7 +376,7 @@ export default function BrandStudio({
                 <h2>风格参考图</h2>
               </div>
               <span className="brand-section-hint">
-                模型最多使用前 3 张 · {detail?.reference_images.length ?? 0}/3
+                最多保存 5 张 · {detail?.reference_images.length ?? 0}/5
               </span>
             </div>
             <div className="brand-reference-grid">
@@ -405,12 +428,11 @@ export default function BrandStudio({
                   </div>
                 </article>
               ))}
-              {(detail?.reference_images.length ?? 0) < 3 ? (
-                <label className={`brand-reference-upload${uploading ? ' is-disabled' : ''}`}>
+                <label className={`brand-reference-upload${uploading || referencesFull ? ' is-disabled' : ''}`}>
                   <input
                     type="file"
-                    accept="image/jpeg,image/png,image/webp"
-                    disabled={uploading}
+                    accept="image/jpeg,image/png,image/apng,image/webp,image/gif,image/bmp,image/tiff,image/avif,image/heic,image/heif,image/jp2,image/x-icon,image/x-tga,.jpg,.jpeg,.jfif,.png,.apng,.webp,.gif,.bmp,.dib,.tif,.tiff,.avif,.avifs,.heic,.heif,.jp2,.j2k,.jpf,.jpx,.ico,.tga,.vda,.vst"
+                    disabled={uploading || referencesFull}
                     onChange={(event) => {
                       const file = event.target.files?.[0]
                       if (file) void uploadReference(file)
@@ -419,9 +441,8 @@ export default function BrandStudio({
                   />
                   <span className="upload-plus" aria-hidden="true" />
                   <strong>{uploading ? '上传中…' : '上传参考图'}</strong>
-                  <span>PNG / JPG / WebP</span>
+                  <span>{referencesFull ? '已满 5 张，请先删除一张再上传' : 'PNG / JPG / WebP'}</span>
                 </label>
-              ) : null}
             </div>
           </section>
 

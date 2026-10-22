@@ -71,7 +71,7 @@ def _validate_style_refs(db: Any, asset_ids: list[str]) -> list[str]:
 
 def _platform_context(request: PromptOptimizeRequest) -> str:
     if not request.platform_id:
-        return ""
+        return platform_presets.freeform_context()
     try:
         platform, placement = platform_presets.resolve_placement(
             request.platform_id, request.placement_id
@@ -79,19 +79,7 @@ def _platform_context(request: PromptOptimizeRequest) -> str:
     except platform_presets.PlatformError as exc:
         raise PromptOptimizerError("invalid_platform", exc.message, 422) from exc
     merchant = request.merchant_info.model_dump() if request.merchant_info else None
-    if platform.contact_policy == "forbidden":
-        return platform_presets.prompt_context(platform, placement, None)
-    if merchant and merchant.get("address", "").strip() and merchant.get("phone", "").strip():
-        return platform_presets.prompt_context(platform, placement, merchant)
-    safe = placement.safe_area
-    return "\n".join(
-        [
-            "平台发布规则（必须遵守）：",
-            f"- 发布平台：{platform.name}；用途：{placement.name}；成图尺寸 {placement.width}×{placement.height}。",
-            f"- 关键文字、Logo 和联系方式需位于安全区内：上 {safe['top']:.0%}、右 {safe['right']:.0%}、下 {safe['bottom']:.0%}、左 {safe['left']:.0%}。",
-            "- 该平台要求展示真实地址和电话；当前表单未完整提供，提示词中不得编造，也不得输出空白占位符。",
-        ]
-    )
+    return platform_presets.prompt_context(platform, placement, merchant)
 
 
 def _image_data_url(value: ImageRef, *, max_side: int = 720) -> str:
@@ -151,7 +139,7 @@ def optimize_prompt(
         for asset_id in product_ids:
             references.append(_load_reference(asset_id, db, store))
         if brand is not None:
-            for asset_id in brand.reference_asset_ids[:3]:
+            for asset_id in brand.reference_asset_ids[:brand_style.MAX_BRAND_REFERENCES]:
                 references.append(_load_reference(asset_id, db, store))
         elif request.brand_mode == "reference":
             for asset_id in style_reference_ids:
@@ -168,11 +156,8 @@ def optimize_prompt(
             )
 
         workflow_text = (
-            "目标工作流：海报生成（分层）。提示词用于设计规划、场景底图和图层排版；"
-            "要明确完整构图、准确文案、字体气质和各信息层级，后续会抽取真实文字层。"
-            "为降低设计规划器超时风险，整段控制在 1300 字以内；【事实锁定】放最前并用短行列出，后续正文避免重复解释同一约束。"
-            if request.workflow == "layered"
-            else "目标工作流：自由设计（整图直接生成）。提示词必须描述一张已经完成排版、文字和装饰的最终海报。"
+            "目标工作流：自由设计（整图直接生成）。"
+            "提示词必须描述一张已经完成排版、文字和装饰的最终海报。"
         )
         current_prompt = request.prompt.strip()
         prompt_context = (

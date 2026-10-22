@@ -12,7 +12,7 @@ from app.services import storage
 from app.services.object_store import ObjectStore
 from app.services.storage import StorageError
 
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+IMAGE_SUFFIXES = storage.SUPPORTED_IMAGE_SUFFIXES
 
 
 def iter_sample_files(settings: Settings) -> Iterator[tuple[Path, str]]:

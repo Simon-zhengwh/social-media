@@ -13,8 +13,8 @@ from PIL import Image
 
 from app.config import PROJECT_DIR
 from app.routes import brands as brand_routes
-from app.routes import tasks as task_routes
-from app.schemas import BrandUpdate, TaskCreate
+from app.routes import whole_image as whole_routes
+from app.schemas import BrandUpdate, WholeImageTaskCreate
 from app.services import brand_style, storage
 
 
@@ -232,6 +232,8 @@ def _update_payload(detail: dict, **overrides) -> BrandUpdate:
         "name": detail["name"],
         "short_name": detail["short_name"],
         "summary": detail["summary"],
+        "platform": detail.get("platform", ""),
+        "note": detail.get("note", ""),
         "layout_guide": detail["layout_guide"],
         "background_guide": detail["background_guide"],
         "logo_keywords": detail["logo_keywords"],
@@ -278,6 +280,54 @@ def test_update_brand_persists_editable_fields(tmp_path, settings, store):
     assert updated["layout_guide"] == "NEW LAYOUT"
 
 
+def test_brand_management_metadata_is_stored_and_listed(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    detail = brand_routes.get_brand("custom", request)
+
+    updated = brand_routes.update_brand(
+        "custom",
+        _update_payload(
+            detail,
+            platform="小红书",
+            note="优先用于节日促销和门店活动。",
+        ),
+        request,
+    )
+
+    assert updated["platform"] == "小红书"
+    assert updated["note"] == "优先用于节日促销和门店活动。"
+    listed = brand_routes.list_brands(request)
+    assert listed[0]["platform"] == "小红书"
+    assert listed[0]["note"] == "优先用于节日促销和门店活动。"
+    stored = db.brands.find_one({"_id": "custom"})
+    assert stored["platform"] == "小红书"
+    assert stored["note"] == "优先用于节日促销和门店活动。"
+
+
+def test_brand_snapshot_excludes_management_metadata(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    detail = brand_routes.get_brand("custom", request)
+    brand_routes.update_brand(
+        "custom",
+        _update_payload(detail, platform="Instagram", note="仅供运营筛选使用。"),
+        request,
+    )
+
+    brand = brand_style.get_brand(db, "custom")
+    assert brand.platform == "Instagram"
+    assert brand.note == "仅供运营筛选使用。"
+    snapshot = brand_style.snapshot_brand(brand, db, store, settings)
+
+    assert "platform" not in snapshot
+    assert "note" not in snapshot
+
+
 def _upload_png(color=(240, 120, 20)) -> UploadFile:
     buffer = BytesIO()
     Image.new("RGB", (40, 60), color).save(buffer, format="PNG")
@@ -310,14 +360,37 @@ def test_upload_and_delete_brand_reference(tmp_path, settings, store):
     assert db.assets.find_one({"_id": new_asset_id}) is not None
 
 
-def test_upload_reference_rejects_fourth_image(settings, store):
+def test_five_brand_references_survive_save_and_task_snapshot(settings, store, product_png):
     db = mongomock.MongoClient().db
     _import(db, settings, store, PROJECT_DIR / ".agents" / "skills")
     request = _brand_request(db, settings, store)
+    for count, color in ((4, (10, 20, 30)), (5, (40, 50, 60))):
+        detail = brand_routes.upload_reference("seejoy", request, _upload_png(color))
+        assert len(detail["reference_images"]) == count
+    ids = [item["asset_id"] for item in detail["reference_images"]]
+    saved = brand_routes.update_brand(
+        "seejoy", _update_payload(detail, cover_asset_id=ids[-1]), request,
+    )
+    assert saved["cover_asset_id"] == ids[-1]
+    assert [item["asset_id"] for item in saved["reference_images"]] == ids
+
+    product_id = _seed_product(settings, store, db, product_png)
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(prompt="test", product_asset_ids=[product_id], brand_mode="preset", brand_id="seejoy"),
+        _task_request(db, settings, store), BackgroundTasks(),
+    )
+    stored = db.whole_tasks.find_one({"_id": created["id"]})
+    assert len(stored["brand"]["reference_asset_ids"]) == 5
+    assert len(stored["brand"]["references"]) == 5
+    restored = brand_style.brand_for_task(stored, db, store)
+    assert len(restored.reference_inputs) == 5
+    for path in restored.reference_paths:
+        path.unlink(missing_ok=True)
+
     with pytest.raises(HTTPException) as exc:
         brand_routes.upload_reference("seejoy", request, _upload_png())
     assert exc.value.status_code == 422
-    assert "最多 3 张" in str(exc.value.detail)
+    assert "最多 5 张" in str(exc.value.detail)
 
 
 def test_task_brand_snapshot_keeps_guides_and_loads_style_references(
@@ -328,12 +401,12 @@ def test_task_brand_snapshot_keeps_guides_and_loads_style_references(
     _import(db, settings, store, tmp_path)
     product_id = _seed_product(settings, store, db, product_png)
 
-    created = task_routes.create_task(
-        TaskCreate(product_asset_ids=[product_id], brand_id="custom"),
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(prompt="test", product_asset_ids=[product_id], brand_id="custom"),
         _task_request(db, settings, store),
         BackgroundTasks(),
     )
-    stored = db.tasks.find_one({"_id": created["id"]})
+    stored = db.whole_tasks.find_one({"_id": created["id"]})
     assert stored["brand"]["layout_guide"] == "LAYOUT GUIDE 测试规范"
     assert stored["brand"]["background_guide"] == "BACKGROUND GUIDE 测试背景"
     assert stored["brand"]["reference_asset_ids"]
@@ -360,8 +433,8 @@ def test_task_snapshot_rejects_missing_reference_asset(
     db.assets.delete_one({"_id": missing_id})
 
     with pytest.raises(HTTPException) as exc:
-        task_routes.create_task(
-            TaskCreate(product_asset_ids=[product_id], brand_id="custom"),
+        whole_routes.create_task(
+            WholeImageTaskCreate(prompt="test", product_asset_ids=[product_id], brand_id="custom"),
             _task_request(db, settings, store),
             BackgroundTasks(),
         )
@@ -390,15 +463,16 @@ def test_task_without_brand_has_no_style_snapshot(settings, store, product_png):
     _import(db, settings, store, PROJECT_DIR / ".agents" / "skills")
     product_id = _seed_product(settings, store, db, product_png)
 
-    created = task_routes.create_task(
-        TaskCreate(product_asset_ids=[product_id]),
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(prompt="test", product_asset_ids=[product_id]),
         _task_request(db, settings, store),
         BackgroundTasks(),
     )
     assert created["input"]["brand_id"] is None
     assert created["input"]["brand_mode"] == "none"
-    assert created["brand"] is None
-    stored = db.tasks.find_one({"_id": created["id"]})
+    assert created["brand"]["id"] is None
+    assert created["brand"]["name"] is None
+    stored = db.whole_tasks.find_one({"_id": created["id"]})
     assert stored["brand"] is None
 
 
@@ -408,36 +482,19 @@ def test_task_accepts_explicit_brand_and_rejects_unknown(settings, store, produc
     product_id = _seed_product(settings, store, db, product_png)
     request = _task_request(db, settings, store)
 
-    created = task_routes.create_task(
-        TaskCreate(product_asset_ids=[product_id], brand_id="seejoy"),
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(prompt="test", product_asset_ids=[product_id], brand_id="seejoy"),
         request,
         BackgroundTasks(),
     )
     assert created["brand"]["id"] == "seejoy"
     with pytest.raises(HTTPException) as exc:
-        task_routes.create_task(
-            TaskCreate(product_asset_ids=[product_id], brand_id="missing"),
+        whole_routes.create_task(
+            WholeImageTaskCreate(prompt="test", product_asset_ids=[product_id], brand_id="missing"),
             request,
             BackgroundTasks(),
         )
     assert exc.value.status_code == 422
-
-
-def test_task_output_keeps_legacy_task_without_brand():
-    now = datetime.now(timezone.utc)
-    out = task_routes.task_out(
-        {
-            "_id": "task_legacy",
-            "status": "succeeded",
-            "stage": "done",
-            "input": {},
-            "canvas": {"width": 1024, "height": 1024},
-            "created_at": now,
-            "updated_at": now,
-        }
-    )
-
-    assert out["brand"] is None
 
 
 def test_task_brand_snapshot_registers_immutable_references(
@@ -446,12 +503,12 @@ def test_task_brand_snapshot_registers_immutable_references(
     db = mongomock.MongoClient().db
     _import(db, settings, store, PROJECT_DIR / ".agents" / "skills")
     product_id = _seed_product(settings, store, db, product_png)
-    created = task_routes.create_task(
-        TaskCreate(product_asset_ids=[product_id], brand_mode="preset", brand_id="seejoy"),
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(prompt="test", product_asset_ids=[product_id], brand_mode="preset", brand_id="seejoy"),
         _task_request(db, settings, store),
         BackgroundTasks(),
     )
-    stored = db.tasks.find_one({"_id": created["id"]})
+    stored = db.whole_tasks.find_one({"_id": created["id"]})
     refs = stored["brand"]["references"]
     assert len(refs) == 3
     assert all(ref["asset_id"] and len(ref["sha256"]) == 64 for ref in refs)

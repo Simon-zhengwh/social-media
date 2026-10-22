@@ -1,1 +1,1 @@
-"""Service layer for the poster pipeline."""
+"""Shared service layer for the whole-image workflow."""

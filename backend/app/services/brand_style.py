@@ -15,7 +15,8 @@ from app.services.image_ref import ImageRef, image_ref_from_asset
 logger = logging.getLogger(__name__)
 
 BRAND_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+MAX_BRAND_REFERENCES = 5
+IMAGE_SUFFIXES = storage.SUPPORTED_IMAGE_SUFFIXES
 
 DEFAULT_PALETTE = {
     "primary": "#0D4317",
@@ -60,6 +61,8 @@ class BrandStyle:
     is_default: bool
     cover_path: Path | None
     logo_keywords: tuple[str, ...]
+    platform: str = ""
+    note: str = ""
     layout_guide: str = FALLBACK_LAYOUT_GUIDE
     background_guide: str = FALLBACK_BACKGROUND_GUIDE
     reference_paths: tuple[Path, ...] = ()
@@ -87,6 +90,8 @@ class BrandStyle:
             "name": self.name,
             "short_name": self.short_name,
             "summary": self.summary,
+            "platform": self.platform,
+            "note": self.note,
             "is_default": self.is_default,
             "cover_url": cover_url,
             "logo_keywords": list(self.logo_keywords),
@@ -154,7 +159,7 @@ def _normalize_keywords(raw: Any) -> tuple[str, ...]:
     )
 
 
-def _normalize_asset_ids(raw: Any, *, limit: int = 3) -> tuple[str, ...]:
+def _normalize_asset_ids(raw: Any, *, limit: int = MAX_BRAND_REFERENCES) -> tuple[str, ...]:
     if not isinstance(raw, list):
         return ()
     ids: list[str] = []
@@ -220,12 +225,14 @@ def load_brand_skill(skill_dir: Path) -> BrandStyle:
         name=name,
         short_name=str(raw.get("short_name") or name).strip(),
         summary=str(raw.get("summary") or "").strip(),
+        platform=str(raw.get("platform") or "").strip(),
+        note=str(raw.get("note") or "").strip(),
         is_default=_as_bool(raw.get("is_default")),
         cover_path=cover_path,
         logo_keywords=_normalize_keywords(raw.get("logo_keywords")),
         layout_guide=_read_text(layout_path, label="layout 指南"),
         background_guide=_read_text(background_path, label="background 指南"),
-        reference_paths=tuple(reference_paths[:3]),
+        reference_paths=tuple(reference_paths[:MAX_BRAND_REFERENCES]),
     )
 
 
@@ -247,6 +254,8 @@ def brand_from_document(document: Any) -> BrandStyle:
         name=name,
         short_name=str(document.get("short_name") or name).strip(),
         summary=str(document.get("summary") or "").strip(),
+        platform=str(document.get("platform") or "").strip(),
+        note=str(document.get("note") or "").strip(),
         is_default=_as_bool(document.get("is_default")),
         cover_path=None,
         logo_keywords=_normalize_keywords(document.get("logo_keywords")),
@@ -380,7 +389,7 @@ def snapshot_brand(
     """Create an immutable task snapshot from Mongo brand assets."""
     references: list[dict[str, Any]] = []
     if brand.reference_asset_ids:
-        for asset_id in brand.reference_asset_ids[:3]:
+        for asset_id in brand.reference_asset_ids[:MAX_BRAND_REFERENCES]:
             asset = db.assets.find_one({"_id": asset_id})
             if asset is None:
                 raise BrandError(
@@ -390,7 +399,7 @@ def snapshot_brand(
             references.append(_reference_entry(asset))
     elif brand.reference_paths:
         # Compatibility path for old code/tests that construct BrandStyle from files.
-        for path in brand.reference_paths[:3]:
+        for path in brand.reference_paths[:MAX_BRAND_REFERENCES]:
             references.append(
                 _reference_entry(_asset_for_path(db, store, settings, path))
             )
@@ -418,7 +427,7 @@ def _reference_inputs_from_asset_ids(
     if db is None or store is None:
         return ()
     references: list[ImageRef] = []
-    for asset_id in asset_ids[:3]:
+    for asset_id in asset_ids[:MAX_BRAND_REFERENCES]:
         try:
             references.append(image_ref_from_asset(db, store, asset_id))
         except Exception as exc:  # noqa: BLE001 - legacy tasks tolerate missing assets
@@ -473,7 +482,7 @@ def _import_loaded_brand(
 
     reference_docs = [
         _asset_for_path(db, store, settings, path)
-        for path in brand.reference_paths[:3]
+        for path in brand.reference_paths[:MAX_BRAND_REFERENCES]
     ]
     reference_asset_ids = [document["_id"] for document in reference_docs]
     cover_asset_id: str | None = None
@@ -488,6 +497,8 @@ def _import_loaded_brand(
         "name": brand.name,
         "short_name": brand.short_name,
         "summary": brand.summary,
+        "platform": brand.platform,
+        "note": brand.note,
         "is_default": brand.is_default,
         "layout_guide": brand.layout_guide,
         "background_guide": brand.background_guide,

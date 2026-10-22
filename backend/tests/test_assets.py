@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 from PIL import Image
 
+from app.config import Settings
 from app.routes.assets import delete_asset
 from app.services import storage
 from tests.conftest import png_bytes
@@ -21,6 +22,63 @@ def test_prepare_upload_preserves_original_and_metadata(settings, store, product
     assert result.mime_type == "image/png"
     assert store.get_bytes(result.path) == product_png
     assert store.exists(result.prepared_path)
+
+
+@pytest.mark.parametrize(
+    ("image_format", "filename", "expected_mime"),
+    [
+        ("JPEG", "photo.jpg", "image/jpeg"),
+        ("PNG", "photo.png", "image/png"),
+        ("WEBP", "photo.webp", "image/webp"),
+        ("GIF", "photo.gif", "image/gif"),
+        ("BMP", "photo.bmp", "image/bmp"),
+        ("TIFF", "photo.tiff", "image/tiff"),
+        ("AVIF", "photo.avif", "image/avif"),
+        ("HEIF", "photo.heic", "image/heic"),
+        ("HEIF", "photo.heif", "image/heif"),
+        ("JPEG2000", "photo.jp2", "image/jp2"),
+        ("ICO", "photo.ico", "image/x-icon"),
+        ("TGA", "photo.tga", "image/x-tga"),
+    ],
+)
+def test_common_image_formats_are_supported(
+    settings, store, image_format, filename, expected_mime
+):
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), (180, 90, 50)).save(buffer, format=image_format)
+    result = storage.prepare_upload(
+        settings, store, buffer.getvalue(), filename, "product"
+    )
+    assert result.mime_type == expected_mime
+    assert result.prepared_path.endswith(".png")
+    assert storage.open_image(store, result.prepared_path).mode == "RGB"
+
+
+@pytest.mark.parametrize("trigger", ["bytes", "pixels"])
+def test_oversized_upload_is_downscaled_instead_of_rejected(settings, store, trigger):
+    settings.image_compress_threshold_bytes = 1 if trigger == "bytes" else 100_000_000
+    settings.image_downscale_pixel_threshold = (
+        1_000_000 if trigger == "pixels" else 100_000_000
+    )
+    settings.max_image_pixels = 20_000_000
+    buffer = io.BytesIO()
+    Image.new("RGB", (2400, 1800), (180, 90, 50)).save(buffer, format="JPEG")
+
+    result = storage.prepare_upload(
+        settings, store, buffer.getvalue(), "large-photo.jpg", "product"
+    )
+
+    assert result.width == 1800
+    assert result.height == 1350
+    assert result.prepared_path.endswith(".png")
+
+
+def test_safety_pixel_limit_still_applies(settings, store, product_png):
+    settings.max_image_pixels = 1_000
+    with pytest.raises(storage.StorageError) as exc:
+        storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+    assert exc.value.code == "image_too_large"
+    assert "安全上限" in str(exc.value)
 
 
 def test_logo_keeps_transparency(settings, store, logo_png):
@@ -43,11 +101,16 @@ def test_invalid_kind_is_rejected(settings, store, product_png):
     assert exc.value.code == "invalid_kind"
 
 
+def test_default_upload_limit_is_20_mb():
+    assert Settings.model_fields["max_upload_bytes"].default == 20_000_000
+
+
 def test_size_limit_is_enforced(settings, store, product_png):
     settings.max_upload_bytes = 10
     with pytest.raises(storage.StorageError) as exc:
         storage.prepare_upload(settings, store, product_png, "dish.png", "product")
     assert exc.value.code == "file_too_large"
+    assert "MB 限制" in str(exc.value)
 
 
 def test_path_traversal_is_rejected(settings):
@@ -95,8 +158,8 @@ def test_delete_asset_can_force_remove_referenced_asset(settings, store, product
             "prepared_path": prepared.prepared_path,
         }
     )
-    db.tasks.insert_one(
-        {"_id": "task_1", "design": {"layers": [{"asset_id": prepared.id}]}}
+    db.whole_tasks.insert_one(
+        {"_id": "wtask_1", "input": {"product_asset_ids": [prepared.id]}}
     )
     request = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(db=db, store=store))

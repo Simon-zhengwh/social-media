@@ -19,10 +19,9 @@ from PIL import Image, ImageOps
 
 from app.config import PROJECT_DIR, Settings, get_settings
 from app.db import create_client, get_database
-from app.routes import tasks as task_routes
 from app.routes import whole_image as whole_routes
-from app.schemas import PromptOptimizeRequest, TaskCreate, WholeImageTaskCreate
-from app.services import brand_style, pipeline, prompt_optimizer, storage
+from app.schemas import PromptOptimizeRequest, WholeImageTaskCreate
+from app.services import brand_style, prompt_optimizer, storage
 from app.services import whole_image as whole_service
 from app.services.core_ai import CoreAIClient
 from app.services.object_store import LocalObjectStore
@@ -34,8 +33,9 @@ DEFAULT_ASSETS = (
 )
 DEFAULT_BASELINE = PROJECT_DIR / "素材" / "基准图.png"
 DEFAULT_BRAND_SKILL = PROJECT_DIR / ".agents" / "skills" / "seejoy-brand-poster"
-TARGETS = {"layered": 30, "whole_image": 50}
-WORKFLOW_LABELS = {"layered": "海报生成（分层）", "whole_image": "自由设计（整图）"}
+WORKFLOW = "whole_image"
+TARGETS = {WORKFLOW: 50}
+WORKFLOW_LABELS = {WORKFLOW: "自由设计（整图）"}
 DIMENSIONS = (
     ("information_accuracy", "任务与信息准确性", 25),
     ("composition_hierarchy", "构图与信息层级", 20),
@@ -131,7 +131,6 @@ def _settings_for_run(base: Settings, run_dir: Path, database: str) -> Settings:
             "cos_bucket": "",
             "cos_region": "",
             "llm_timeout_seconds": max(int(base.llm_timeout_seconds), 240),
-            "component_generation_enabled": False,
         }
     )
 
@@ -300,9 +299,7 @@ def _guidance_from_best(run_dir: Path, state: dict[str, Any], workflow: str) -> 
 def generate_round(args: argparse.Namespace) -> dict[str, Any]:
     run_dir = Path(args.run_dir).resolve()
     state = load_state(run_dir)
-    workflow = args.workflow
-    if workflow not in TARGETS:
-        raise LoopError("workflow 必须是 layered 或 whole_image")
+    workflow = WORKFLOW
     info = state["workflows"][workflow]
     if info["complete"]:
         return {"complete": True, "workflow": workflow}
@@ -330,7 +327,6 @@ def generate_round(args: argparse.Namespace) -> dict[str, Any]:
             guidance = guidance_file.read_text(encoding="utf-8") if guidance_file else None
             guidance = guidance or _guidance_from_best(run_dir, state, workflow)
             request = PromptOptimizeRequest(
-                workflow=workflow,
                 prompt=base_prompt,
                 brand_mode=state["brand_mode"],
                 brand_id=state["brand_id"],
@@ -344,53 +340,29 @@ def generate_round(args: argparse.Namespace) -> dict[str, Any]:
                 db, settings, store, client, request=request, revision_guidance=guidance
             )
             request_state = _request_state(db, settings, store, client)
-            if workflow == "whole_image":
-                created = whole_routes.create_task(
-                    WholeImageTaskCreate(
-                        prompt=prompt,
-                        ratio="3:4",
-                        product_asset_ids=state["product_asset_ids"],
-                        brand_id=state["brand_id"],
-                        brand_mode="preset",
-                        candidate_count=1,
-                        platform_id=state["platform_id"],
-                        placement_id=state["placement_id"],
-                    ),
-                    request_state,
-                    BackgroundTasks(),
+            created = whole_routes.create_task(
+                WholeImageTaskCreate(
+                    prompt=prompt,
+                    ratio="3:4",
+                    product_asset_ids=state["product_asset_ids"],
+                    brand_id=state["brand_id"],
+                    brand_mode="preset",
+                    candidate_count=1,
+                    platform_id=state["platform_id"],
+                    placement_id=state["placement_id"],
+                ),
+                request_state,
+                BackgroundTasks(),
+            )
+            task_id = str(created["id"])
+            whole_service.run_generation(db, settings, store, client, task_id)
+            task = db.whole_tasks.find_one({"_id": task_id})
+            if not task or task.get("status") != "succeeded":
+                raise LoopError(
+                    "整图生成失败：" + str((task or {}).get("error") or "任务未成功完成")
                 )
-                task_id = str(created["id"])
-                whole_service.run_generation(db, settings, store, client, task_id)
-                task = db.whole_tasks.find_one({"_id": task_id})
-                if not task or task.get("status") != "succeeded":
-                    raise LoopError(
-                        "整图生成失败：" + str((task or {}).get("error") or "任务未成功完成")
-                    )
-                version = db.whole_versions.find_one({"task_id": task_id, "version": 1})
-                output_id = str((version or {}).get("output_asset_id") or "")
-            else:
-                created = task_routes.create_task(
-                    TaskCreate(
-                        prompt=prompt,
-                        product_asset_ids=state["product_asset_ids"],
-                        brand_id=state["brand_id"],
-                        brand_mode="preset",
-                        candidate_count=1,
-                        generation_mode="reference_guided",
-                        platform_id=state["platform_id"],
-                        placement_id=state["placement_id"],
-                    ),
-                    request_state,
-                    BackgroundTasks(),
-                )
-                task_id = str(created["id"])
-                pipeline.run_task(db, settings, store, client, task_id)
-                task = db.tasks.find_one({"_id": task_id})
-                if not task or task.get("status") != "succeeded":
-                    raise LoopError(
-                        "分层海报生成失败：" + str((task or {}).get("error") or "任务未成功完成")
-                    )
-                output_id = str(task.get("output_asset_id") or "")
+            version = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+            output_id = str((version or {}).get("output_asset_id") or "")
             if not output_id:
                 raise LoopError("生成任务没有输出图片")
             data = _store_asset_bytes(db, store, output_id)
@@ -494,7 +466,7 @@ def _validate_score(score: dict[str, Any], workflow: str, round_number: int) -> 
 def score_round(args: argparse.Namespace) -> dict[str, Any]:
     run_dir = Path(args.run_dir).resolve()
     state = load_state(run_dir)
-    workflow = args.workflow
+    workflow = WORKFLOW
     info = state["workflows"][workflow]
     if info["complete"]:
         raise LoopError("该工作流已经完成")
@@ -524,10 +496,8 @@ def score_round(args: argparse.Namespace) -> dict[str, Any]:
 def finalize_run(args: argparse.Namespace) -> dict[str, Any]:
     run_dir = Path(args.run_dir).resolve()
     state = load_state(run_dir)
-    workflow, raw_round = args.winner.split(":", 1)
-    if workflow not in TARGETS:
-        raise LoopError("winner 必须是 workflow:round")
-    round_number = int(raw_round)
+    workflow = WORKFLOW
+    round_number = int(args.round)
     round_dir = run_dir / "rounds" / workflow / f"round-{round_number:03d}"
     if not (round_dir / "score.json").is_file():
         raise LoopError("冠军轮次缺少评分")
@@ -545,16 +515,11 @@ def finalize_run(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _copy_best_files(run_dir: Path, state: dict[str, Any]) -> None:
-    for workflow, filename in (
-        ("layered", "best-poster.png"),
-        ("whole_image", "best-whole-image.png"),
-    ):
-        info = state["workflows"][workflow]
-        if not info.get("best_round"):
-            continue
-        source = run_dir / "rounds" / workflow / f"round-{int(info['best_round']):03d}" / "generated.png"
+    info = state["workflows"][WORKFLOW]
+    if info.get("best_round"):
+        source = run_dir / "rounds" / WORKFLOW / f"round-{int(info['best_round']):03d}" / "generated.png"
         if source.is_file():
-            shutil.copy2(source, run_dir / filename)
+            shutil.copy2(source, run_dir / "best-whole-image.png")
     winner = state.get("overall_winner")
     if winner:
         source = run_dir / "rounds" / winner["workflow"] / f"round-{int(winner['round']):03d}" / "generated.png"
@@ -660,7 +625,7 @@ def curate_run(args: argparse.Namespace) -> dict[str, Any]:
     curated_root = run_dir / "curated"
     if curated_root.exists():
         shutil.rmtree(curated_root)
-    limits = {"layered": int(args.poster_limit), "whole_image": int(args.whole_limit)}
+    limits = {WORKFLOW: int(args.whole_limit)}
     state["curation"] = {"created_at": utcnow(), "limits": dict(limits), "items": {}}
     for workflow, limit in limits.items():
         ranked = _ranked_rounds(run_dir, workflow, limit)
@@ -792,14 +757,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     generate = sub.add_parser("optimize-and-generate")
     generate.add_argument("--run-dir", required=True)
-    generate.add_argument("--workflow", required=True, choices=sorted(TARGETS))
     generate.add_argument("--guidance-file")
     generate.add_argument("--dry-run", action="store_true")
     generate.set_defaults(func=generate_round)
 
     score = sub.add_parser("score")
     score.add_argument("--run-dir", required=True)
-    score.add_argument("--workflow", required=True, choices=sorted(TARGETS))
     score.add_argument("--score-file", required=True)
     score.set_defaults(func=score_round)
 
@@ -815,7 +778,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     curate = sub.add_parser("curate")
     curate.add_argument("--run-dir", required=True)
-    curate.add_argument("--poster-limit", type=int, default=10)
     curate.add_argument("--whole-limit", type=int, default=15)
     curate.set_defaults(func=curate_run)
 
@@ -825,7 +787,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     finalize = sub.add_parser("finalize")
     finalize.add_argument("--run-dir", required=True)
-    finalize.add_argument("--winner", required=True, help="workflow:round")
+    finalize.add_argument("--round", required=True, type=int)
     finalize.set_defaults(func=finalize_run)
     return parser
 

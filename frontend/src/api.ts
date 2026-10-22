@@ -4,13 +4,11 @@ import type {
   BrandDetail,
   BrandMode,
   BrandStyle,
-  LayerPatch,
   MerchantInfo,
+  ImageModel,
   PlatformPreset,
   Ratio,
   SampleImportResult,
-  Task,
-  VersionSummary,
   WholeImageTask,
   WholeImageVersion,
 } from './types'
@@ -84,6 +82,8 @@ export type UpdateBrandPayload = {
   name: string
   short_name: string
   summary: string
+  platform: string
+  note: string
   layout_guide: string
   background_guide: string
   logo_keywords: string[]
@@ -135,22 +135,6 @@ export async function uploadAsset(file: File, kind: AssetKind): Promise<Asset> {
   return parseResponse<Asset>(response)
 }
 
-export type CreateTaskPayload = {
-  product_asset_ids: string[]
-  brand_id?: string | null
-  brand_mode?: BrandMode
-  style_reference_asset_ids?: string[]
-  candidate_count?: number
-  candidate_batch_id?: string | null
-  candidate_index?: number
-  prompt?: string
-  ratio?: Ratio
-  generation_mode?: 'classic' | 'reference_guided'
-  platform_id?: string | null
-  placement_id?: string | null
-  merchant_info?: MerchantInfo | null
-}
-
 export async function deleteAsset(assetId: string, force = false): Promise<void> {
   const query = force ? '?force=true' : ''
   const response = await fetch(`/api/assets/${encodeURIComponent(assetId)}${query}`, {
@@ -161,85 +145,8 @@ export async function deleteAsset(assetId: string, force = false): Promise<void>
   }
 }
 
-export async function createTask(payload: CreateTaskPayload): Promise<Task> {
-  const response = await fetch('/api/tasks', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return parseResponse<Task>(response)
-}
-
-export async function listTaskBatch(batchId: string): Promise<Task[]> {
-  const response = await fetch(`/api/tasks/batches/${encodeURIComponent(batchId)}`)
-  return parseResponse<Task[]>(response)
-}
-
-export async function getTask(taskId: string): Promise<Task> {
-  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`)
-  return parseResponse<Task>(response)
-}
-
-export async function resumeTask(taskId: string): Promise<Task> {
-  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/resume`, {
-    method: 'POST',
-  })
-  return parseResponse<Task>(response)
-}
-
-export async function createEdit(taskId: string, instruction: string): Promise<Task> {
-  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/edits`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ instruction }),
-  })
-  return parseResponse<Task>(response)
-}
-
-export async function patchLayer(
-  taskId: string,
-  layerId: string,
-  patch: LayerPatch,
-): Promise<Task> {
-  const response = await fetch(
-    `/api/tasks/${encodeURIComponent(taskId)}/layers/${encodeURIComponent(layerId)}`,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    },
-  )
-  return parseResponse<Task>(response)
-}
-
-export async function regenerateComponent(
-  taskId: string,
-  componentId: string,
-): Promise<Task> {
-  const response = await fetch(
-    `/api/tasks/${encodeURIComponent(taskId)}/components/${encodeURIComponent(componentId)}/regenerate`,
-    { method: 'POST' },
-  )
-  return parseResponse<Task>(response)
-}
-
-export async function listVersions(taskId: string): Promise<VersionSummary[]> {
-  const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/versions`)
-  return parseResponse<VersionSummary[]>(response)
-}
-
-export async function restoreVersion(
-  taskId: string,
-  version: number,
-): Promise<Task> {
-  const response = await fetch(
-    `/api/tasks/${encodeURIComponent(taskId)}/versions/${version}/restore`,
-    { method: 'POST' },
-  )
-  return parseResponse<Task>(response)
-}
-
 export type WholeImageTaskCreatePayload = {
+  image_model?: ImageModel
   prompt: string
   ratio?: Ratio
   brand_id?: string | null
@@ -317,7 +224,6 @@ export async function selectWholeImageVersion(
 }
 
 export type PromptOptimizePayload = {
-  workflow: 'layered' | 'whole_image'
   prompt: string
   brand_mode: BrandMode
   brand_id?: string | null

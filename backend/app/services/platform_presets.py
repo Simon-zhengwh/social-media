@@ -53,6 +53,11 @@ class Platform:
 
 GENERAL_SAFE_AREA = {"top": 0.05, "right": 0.05, "bottom": 0.05, "left": 0.05}
 STORY_SAFE_AREA = {"top": 0.15, "right": 0.06, "bottom": 0.20, "left": 0.06}
+FREEFORM_PLATFORM_CONTEXT = (
+    "发布平台未指定：请根据主题、素材、品牌规范和用户文案，"
+    "自主选择最合适的构图、信息层级与视觉方向；不要套用某个平台的专属规则，"
+    "也不要编造平台名称。"
+)
 
 PLATFORMS: tuple[Platform, ...] = (
     Platform(
@@ -69,7 +74,7 @@ PLATFORMS: tuple[Platform, ...] = (
         "instagram",
         "Instagram",
         "帖子、Story 与 Reels 共用一套品牌视觉",
-        "required",
+        "optional",
         "portrait",
         (
             Placement("portrait", "竖版帖子", "4:5", 1080, 1350, GENERAL_SAFE_AREA),
@@ -81,7 +86,7 @@ PLATFORMS: tuple[Platform, ...] = (
         "tiktok",
         "TikTok",
         "视频封面；为平台界面预留安全区",
-        "required",
+        "optional",
         "cover",
         (
             Placement("cover", "视频封面", "9:16", 1080, 1920, STORY_SAFE_AREA),
@@ -91,7 +96,7 @@ PLATFORMS: tuple[Platform, ...] = (
         "google-business-profile",
         "Google Business Profile",
         "商家动态与门店展示",
-        "required",
+        "optional",
         "update",
         (
             Placement("update", "商家动态", "4:3", 1440, 1080, GENERAL_SAFE_AREA),
@@ -101,7 +106,7 @@ PLATFORMS: tuple[Platform, ...] = (
         "meta-ads",
         "Meta 广告",
         "Feed、Story 与横版广告位",
-        "required",
+        "optional",
         "feed",
         (
             Placement("feed", "Feed", "4:5", 1080, 1350, GENERAL_SAFE_AREA),
@@ -155,10 +160,7 @@ def build_task_config(
     if ratio and ratio != placement.ratio:
         raise PlatformError("显式比例与平台预设不一致")
     merchant = _clean_merchant_info(merchant_info)
-    if platform.contact_policy == "required":
-        if not merchant or not merchant.get("address") or not merchant.get("phone"):
-            raise PlatformError("该平台必须填写商家地址和联系电话")
-    else:
+    if platform.contact_policy == "forbidden":
         merchant = None
     return {
         "platform": platform.public_dict(),
@@ -184,14 +186,21 @@ def prompt_context(
         lines.append("- 小红书图片中不得出现地址、电话、手机号、微信号、二维码或其他联系方式；不要编造联系信息。")
     else:
         merchant = merchant_info or {}
-        lines.extend(
-            [
-                "- 必须清晰展示以下真实商家信息，不得改写、拆分或编造：",
-                f"  - 地址：{merchant.get('address', '')}",
-                f"  - 电话：{merchant.get('phone', '')}",
-            ]
-        )
+        address = str(merchant.get("address") or "").strip()
+        phone = str(merchant.get("phone") or "").strip()
+        if address or phone:
+            lines.append("- 商家地址和联系电话为选填项；如画面需要展示，只能使用以下真实信息，不得改写、拆分或编造：")
+            if address:
+                lines.append(f"  - 地址：{address}")
+            if phone:
+                lines.append(f"  - 电话：{phone}")
+        else:
+            lines.append("- 商家地址和联系电话均为选填项；用户未提供时不要编造或添加联系方式。")
     return "\n".join(lines)
+
+
+def freeform_context() -> str:
+    return FREEFORM_PLATFORM_CONTEXT
 
 
 def prompt_from_task(
@@ -200,7 +209,7 @@ def prompt_from_task(
     placement_snapshot: dict[str, Any] | None = None,
 ) -> str:
     if not isinstance(platform_snapshot, dict) or not platform_snapshot.get("id"):
-        return ""
+        return freeform_context()
     placement_id = (
         str(placement_snapshot.get("id") or "")
         if isinstance(placement_snapshot, dict)
@@ -215,7 +224,7 @@ def ensure_merchant_copy_items(
     platform_snapshot: dict[str, Any] | None,
     merchant_info: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    if not isinstance(platform_snapshot, dict) or platform_snapshot.get("contact_policy") != "required":
+    if not isinstance(platform_snapshot, dict) or platform_snapshot.get("contact_policy") == "forbidden":
         return copy_items
     merchant = merchant_info or {}
     items = list(copy_items)

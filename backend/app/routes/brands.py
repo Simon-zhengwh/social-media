@@ -59,6 +59,8 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         "name": brand.name,
         "short_name": brand.short_name,
         "summary": brand.summary,
+        "platform": brand.platform,
+        "note": brand.note,
         "is_default": brand.is_default,
         "cover_url": f"/api/brands/{brand.id}/cover" if cover_asset_id else None,
         "cover_asset_id": cover_asset_id,
@@ -100,7 +102,7 @@ def update_brand(
 ) -> dict[str, Any]:
     db = request.app.state.db
     document = _brand_document(db, brand_id)
-    reference_ids = list(document.get("reference_asset_ids") or [])[:3]
+    reference_ids = list(document.get("reference_asset_ids") or [])[:brand_style.MAX_BRAND_REFERENCES]
     if payload.cover_asset_id and payload.cover_asset_id not in reference_ids:
         raise HTTPException(status_code=422, detail="封面必须来自当前品牌的参考图")
     if payload.is_default:
@@ -116,6 +118,8 @@ def update_brand(
                 "name": payload.name.strip(),
                 "short_name": payload.short_name.strip() or payload.name.strip(),
                 "summary": payload.summary.strip(),
+                "platform": payload.platform.strip(),
+                "note": payload.note.strip(),
                 "layout_guide": payload.layout_guide.strip(),
                 "background_guide": payload.background_guide.strip(),
                 "logo_keywords": payload.logo_keywords,
@@ -138,12 +142,12 @@ def upload_reference(
     settings = request.app.state.settings
     store = request.app.state.store
     document = _brand_document(db, brand_id)
-    reference_ids = list(document.get("reference_asset_ids") or [])[:3]
-    if len(reference_ids) >= 3:
-        raise HTTPException(status_code=422, detail="品牌参考图最多 3 张")
+    reference_ids = list(document.get("reference_asset_ids") or [])[:brand_style.MAX_BRAND_REFERENCES]
+    if len(reference_ids) >= brand_style.MAX_BRAND_REFERENCES:
+        raise HTTPException(status_code=422, detail=f"品牌参考图最多 {brand_style.MAX_BRAND_REFERENCES} 张")
     data = file.file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
-        raise HTTPException(status_code=413, detail="文件超过 10 MB 限制")
+        raise HTTPException(status_code=413, detail=f"文件超过 {settings.max_upload_bytes / 1_000_000:g} MB 限制")
     digest = hashlib.sha256(data).hexdigest()
     asset = db.assets.find_one({"kind": "brand_reference", "sha256": digest})
     if asset is None:
