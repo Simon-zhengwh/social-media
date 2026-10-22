@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { optimizePrompt, type PromptOptimizePayload } from '../api'
 
@@ -13,7 +13,7 @@ type Props = {
   canOptimize: boolean
   optimizationBlockedReason?: string
   optimizeContext: Omit<PromptOptimizePayload, 'prompt'>
-  onPromptChange: (value: string) => void
+  onPromptChange: (value: string, optimized?: boolean) => void
 }
 
 function SparkleIcon() {
@@ -60,6 +60,11 @@ export default function PromptField({
   const [optimizing, setOptimizing] = useState(false)
   const [optimizeError, setOptimizeError] = useState<string | null>(null)
   const [optimizeNotice, setOptimizeNotice] = useState<string | null>(null)
+  const contextKey = JSON.stringify(optimizeContext)
+  const latestContextKey = useRef(contextKey)
+  useEffect(() => {
+    latestContextKey.current = contextKey
+  }, [contextKey])
   const disabled = busy || optimizing
   const iconDisabled = disabled || !canOptimize
 
@@ -78,7 +83,11 @@ export default function PromptField({
     setOptimizeNotice(null)
     try {
       const result = await optimizePrompt({ ...optimizeContext, prompt })
-      onPromptChange(result.prompt)
+      if (contextKey !== latestContextKey.current) {
+        setOptimizeError('生成条件已变化，请重新优化提示词')
+        return
+      }
+      onPromptChange(result.prompt, true)
       setOptimizeNotice('AI 已更新提示词，可再次点击继续优化。')
     } catch (reason: unknown) {
       setOptimizeError(reason instanceof Error ? reason.message : '提示词优化失败，请稍后重试')

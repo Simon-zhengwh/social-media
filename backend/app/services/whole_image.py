@@ -31,6 +31,11 @@ GENERATION_SYSTEM_PROMPT = (
     "of subjects or identity. "
     "Return the final complete image only."
 )
+OPTIMIZED_GENERATION_SYSTEM_PROMPT = (
+    "Create one complete, polished image following the user request. "
+    "Use the attached images only for the roles stated below. "
+    "Reproduce requested text verbatim. Return the final image only."
+)
 
 EDIT_SYSTEM_PROMPT = (
     "Edit the provided image according to the user's instruction. Preserve the "
@@ -184,6 +189,8 @@ def _load_reference_images(
     store: ObjectStore,
     input_data: dict[str, Any],
     brand: dict[str, Any] | None = None,
+    *,
+    include_style: bool = True,
 ) -> list[ImageRef]:
     references: list[ImageRef] = []
     for asset_id in list(input_data.get("product_asset_ids") or [])[:4]:
@@ -194,6 +201,8 @@ def _load_reference_images(
             references.append(image_ref_from_asset(db, store, str(asset_id)))
         except Exception as exc:  # noqa: BLE001 - surface a clear user error
             raise StudioError("reference_missing", str(exc), 422) from exc
+    if not include_style:
+        return references
     style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
     if input_data.get("brand_mode") == "preset" and brand:
         style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
@@ -245,16 +254,19 @@ def _model_input_images(
     input_data: dict[str, Any],
     brand: dict[str, Any] | None = None,
     source_asset_id: str | None = None,
+    *,
+    include_style: bool = True,
 ) -> list[dict[str, str]]:
     images: list[dict[str, str]] = []
     asset_ids = [
         (asset_id, None)
         for asset_id in list(input_data.get("product_asset_ids") or [])[:4]
     ]
-    style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
-    if input_data.get("brand_mode") == "preset" and brand:
-        style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
-    asset_ids.extend((asset_id, None) for asset_id in dict.fromkeys(style_ids))
+    if include_style:
+        style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
+        if input_data.get("brand_mode") == "preset" and brand:
+            style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
+        asset_ids.extend((asset_id, None) for asset_id in dict.fromkeys(style_ids))
     if source_asset_id:
         asset_ids.append((source_asset_id, "current_design"))
 
@@ -393,9 +405,12 @@ def run_generation(
     asset_id: str | None = None
     try:
         input_data = claimed.get("input") or {}
+        optimized = input_data.get("prompt_optimized") is True
         image_model = str(input_data.get("image_model") or settings.core_ai_image_model)
         brand = claimed.get("brand") if isinstance(claimed.get("brand"), dict) else {}
-        reference_images = _load_reference_images(db, store, input_data, brand)
+        reference_images = _load_reference_images(
+            db, store, input_data, brand, include_style=not optimized
+        )
         product_count = min(len(input_data.get("product_asset_ids") or []), 4)
         reference_role_block = _reference_role_guidance(
             product_count, len(reference_images)
@@ -404,7 +419,7 @@ def run_generation(
             f"\n\n{reference_role_block}" if reference_role_block else ""
         )
         brand_context = ""
-        if brand.get("name"):
+        if not optimized and brand.get("name"):
             brand_context = (
                 f"\n\nBrand context: {brand.get('name')}. "
                 f"{str(brand.get('summary') or '').strip()}\n"
@@ -420,12 +435,22 @@ def run_generation(
                 )
             )
         merchant_info = input_data.get("merchant_info") if isinstance(input_data.get("merchant_info"), dict) else None
-        platform_context = platform_presets.prompt_from_task(
-            claimed.get("platform"), merchant_info, claimed.get("placement")
-        )
+        if optimized:
+            canvas = claimed.get("canvas") or {}
+            platform_context = (
+                f"Canvas: {canvas.get('width')}×{canvas.get('height')}; "
+                f"aspect ratio {input_data.get('ratio')}."
+            )
+            if (claimed.get("platform") or {}).get("contact_policy") == "forbidden":
+                platform_context += " 小红书图片不得出现地址、电话、微信号、二维码或其他联系方式。"
+        else:
+            platform_context = platform_presets.prompt_from_task(
+                claimed.get("platform"), merchant_info, claimed.get("placement")
+            )
         platform_block = f"\n\n{platform_context}" if platform_context else ""
         prompt = (
-            f"{GENERATION_SYSTEM_PROMPT}{reference_role_block}"
+            f"{OPTIMIZED_GENERATION_SYSTEM_PROMPT if optimized else GENERATION_SYSTEM_PROMPT}"
+            f"{reference_role_block}"
             f"{brand_context}{platform_block}\n\nUser request:\n"
             f"{str(input_data.get('prompt') or '').strip()}"
         ).strip()
@@ -445,7 +470,9 @@ def run_generation(
                 "n": 1,
                 "output_format": "png",
             },
-            "images": _model_input_images(db, input_data, brand),
+            "images": _model_input_images(
+                db, input_data, brand, include_style=not optimized
+            ),
         }
         db.whole_tasks.update_one(
             {"_id": task_id},

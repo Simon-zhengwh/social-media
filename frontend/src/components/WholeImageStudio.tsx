@@ -115,6 +115,7 @@ export default function WholeImageStudio({
   const [selectedRatio, setSelectedRatio] = useState<Ratio>('9:16')
   const [merchantInfo, setMerchantInfo] = useState<MerchantInfo>({ address: '', phone: '' })
   const [prompt, setPrompt] = useState('')
+  const [promptOptimized, setPromptOptimized] = useState(false)
   const [imageModel, setImageModel] = useState(DEFAULT_IMAGE_MODEL)
   const [candidateCount, setCandidateCount] = useState(3)
   const [candidateTasks, setCandidateTasks] = useState<WholeImageTask[]>([])
@@ -165,6 +166,7 @@ export default function WholeImageStudio({
         }
         setTask(restored)
         setPrompt(restored.input.prompt ?? '')
+        setPromptOptimized(restored.input.prompt_optimized === true)
         setSelectedRatio(restored.input.ratio ?? '9:16')
         setImageModel(restored.input.image_model ?? DEFAULT_IMAGE_MODEL)
         setCandidateCount(restored.input.candidate_count ?? 3)
@@ -289,11 +291,14 @@ export default function WholeImageStudio({
   const busy = creating || active || editRunning
   const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id)
 
-  const handleGenerate = async () => {
+  const handleGenerate = async (
+    promptOverride = prompt,
+    optimizedOverride = promptOptimized,
+  ) => {
     if (submitLock.current || busy) {
       return
     }
-    if (!prompt.trim()) {
+    if (!promptOverride.trim()) {
       setError('请先填写设计需求')
       return
     }
@@ -322,7 +327,8 @@ export default function WholeImageStudio({
         Array.from({ length: candidateCount }, (_, index) =>
           createWholeImageTask({
             image_model: imageModel,
-            prompt,
+            prompt: promptOverride,
+            prompt_optimized: optimizedOverride,
             brand_id: brandMode === 'preset' ? effectiveBrandId : null,
             brand_mode: brandMode,
             style_reference_asset_ids:
@@ -382,7 +388,8 @@ export default function WholeImageStudio({
     }
     if (task.status === 'failed') {
       setPrompt(task.input.prompt ?? prompt)
-      await handleGenerate()
+      setPromptOptimized(task.input.prompt_optimized === true)
+      await handleGenerate(task.input.prompt ?? prompt, task.input.prompt_optimized === true)
     }
   }
 
@@ -410,10 +417,12 @@ export default function WholeImageStudio({
   const handleBrandChange = (brandId: string) => {
     setSelectedBrandId(brandId)
     setBrandMode('preset')
+    setPromptOptimized(false)
   }
 
   const handleBrandModeChange = (mode: BrandMode) => {
     setBrandMode(mode)
+    setPromptOptimized(false)
     if (mode === 'preset' && !selectedBrandId) {
       setSelectedBrandId(
         brands.find((brand) => brand.is_default)?.id ?? brands[0]?.id ?? '',
@@ -432,6 +441,7 @@ export default function WholeImageStudio({
         accepted.map((file) => uploadAsset(file, 'brand_reference')),
       )
       setStyleReferences((previous) => [...previous, ...uploaded].slice(0, 3))
+      setPromptOptimized(false)
     } catch (reason: unknown) {
       setError(errorMessage(reason))
     } finally {
@@ -471,23 +481,38 @@ export default function WholeImageStudio({
         onBrandChange={handleBrandChange}
         onBrandModeChange={handleBrandModeChange}
         onUploadStyleReferences={(files) => void handleUploadStyleReferences(files)}
-        onRemoveStyleReference={(assetId) =>
+        onRemoveStyleReference={(assetId) => {
           setStyleReferences((previous) => previous.filter((asset) => asset.id !== assetId))
-        }
+          setPromptOptimized(false)
+        }}
         onPlatformChange={(platformId) => {
           const next = platforms.find((item) => item.id === platformId)
           setSelectedPlatformId(platformId)
           setSelectedPlacementId(next?.default_placement_id ?? '')
+          setPromptOptimized(false)
         }}
-        onPlacementChange={setSelectedPlacementId}
-        onRatioChange={setSelectedRatio}
-        onMerchantChange={setMerchantInfo}
+        onPlacementChange={(value) => {
+          setSelectedPlacementId(value)
+          setPromptOptimized(false)
+        }}
+        onRatioChange={(value) => {
+          setSelectedRatio(value)
+          setPromptOptimized(false)
+        }}
+        onMerchantChange={(value) => {
+          setMerchantInfo(value)
+          setPromptOptimized(false)
+        }}
         onPickProducts={openPicker}
-        onRemoveProduct={(id) =>
+        onRemoveProduct={(id) => {
           setProducts((previous) => previous.filter((item) => item.id !== id))
-        }
+          setPromptOptimized(false)
+        }}
         onImageModelChange={setImageModel}
-        onPromptChange={setPrompt}
+        onPromptChange={(value, optimized) => {
+          setPrompt(value)
+          setPromptOptimized(optimized === true)
+        }}
         onCandidateCountChange={setCandidateCount}
         onGoAssets={onGoAssets}
         onGenerate={() => void handleGenerate()}
@@ -566,6 +591,7 @@ export default function WholeImageStudio({
         onClose={() => setPickerKind(null)}
         onConfirm={(selected) => {
           setProducts(selected)
+          setPromptOptimized(false)
           setPickerKind(null)
         }}
         onGoAssets={() => {

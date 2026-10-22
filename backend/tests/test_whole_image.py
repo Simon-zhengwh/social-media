@@ -284,6 +284,46 @@ def test_generation_separates_subject_images_from_style_only_references(
     ]
 
 
+def test_optimized_prompt_is_sent_without_duplicate_style_context(
+    settings, store, product_png
+):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "person.png")
+    style = _seed_style_reference(db, settings, store, product_png, "style.png")
+    _seed_default_brand(db)
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {"reference_asset_ids": [style.id]}})
+    optimized = "完整优化提示词：深绿色品牌海报，保留人物身份，标题『粉丝专享』。"
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt=optimized,
+            prompt_optimized=True,
+            product_asset_ids=[product.id],
+            brand_id="seejoy",
+            brand_mode="preset",
+            platform_id="xiaohongshu",
+        ),
+        _request(db, settings, store, fake),
+        BackgroundTasks(),
+    )
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    task = db.whole_tasks.find_one({"_id": created["id"]})
+    sent = fake.edit_calls[0]
+    assert task["input"]["prompt_optimized"] is True
+    assert sent["reference_names"] == ["person.png"]
+    assert sent["prompt"].endswith(optimized)
+    assert "TEST LAYOUT GUIDE" not in sent["prompt"]
+    assert "TEST BACKGROUND GUIDE" not in sent["prompt"]
+    assert "Style-only reference image" not in sent["prompt"]
+    assert "1080×1440" in sent["prompt"]
+    assert "不得出现地址" in sent["prompt"]
+    assert task["model_input_latest"]["images"] == [
+        {"asset_id": product.id, "name": "person.png", "kind": "product"}
+    ]
+
+
 def test_failed_generation_exposes_the_attempted_model_input(settings, store, product_png):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()

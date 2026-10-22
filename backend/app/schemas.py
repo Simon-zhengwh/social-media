@@ -65,6 +65,7 @@ class BrandUpdate(BaseModel):
 class WholeImageTaskCreate(BaseModel):
     image_model: ImageModel = "gpt-image-2.5-sunburst"
     prompt: str = Field(min_length=1, max_length=5000)
+    prompt_optimized: bool = False
     ratio: Literal["1:1", "9:16", "4:5", "16:9", "3:4", "4:3"] = "9:16"
     product_asset_ids: list[str] = Field(default_factory=list, max_length=4)
     brand_id: str | None = Field(default=None, max_length=64)

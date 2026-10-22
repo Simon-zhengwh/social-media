@@ -245,6 +245,7 @@ def create_task(
         "input": {
             "image_model": payload.image_model,
             "prompt": payload.prompt,
+            "prompt_optimized": payload.prompt_optimized,
             "ratio": ratio,
             "product_asset_ids": product_ids,
             "brand_id": brand.id if brand else None,

@@ -122,6 +122,7 @@ export type WholeImageTask = {
   input: {
     image_model?: ImageModel
     prompt?: string
+    prompt_optimized?: boolean
     ratio?: Ratio
     product_asset_ids?: string[]
     brand_id?: string

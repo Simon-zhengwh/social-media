@@ -148,6 +148,7 @@ export async function deleteAsset(assetId: string, force = false): Promise<void>
 export type WholeImageTaskCreatePayload = {
   image_model?: ImageModel
   prompt: string
+  prompt_optimized?: boolean
   ratio?: Ratio
   brand_id?: string | null
   brand_mode?: BrandMode
