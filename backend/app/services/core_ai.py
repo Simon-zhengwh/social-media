@@ -145,6 +145,43 @@ class CoreAIClient:
             raise CoreAIError("invalid_response", "core-ai 返回内容不是 JSON 对象")
         return payload
 
+    def run_agent(self, agent_id: str, input_text: str, *, timeout_seconds: int) -> str:
+        """Trigger a published Core AI agent and wait for its terminal run status."""
+        if not self.settings.core_ai_api_key:
+            raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
+        base = self.settings.core_ai_server_base_url.rstrip("/")
+        try:
+            response = self._client.post(
+                f"{base}/api/runs/agent/{agent_id}/trigger",
+                json={"input": input_text},
+                timeout=min(timeout_seconds, 30),
+            )
+            run = self._json_or_error(response)
+            run_id = run.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                raise CoreAIError("invalid_agent_run", "Agent 未返回有效 run_id")
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                response = self._client.get(f"{base}/api/runs/{run_id}", timeout=30)
+                detail = self._json_or_error(response)
+                status = detail.get("status")
+                if status == "COMPLETED":
+                    output = detail.get("output")
+                    if isinstance(output, str) and output.strip():
+                        return output
+                    raise CoreAIError("prompt_optimizer_empty", "Agent 没有返回提示词")
+                if status in {"FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}:
+                    message = str(detail.get("error") or "Agent 运行失败")
+                    raise CoreAIError("agent_run_failed", f"提示词 Agent 运行失败：{message}")
+                if status not in {"PENDING", "RUNNING"}:
+                    raise CoreAIError("invalid_agent_run", "Agent 返回了未知运行状态")
+                time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+        except httpx.TimeoutException as exc:
+            raise CoreAIError("agent_timeout", "提示词 Agent 请求超时，请查看运行记录", 504) from exc
+        except httpx.HTTPError as exc:
+            raise CoreAIError("agent_unavailable", f"无法连接提示词 Agent：{exc}") from exc
+        raise CoreAIError("agent_timeout", f"提示词 Agent 等待超时（run_id: {run_id}）", 504)
+
     def generate_image(
         self,
         prompt: str,

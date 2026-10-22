@@ -6,21 +6,56 @@ import mongomock
 import pytest
 from pydantic import ValidationError
 
+from app.config import PROJECT_DIR, Settings
 from app.schemas import PromptOptimizeRequest
 from app.services import prompt_optimizer, storage
 from app.services.core_ai import CoreAIError
+from app.services.object_store import CosObjectStore
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return Settings(
+        storage_dir=str(tmp_path / "storage"), sample_dir=str(PROJECT_DIR / "素材"),
+        core_ai_api_key="test-key", cos_secret_id="test", cos_secret_key="test",
+        cos_bucket="test-bucket", cos_region="ap-guangzhou",
+    )
+
+
+class FakeCosStore(CosObjectStore):
+    def __init__(self):
+        self.objects = {}
+
+    def put_bytes(self, key, data, content_type="application/octet-stream"):
+        self.objects[key] = data
+
+    def get_bytes(self, key):
+        return self.objects[key]
+
+    def local_path(self, key):
+        return None
+
+    def presign(self, key, expires, download_name=None):
+        assert key in self.objects
+        assert expires >= 190
+        return f"https://test-bucket.cos.ap-guangzhou.myqcloud.com/{key}?signed=1"
+
+
+@pytest.fixture
+def store():
+    return FakeCosStore()
 
 
 class FakeCoreAI:
     def __init__(self, response: dict | None = None) -> None:
-        self.response = response or {"prompt": "优化后的中文海报提示词"}
+        self.response = response if response is not None else {"prompt": "优化后的中文海报提示词"}
         self.calls: list[dict] = []
 
-    def chat_json(self, messages, *, model=None, timeout_seconds=None):
-        self.calls.append(
-            {"messages": messages, "model": model, "timeout_seconds": timeout_seconds}
-        )
-        return self.response
+    def run_agent(self, agent_id, input_text, *, timeout_seconds):
+        import json
+
+        self.calls.append({"agent_id": agent_id, "input": input_text, "timeout_seconds": timeout_seconds})
+        return json.dumps(self.response, ensure_ascii=False)
 
 
 def _seed_asset(db, settings, store, name: str, kind: str, color: tuple[int, int, int]):
@@ -125,11 +160,10 @@ def test_blank_prompt_uses_products_brand_reference_and_xiaohongshu_rules(
     )
 
     assert result == "优化后的中文海报提示词"
-    messages = client.calls[0]["messages"]
-    content = messages[-1]["content"]
-    image_count = sum(1 for item in content if item.get("type") == "image_url")
-    assert image_count == 3
-    text = "\n".join(item.get("text", "") for item in content if item.get("type") == "text")
+    assert client.calls[0]["agent_id"] == settings.core_ai_prompt_agent_id
+    text = client.calls[0]["input"]
+    assert text.count("https://test-bucket.cos.") == 3
+    assert "data:image" not in text
     assert "当前提示词为空" in text
     assert "品牌：SEEJOY 喜聚" in text
     assert "使用毛笔主标题" in text
@@ -145,8 +179,7 @@ def test_unselected_platform_uses_freeform_guidance(settings, store, optimizer_d
 
     _optimize(db, settings, store, client, product_asset_ids=products)
 
-    content = client.calls[0]["messages"][-1]["content"]
-    text = "\n".join(item.get("text", "") for item in content if item.get("type") == "text")
+    text = client.calls[0]["input"]
     assert "发布平台未指定" in text
     assert "自主选择最合适的构图" in text
 
@@ -169,10 +202,9 @@ def test_reference_mode_uses_uploaded_style_images_without_preset_guide(
         product_asset_ids=products[:1],
     )
 
-    content = client.calls[0]["messages"][-1]["content"]
-    text = "\n".join(item.get("text", "") for item in content if item.get("type") == "text")
+    text = client.calls[0]["input"]
     assert "风格参考图 1" in text
-    assert "只参考其配色、构图、字体气质和氛围" in text
+    assert "只参考配色、构图、字体气质和氛围" in text
     assert "使用毛笔主标题" not in text
     assert "整图直接生成" in text
 
@@ -191,8 +223,7 @@ def test_optimizer_forwards_revision_guidance_for_benchmark(settings, store, opt
         revision_guidance="提高毛笔标题占比，修复日期小字乱码。",
     )
 
-    content = client.calls[0]["messages"][-1]["content"]
-    text = "\n".join(item.get("text", "") for item in content if item.get("type") == "text")
+    text = client.calls[0]["input"]
     assert "提高毛笔标题占比" in text
     assert "只做高影响改进" in text
 
@@ -208,6 +239,16 @@ def test_rejects_invalid_or_repeated_assets(settings, store, optimizer_db):
 
     with pytest.raises(prompt_optimizer.PromptOptimizerError):
         _optimize(db, settings, store, client, product_asset_ids=["missing"])
+    assert not client.calls
+
+
+def test_optimizer_requires_cos_for_agent_images(settings, store, optimizer_db):
+    db, products, _ = optimizer_db
+    client = FakeCoreAI()
+    local_settings = settings.model_copy(update={"cos_bucket": ""})
+    with pytest.raises(prompt_optimizer.PromptOptimizerError) as exc:
+        _optimize(db, local_settings, store, client, product_asset_ids=products)
+    assert exc.value.code == "cos_required"
     assert not client.calls
 
 
@@ -233,6 +274,13 @@ def test_rejects_empty_and_too_long_model_prompts(settings, store, optimizer_db)
             product_asset_ids=products,
         )
     assert too_long.value.code == "prompt_optimizer_too_long"
+
+    with pytest.raises(CoreAIError) as image_error:
+        _optimize(
+            db, settings, store, FakeCoreAI({"error": "无法读取参考图"}),
+            product_asset_ids=products,
+        )
+    assert image_error.value.code == "prompt_optimizer_agent_error"
 
 
 def test_optimizer_accepts_5000_character_input_and_output(settings, store, optimizer_db):

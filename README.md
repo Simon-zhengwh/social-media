@@ -96,7 +96,10 @@ SAMPLE_DIR=../素材
 SKILLS_DIR=../.agents/skills
 
 CORE_AI_GATEWAY_BASE_URL=https://core-ai-server.connexup-uat.net/api/gateway/v1
+CORE_AI_SERVER_BASE_URL=https://core-ai-server.connexup-uat.net
 CORE_AI_API_KEY=replace_me
+CORE_AI_PROMPT_AGENT_ID=9a7eb9c3-0d57-4841-83b2-ea9191ff8dd8
+CORE_AI_PROMPT_AGENT_TIMEOUT_SECONDS=190
 CORE_AI_IMAGE_MODEL=gpt-image-2.5-sunburst
 CORE_AI_DESIGN_MODEL=gpt-6.1-sol
 CORE_AI_IMAGE_QUALITY=high

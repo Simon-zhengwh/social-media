@@ -257,3 +257,39 @@ def test_gateway_timeout_is_result_unknown(settings):
         assert "可能已产生费用" in exc.value.message
     finally:
         client.close()
+
+
+def test_run_agent_triggers_and_reads_completed_output(settings):
+    paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        assert request.headers["Authorization"] == "Bearer test-key"
+        if request.method == "POST":
+            assert request.url.path == "/api/runs/agent/agent-1/trigger"
+            assert json.loads(request.content) == {"input": "设计海报"}
+            return httpx.Response(202, json={"run_id": "run-1", "status": "RUNNING"})
+        return httpx.Response(200, json={"status": "COMPLETED", "output": '{"prompt":"完成"}'})
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        assert client.run_agent("agent-1", "设计海报", timeout_seconds=10) == '{"prompt":"完成"}'
+    finally:
+        client.close()
+    assert paths == ["/api/runs/agent/agent-1/trigger", "/api/runs/run-1"]
+
+
+def test_run_agent_surfaces_failed_run(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, json={"run_id": "run-2", "status": "RUNNING"})
+        return httpx.Response(200, json={"status": "FAILED", "error": "image unavailable"})
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(CoreAIError) as exc:
+            client.run_agent("agent-1", "设计海报", timeout_seconds=10)
+        assert exc.value.code == "agent_run_failed"
+        assert "image unavailable" in exc.value.message
+    finally:
+        client.close()

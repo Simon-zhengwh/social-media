@@ -17,7 +17,10 @@ class Settings(BaseSettings):
     core_ai_gateway_base_url: str = (
         "https://core-ai-server.connexup-uat.net/api/gateway/v1"
     )
+    core_ai_server_base_url: str = "https://core-ai-server.connexup-uat.net"
     core_ai_api_key: str = ""
+    core_ai_prompt_agent_id: str = "9a7eb9c3-0d57-4841-83b2-ea9191ff8dd8"
+    core_ai_prompt_agent_timeout_seconds: int = 190
     core_ai_image_model: str = "gpt-image-2.5-sunburst"
     core_ai_design_model: str = "gpt-6.1-sol"
     core_ai_image_quality: str = "high"
