@@ -64,7 +64,7 @@ class BrandUpdate(BaseModel):
 
 class WholeImageTaskCreate(BaseModel):
     image_model: ImageModel = "gpt-image-2.5-sunburst"
-    prompt: str = Field(min_length=1, max_length=2000)
+    prompt: str = Field(min_length=1, max_length=5000)
     ratio: Literal["1:1", "9:16", "4:5", "16:9", "3:4", "4:3"] = "9:16"
     product_asset_ids: list[str] = Field(default_factory=list, max_length=4)
     brand_id: str | None = Field(default=None, max_length=64)
@@ -106,7 +106,7 @@ class WholeImageEditRequest(BaseModel):
 
 
 class PromptOptimizeRequest(BaseModel):
-    prompt: str = Field(default="", max_length=2000)
+    prompt: str = Field(default="", max_length=5000)
     brand_mode: Literal["preset", "reference", "none"] = "none"
     brand_id: str | None = Field(default=None, max_length=64)
     style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)

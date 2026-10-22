@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 import mongomock
 import pytest
+from pydantic import ValidationError
 
 from app.schemas import PromptOptimizeRequest
 from app.services import prompt_optimizer, storage
@@ -228,10 +229,22 @@ def test_rejects_empty_and_too_long_model_prompts(settings, store, optimizer_db)
             db,
             settings,
             store,
-            FakeCoreAI({"prompt": "长" * 2001}),
+            FakeCoreAI({"prompt": "长" * 5001}),
             product_asset_ids=products,
         )
     assert too_long.value.code == "prompt_optimizer_too_long"
+
+
+def test_optimizer_accepts_5000_character_input_and_output(settings, store, optimizer_db):
+    db, products, _ = optimizer_db
+    prompt = "长" * 5000
+    client = FakeCoreAI({"prompt": prompt})
+
+    assert _optimize(db, settings, store, client, prompt=prompt, product_asset_ids=products) == prompt
+    assert len(client.calls) == 1
+
+    with pytest.raises(ValidationError):
+        PromptOptimizeRequest(prompt=prompt + "长")
 
 
 

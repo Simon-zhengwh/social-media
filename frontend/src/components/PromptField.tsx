@@ -95,7 +95,7 @@ export default function PromptField({
       <span className={`prompt-textarea-wrap${optimizing ? ' is-optimizing' : ''}`}>
         <textarea
           value={prompt}
-          maxLength={2000}
+          maxLength={5000}
           rows={rows}
           placeholder={placeholder}
           onChange={(event) => handleChange(event.target.value)}

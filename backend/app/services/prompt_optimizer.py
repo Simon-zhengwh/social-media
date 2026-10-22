@@ -216,10 +216,10 @@ def optimize_prompt(
         if not isinstance(prompt, str) or not prompt.strip():
             raise CoreAIError("prompt_optimizer_empty", "提示词模型没有返回有效提示词", 502)
         prompt = prompt.strip()
-        if len(prompt) > 2000:
+        if len(prompt) > 5000:
             raise CoreAIError(
                 "prompt_optimizer_too_long",
-                "优化后的提示词超过 2000 字，请重试",
+                "优化后的提示词超过 5000 字，请重试",
                 502,
             )
         return prompt

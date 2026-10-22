@@ -681,6 +681,14 @@ def test_task_requires_non_blank_prompt():
         WholeImageTaskCreate(prompt="   ", ratio="1:1")
 
 
+def test_task_prompt_accepts_up_to_5000_characters():
+    prompt = "长" * 5000
+    assert WholeImageTaskCreate(prompt=prompt).prompt == prompt
+
+    with pytest.raises(ValidationError):
+        WholeImageTaskCreate(prompt=prompt + "长")
+
+
 
 def test_platform_whole_task_snapshots_rules_and_allows_contact_edit(settings, store):
     db = mongomock.MongoClient().db
