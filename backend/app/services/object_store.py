@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 import uuid
@@ -9,6 +10,9 @@ from typing import Protocol
 from qcloud_cos import CosConfig, CosS3Client, CosServiceError
 
 from app.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class ObjectStoreError(Exception):
@@ -36,7 +40,13 @@ class ObjectStore(Protocol):
 
 
 class CosObjectStore:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        client: CosS3Client | None = None,
+        cache_store: LocalObjectStore | None = None,
+    ) -> None:
         if not settings.cos_enabled:
             raise ObjectStoreError("COS 配置不完整")
         config = CosConfig(
@@ -46,7 +56,8 @@ class CosObjectStore:
             Scheme="https",
         )
         self.settings = settings
-        self.client = CosS3Client(config)
+        self.client = client or CosS3Client(config)
+        self.cache = cache_store or LocalObjectStore(settings.storage_path / "objects")
 
     def put_bytes(
         self,
@@ -54,6 +65,7 @@ class CosObjectStore:
         data: bytes,
         content_type: str = "application/octet-stream",
     ) -> None:
+        self.cache.put_bytes(key, data, content_type)
         try:
             self.client.put_object(
                 Bucket=self.settings.cos_bucket,
@@ -61,10 +73,12 @@ class CosObjectStore:
                 Key=key,
                 ContentType=content_type,
             )
-        except Exception as exc:  # noqa: BLE001 - COS SDK error surface
-            raise ObjectStoreError(f"COS 上传失败：{exc}") from exc
+        except Exception as exc:  # noqa: BLE001 - local mirror keeps uploads usable
+            logger.warning("COS upload failed; using local mirror for %s: %s", key, exc)
 
     def get_bytes(self, key: str) -> bytes:
+        if self.cache.exists(key):
+            return self.cache.get_bytes(key)
         try:
             response = self.client.get_object(
                 Bucket=self.settings.cos_bucket,
@@ -75,6 +89,8 @@ class CosObjectStore:
             raise ObjectStoreError(f"COS 读取失败：{exc}") from exc
 
     def exists(self, key: str) -> bool:
+        if self.cache.exists(key):
+            return True
         try:
             self.client.head_object(Bucket=self.settings.cos_bucket, Key=key)
             return True
@@ -84,13 +100,14 @@ class CosObjectStore:
             raise ObjectStoreError(f"COS 检查失败：{exc}") from exc
 
     def delete(self, key: str) -> None:
+        self.cache.delete(key)
         try:
             self.client.delete_object(Bucket=self.settings.cos_bucket, Key=key)
         except CosServiceError as exc:
             if str(exc.get_status_code()) != "404":
-                raise ObjectStoreError(f"COS 删除失败：{exc}") from exc
+                logger.warning("COS delete failed; local mirror was removed for %s: %s", key, exc)
         except Exception as exc:  # noqa: BLE001
-            raise ObjectStoreError(f"COS 删除失败：{exc}") from exc
+            logger.warning("COS delete failed; local mirror was removed for %s: %s", key, exc)
 
     def presign(
         self,
@@ -123,7 +140,8 @@ class CosObjectStore:
         return Path(handle.name)
 
     def local_path(self, key: str) -> Path | None:
-        return None
+        path = self.cache.local_path(key)
+        return path if path is not None and path.is_file() else None
 
     def check(self) -> None:
         try:

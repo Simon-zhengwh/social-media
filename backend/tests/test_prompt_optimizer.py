@@ -6,7 +6,7 @@ import mongomock
 import pytest
 from pydantic import ValidationError
 
-from app.config import PROJECT_DIR, Settings
+from app.config import Settings
 from app.schemas import PromptOptimizeRequest
 from app.services import prompt_optimizer, storage
 from app.services.core_ai import CoreAIError
@@ -16,9 +16,11 @@ from app.services.object_store import CosObjectStore
 @pytest.fixture
 def settings(tmp_path):
     return Settings(
-        storage_dir=str(tmp_path / "storage"), sample_dir=str(PROJECT_DIR / "seejoy素材" / "素材"),
+        storage_dir=str(tmp_path / "storage"),
         core_ai_api_key="test-key", cos_secret_id="test", cos_secret_key="test",
         cos_bucket="test-bucket", cos_region="ap-guangzhou",
+        image_host_base_url="https://image.example:5002",
+        image_host_upload_token="",
     )
 
 
@@ -58,19 +60,19 @@ class FakeCoreAI:
         return json.dumps(self.response, ensure_ascii=False)
 
 
-def _seed_asset(db, settings, store, name: str, kind: str, color: tuple[int, int, int]):
+def _seed_asset(db, settings, store, name: str, color: tuple[int, int, int]):
     import io
 
     from PIL import Image
 
     buffer = io.BytesIO()
     Image.new("RGB", (240, 320), color).save(buffer, format="PNG")
-    prepared = storage.prepare_upload(settings, store, buffer.getvalue(), name, kind)
+    prepared = storage.prepare_upload(settings, store, buffer.getvalue(), name)
     now = datetime.now(timezone.utc)
     db.assets.insert_one(
         {
             "_id": prepared.id,
-            "kind": prepared.kind,
+            "source": "upload",
             "original_name": prepared.original_name,
             "path": prepared.path,
             "prepared_path": prepared.prepared_path,
@@ -109,11 +111,11 @@ def _seed_brand(db, reference_ids: list[str] | None = None) -> None:
 def optimizer_db(settings, store):
     db = mongomock.MongoClient().db
     products = [
-        _seed_asset(db, settings, store, "dish.png", "product", (180, 70, 40)),
-        _seed_asset(db, settings, store, "invite.jpg", "product", (235, 220, 170)),
+        _seed_asset(db, settings, store, "dish.png", (180, 70, 40)),
+        _seed_asset(db, settings, store, "invite.jpg", (235, 220, 170)),
     ]
     brand_reference = _seed_asset(
-        db, settings, store, "brand-reference.jpg", "brand_reference", (20, 70, 30)
+        db, settings, store, "brand-reference.jpg", (20, 70, 30)
     )
     _seed_brand(db, [brand_reference])
     return db, products, brand_reference
@@ -177,7 +179,7 @@ def test_optimizer_passes_all_six_products_and_rejects_seven(settings, store):
 
     db = mongomock.MongoClient().db
     products = [
-        _seed_asset(db, settings, store, f"product-{index}.png", "product", (index * 30, 60, 80))
+        _seed_asset(db, settings, store, f"product-{index}.png", (index * 30, 60, 80))
         for index in range(6)
     ]
     client = FakeCoreAI()
@@ -293,11 +295,23 @@ def test_image_manifest_keeps_content_sources_separate_from_style_sources(
     assert brand_reference in manifest["style_images"][0]["url"]
 
 
+def test_optimizer_accepts_asset_library_logo_for_preset_brand(
+    settings, store, optimizer_db
+):
+    db, products, _ = optimizer_db
+    logo = _seed_asset(db, settings, store, "library-logo.png", (10, 20, 30))
+    client = FakeCoreAI()
+
+    _optimize(db, settings, store, client, product_asset_ids=products, logo_asset_id=logo)
+
+    assert logo in client.calls[0]["input"]
+
+
 def test_optimizer_includes_generation_metadata_and_selected_logo(
     settings, store, optimizer_db
 ):
     db, products, _ = optimizer_db
-    logo = _seed_asset(db, settings, store, "merchant-logo.png", "logo", (10, 20, 30))
+    logo = _seed_asset(db, settings, store, "merchant-logo.png", (10, 20, 30))
     db.brands.update_one(
         {"_id": "seejoy"},
         {
@@ -405,14 +419,39 @@ def test_rejects_invalid_or_repeated_assets(settings, store, optimizer_db):
     assert not client.calls
 
 
-def test_optimizer_requires_cos_for_agent_images(settings, store, optimizer_db):
+def test_optimizer_requires_image_host_or_cos_for_agent_images(settings, store, optimizer_db):
     db, products, _ = optimizer_db
     client = FakeCoreAI()
-    local_settings = settings.model_copy(update={"cos_bucket": ""})
+    local_settings = settings.model_copy(
+        update={"cos_bucket": "", "image_host_upload_token": ""}
+    )
     with pytest.raises(prompt_optimizer.PromptOptimizerError) as exc:
         _optimize(db, local_settings, store, client, product_asset_ids=products)
-    assert exc.value.code == "cos_required"
+    assert exc.value.code == "image_host_not_configured"
     assert not client.calls
+
+
+def test_optimizer_uses_image_host_without_cos(
+    settings, store, optimizer_db, monkeypatch
+):
+    from app.services import image_host
+
+    db, products, reference_id = optimizer_db
+    uploaded: list[str] = []
+
+    def fake_upload_asset(db, store, settings, asset_id, *, client=None):
+        uploaded.append(asset_id)
+        return f"https://image.example/img/f/{asset_id}.png"
+
+    monkeypatch.setattr(image_host, "upload_asset", fake_upload_asset)
+    local_settings = settings.model_copy(
+        update={"cos_bucket": "", "image_host_upload_token": "configured"}
+    )
+    model = FakeCoreAI()
+    _optimize(db, local_settings, store, model, product_asset_ids=products)
+    text = model.calls[0]["input"]
+    assert set(uploaded) == set(products + [reference_id])
+    assert "https://image.example/img/f/" in text
 
 
 def test_rejects_empty_and_too_long_model_prompts(settings, store, optimizer_db):

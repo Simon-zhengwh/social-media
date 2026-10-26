@@ -5,10 +5,11 @@ type Props = {
   modelInput: WholeImageModelInput | null
 }
 
-const IMAGE_KIND_LABELS: Record<string, string> = {
-  product: '商品素材',
-  logo: 'Logo 素材',
-  brand_reference: '风格参考',
+const IMAGE_ROLE_LABELS: Record<string, string> = {
+  product: '内容素材',
+  logo: 'Logo',
+  style_reference: '风格参考',
+  brand_reference: '品牌参考',
   current_design: '当前设计',
 }
 
@@ -74,7 +75,7 @@ export default function WholeModelInputPanel({ modelInput }: Props) {
                       <div className="model-input-image-missing">图片不可用</div>
                     )}
                     <figcaption>
-                      <strong>{index + 1}. {IMAGE_KIND_LABELS[image.kind] ?? image.kind}</strong>
+                      <strong>{index + 1}. {IMAGE_ROLE_LABELS[image.role] ?? image.role}</strong>
                       <span>{image.name}</span>
                     </figcaption>
                   </figure>

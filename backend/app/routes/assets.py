@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app.services import storage
+from app.services import asset_records
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
@@ -14,7 +13,6 @@ router = APIRouter(prefix="/api/assets", tags=["assets"])
 def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": doc["_id"],
-        "kind": doc["kind"],
         "original_name": doc["original_name"],
         "width": doc["width"],
         "height": doc["height"],
@@ -25,14 +23,8 @@ def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("")
-def list_assets(request: Request, kind: str | None = None) -> list[dict[str, Any]]:
-    if kind is not None and kind not in {"product", "logo", "decoration"}:
-        raise HTTPException(status_code=422, detail="kind 只支持 product、logo 或 decoration")
-    query: dict[str, Any] = (
-        {"kind": kind}
-        if kind is not None
-        else {"kind": {"$in": ["product", "logo", "decoration"]}}
-    )
+def list_assets(request: Request) -> list[dict[str, Any]]:
+    query = asset_records.uploaded_asset_query()
     docs = (
         request.app.state.db.assets.find(query)
         .sort("created_at", -1)
@@ -45,34 +37,19 @@ def list_assets(request: Request, kind: str | None = None) -> list[dict[str, Any
 def upload_asset(
     request: Request,
     file: UploadFile = File(...),
-    kind: str = Form(...),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
     store = request.app.state.store
     data = file.file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail=f"文件超过 {settings.max_upload_bytes / 1_000_000:g} MB 限制")
-    prepared = storage.prepare_upload(
+    doc, _ = asset_records.persist_upload(
+        request.app.state.db,
         settings,
         store,
         data,
         file.filename or "",
-        kind,
     )
-    doc = {
-        "_id": prepared.id,
-        "kind": prepared.kind,
-        "original_name": prepared.original_name,
-        "path": prepared.path,
-        "prepared_path": prepared.prepared_path,
-        "mime_type": prepared.mime_type,
-        "width": prepared.width,
-        "height": prepared.height,
-        "bytes": prepared.bytes,
-        "sha256": prepared.sha256,
-        "created_at": datetime.now(timezone.utc),
-    }
-    request.app.state.db.assets.insert_one(doc)
     return asset_out(doc)
 
 
@@ -128,8 +105,8 @@ def delete_asset(asset_id: str, request: Request, force: bool = False) -> Respon
     asset = db.assets.find_one({"_id": asset_id})
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")
-    if asset.get("kind") not in {"product", "logo", "decoration", "style", "brand_reference"}:
-        raise HTTPException(status_code=422, detail="只能删除商品图、Logo、装饰或风格参考")
+    if asset_records.is_generated_asset(asset):
+        raise HTTPException(status_code=422, detail="生成结果不能从资产库删除")
     if not force and _asset_referenced(db, asset_id):
         raise HTTPException(
             status_code=409,

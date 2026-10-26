@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import type { Asset, AssetKind } from '../types'
+import type { Asset } from '../types'
 
 type Props = {
   open: boolean
-  kind: AssetKind
+  purpose: 'product' | 'logo'
   assets: Asset[]
   loading: boolean
   multi?: boolean
@@ -17,7 +17,7 @@ type Props = {
 
 export default function AssetPicker({
   open,
-  kind,
+  purpose,
   assets,
   loading,
   multi = false,
@@ -47,10 +47,12 @@ export default function AssetPicker({
     return null
   }
 
-  const matching = assets.filter((asset) => asset.kind === kind)
-  const title = kind === 'product' ? '选择素材图' : '选择素材'
+  const matching = assets
+  const title = purpose === 'product' ? '选择素材图' : '选择品牌 Logo'
   const emptyCopy =
-    kind === 'product' ? '资产管理中还没有可用素材图' : '资产管理中还没有素材'
+    purpose === 'product'
+      ? '资产管理中还没有可用素材图'
+      : '资产管理中还没有可用图片'
 
   const toggle = (assetId: string) => {
     setSelected((previous) => {
@@ -87,7 +89,9 @@ export default function AssetPicker({
             <p>
               {multi
                 ? `最多选择 ${max} 张，由 AI 自由组合。`
-                : '从资产管理中选择一张素材。'}
+                : purpose === 'logo'
+                  ? '从资产管理中选择一张图片作为 Logo。'
+                  : '从资产管理中选择一张素材。'}
             </p>
           </div>
           <button type="button" className="modal-close" onClick={onClose}>
@@ -104,7 +108,7 @@ export default function AssetPicker({
         ) : matching.length === 0 ? (
           <div className="picker-empty">
             <strong>{emptyCopy}</strong>
-            <span>上传素材或载入示例素材后，再回来选择。</span>
+            <span>上传图片后，再回来选择。</span>
             <button type="button" className="mp-btn-secondary mp-btn-small" onClick={onGoAssets}>
               去资产管理
             </button>
@@ -116,7 +120,7 @@ export default function AssetPicker({
               return (
                 <button
                   type="button"
-                  className={`picker-card picker-card-${asset.kind}${checked ? ' is-selected' : ''}`}
+                  className={`picker-card${checked ? ' is-selected' : ''}`}
                   key={asset.id}
                   onClick={() => {
                     if (multi) {

@@ -9,6 +9,7 @@ type Props = {
   logoDeleting: boolean
   canAddLogo: boolean
   onUploadLogos: (files: File[]) => void
+  onPickLogo: () => void
   onRemoveLogo: (assetId: string) => void
 }
 
@@ -20,6 +21,7 @@ export default function LogoSelector({
   logoDeleting,
   canAddLogo,
   onUploadLogos,
+  onPickLogo,
   onRemoveLogo,
 }: Props) {
   const activeLogo = logos.find((logo) => logo.asset_id === selectedLogoId) ?? null
@@ -52,10 +54,10 @@ export default function LogoSelector({
             </button>
           </div>
         ) : null}
-        {canAddLogo && !activeLogo ? (
+        {canAddLogo ? (
           <label
             className={`logo-selector-add${busy || logoUploading ? ' is-disabled' : ''}`}
-            title="添加品牌 Logo"
+            title={activeLogo ? '更换品牌 Logo' : '添加品牌 Logo'}
           >
             <input
               type="file"
@@ -68,8 +70,22 @@ export default function LogoSelector({
               }}
             />
             <span className="logo-selector-add-plus" aria-hidden="true">＋</span>
-            <small>{logoUploading ? '上传中…' : '添加'}</small>
+            <small>
+              {logoUploading ? '上传中…' : activeLogo ? '更换' : '上传'}
+            </small>
           </label>
+        ) : null}
+        {canAddLogo ? (
+          <button
+            type="button"
+            className="logo-selector-add logo-selector-pick"
+            onClick={onPickLogo}
+            disabled={busy || logoUploading || logoDeleting}
+            title="从素材库选择品牌 Logo"
+          >
+            <span className="logo-selector-add-plus" aria-hidden="true">▦</span>
+            <small>素材库</small>
+          </button>
         ) : null}
       </div>
     </div>

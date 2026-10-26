@@ -173,11 +173,11 @@ def test_historical_generation_does_not_fetch_new_common_rules(settings, store):
 
 
 def _seed_product(db, settings, store, data, name):
-    prepared = storage.prepare_upload(settings, store, data, name, "product")
+    prepared = storage.prepare_upload(settings, store, data, name)
     db.assets.insert_one(
         {
             "_id": prepared.id,
-            "kind": prepared.kind,
+            "source": "upload",
             "original_name": prepared.original_name,
             "path": prepared.path,
             "prepared_path": prepared.prepared_path,
@@ -193,11 +193,11 @@ def _seed_product(db, settings, store, data, name):
 
 
 def _seed_style_reference(db, settings, store, data, name):
-    prepared = storage.prepare_upload(settings, store, data, name, "brand_reference")
+    prepared = storage.prepare_upload(settings, store, data, name)
     db.assets.insert_one(
         {
             "_id": prepared.id,
-            "kind": "brand_reference",
+            "source": "upload",
             "original_name": prepared.original_name,
             "path": prepared.path,
             "prepared_path": prepared.prepared_path,
@@ -278,7 +278,7 @@ def test_generation_exposes_model_input_snapshot_with_reference_preview(
             "output_format": "png",
         },
         "images": [
-            {"asset_id": product.id, "name": "dish.png", "kind": "product"}
+            {"asset_id": product.id, "name": "dish.png", "role": "product"}
         ],
     }
 
@@ -289,7 +289,7 @@ def test_generation_exposes_model_input_snapshot_with_reference_preview(
         {
             "asset_id": product.id,
             "name": "dish.png",
-            "kind": "product",
+            "role": "product",
             "preview_url": f"/api/assets/{product.id}/file",
         }
     ]
@@ -370,7 +370,7 @@ def test_optimized_prompt_is_sent_without_duplicate_style_context(
     assert "禁止出现地址、电话号码或二维码" in sent["prompt"]
     assert "商家地址和联系电话" not in sent["prompt"]
     assert task["model_input_latest"]["images"] == [
-        {"asset_id": product.id, "name": "person.png", "kind": "product"}
+        {"asset_id": product.id, "name": "person.png", "role": "product"}
     ]
 
 
@@ -448,7 +448,6 @@ def test_six_products_reach_generation_and_edit_in_order(settings, store, produc
         for index in range(6)
     ]
     logo = _seed_product(db, settings, store, logo_png, "merchant-logo.png")
-    db.assets.update_one({"_id": logo.id}, {"$set": {"kind": "logo"}})
     style = _seed_style_reference(db, settings, store, product_png, "brand-style.png")
     request = _request(db, settings, store, fake)
     db.brands.update_one(
@@ -538,11 +537,11 @@ def test_preset_brand_guides_and_reference_images_reach_image_model(settings, st
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     brand_reference = storage.prepare_upload(
-        settings, store, product_png, "brand-poster.png", "brand_reference"
+        settings, store, product_png, "brand-poster.png"
     )
     db.assets.insert_one({
         "_id": brand_reference.id,
-        "kind": "brand_reference",
+        "source": "upload",
         "original_name": "brand-poster.png",
         "path": brand_reference.path,
         "prepared_path": brand_reference.prepared_path,
@@ -588,7 +587,6 @@ def test_selected_logo_purpose_and_palette_reach_generation(
     fake = FakeCoreAI()
     product = _seed_product(db, settings, store, product_png, "dish.png")
     logo = _seed_product(db, settings, store, product_png, "merchant-logo.png")
-    db.assets.update_one({"_id": logo.id}, {"$set": {"kind": "logo"}})
     request = _request(db, settings, store, fake)
     db.brands.update_one(
         {"_id": "seejoy"},
@@ -632,29 +630,27 @@ def test_selected_logo_purpose_and_palette_reach_generation(
     if not optimized:
         assert "Brand purpose: Story / Reels 封面" in sent["prompt"]
         assert "#0D4317" in sent["prompt"]
-    assert task["model_input_latest"]["images"][1]["kind"] == "logo"
+    assert task["model_input_latest"]["images"][1]["role"] == "logo"
 
 
-def test_task_rejects_logo_outside_selected_brand(settings, store, product_png):
+def test_task_accepts_asset_library_logo_with_preset_brand(settings, store, product_png):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     product = _seed_product(db, settings, store, product_png, "dish.png")
     logo = _seed_product(db, settings, store, product_png, "other-logo.png")
-    db.assets.update_one({"_id": logo.id}, {"$set": {"kind": "logo"}})
 
-    with pytest.raises(HTTPException) as exc:
-        whole_routes.create_task(
-            WholeImageTaskCreate(
-                prompt="test",
-                product_asset_ids=[product.id],
-                brand_id="seejoy",
-                brand_mode="preset",
-                logo_asset_id=logo.id,
-            ),
-            _request(db, settings, store, fake),
-            BackgroundTasks(),
-        )
-    assert exc.value.status_code == 422
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="test",
+            product_asset_ids=[product.id],
+            brand_id="seejoy",
+            brand_mode="preset",
+            logo_asset_id=logo.id,
+        ),
+        _request(db, settings, store, fake),
+        BackgroundTasks(),
+    )
+    assert created["input"]["logo_asset_id"] == logo.id
 
 
 def test_task_rejects_style_for_a_different_platform(settings, store, product_png):
@@ -782,7 +778,7 @@ def test_edit_sends_original_assets_before_current_source(
         second.id,
         source_asset["_id"],
     ]
-    assert snapshot["images"][-1]["kind"] == "current_design"
+    assert snapshot["images"][-1]["role"] == "current_design"
 
 
 @pytest.mark.parametrize("brand_mode", ["preset", "reference"])
@@ -863,7 +859,6 @@ def test_edit_keeps_original_logo_without_brand_or_platform_context(settings, st
     fake = FakeCoreAI()
     product = _seed_product(db, settings, store, product_png, "dish.png")
     logo = _seed_product(db, settings, store, product_png, "logo.png")
-    db.assets.update_one({"_id": logo.id}, {"$set": {"kind": "logo"}})
     request = _request(db, settings, store, fake)
     db.brands.update_one(
         {"_id": "seejoy"},

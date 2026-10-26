@@ -21,7 +21,7 @@ from app.config import PROJECT_DIR, Settings, get_settings
 from app.db import create_client, get_database
 from app.routes import whole_image as whole_routes
 from app.schemas import PromptOptimizeRequest, WholeImageTaskCreate
-from app.services import brand_style, prompt_optimizer, storage
+from app.services import asset_records, brand_style, prompt_optimizer, storage
 from app.services import whole_image as whole_service
 from app.services.core_ai import CoreAIClient
 from app.services.object_store import LocalObjectStore
@@ -135,28 +135,11 @@ def _settings_for_run(base: Settings, run_dir: Path, database: str) -> Settings:
     )
 
 
-def _seed_asset(db: Any, settings: Settings, store: Any, source: Path, *, kind: str) -> str:
-    digest = sha256_file(source)
-    existing = db.assets.find_one({"sha256": digest, "kind": kind})
-    if existing:
-        return str(existing["_id"])
-    prepared = storage.prepare_upload(settings, store, source.read_bytes(), source.name, kind)
-    db.assets.insert_one(
-        {
-            "_id": prepared.id,
-            "kind": prepared.kind,
-            "original_name": prepared.original_name,
-            "path": prepared.path,
-            "prepared_path": prepared.prepared_path,
-            "mime_type": prepared.mime_type,
-            "width": prepared.width,
-            "height": prepared.height,
-            "bytes": prepared.bytes,
-            "sha256": prepared.sha256,
-            "created_at": datetime.now(timezone.utc),
-        }
+def _seed_asset(db: Any, settings: Settings, store: Any, source: Path) -> str:
+    document, _ = asset_records.persist_upload(
+        db, settings, store, source.read_bytes(), source.name
     )
-    return prepared.id
+    return str(document["_id"])
 
 
 def _thumbnail(source: Path, target: Path, max_side: int = 720) -> None:
@@ -207,7 +190,7 @@ def prepare_run(args: argparse.Namespace) -> dict[str, Any]:
             db, store, settings, DEFAULT_BRAND_SKILL, force=True
         )
         product_ids = [
-            _seed_asset(db, settings, store, path, kind="product") for path in copied_assets
+            _seed_asset(db, settings, store, path) for path in copied_assets
         ]
     finally:
         mongo.close()

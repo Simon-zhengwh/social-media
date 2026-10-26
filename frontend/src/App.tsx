@@ -2,17 +2,17 @@ import { useCallback, useEffect, useState } from 'react'
 import AssetLibrary from './components/AssetLibrary'
 import BrandStudio from './components/BrandStudio'
 import Sidebar, { type AppView } from './components/Sidebar'
+import TaskCenter from './components/TaskCenter'
 import WholeImageStudio from './components/WholeImageStudio'
 import {
   ApiError,
   deleteAsset,
-  getSamples,
   listAssets,
   listBrands,
   listPlatforms,
   uploadAsset,
 } from './api'
-import type { Asset, AssetKind, BrandStyle, PlatformPreset } from './types'
+import type { Asset, BrandStyle, PlatformPreset } from './types'
 
 function readView(): AppView {
   const value = new URLSearchParams(window.location.search).get('view')
@@ -21,6 +21,9 @@ function readView(): AppView {
   }
   if (value === 'brands') {
     return 'brands'
+  }
+  if (value === 'tasks') {
+    return 'tasks'
   }
   return 'whole'
 }
@@ -46,6 +49,32 @@ function errorMessage(error: unknown): string {
   return '请求失败，请稍后重试'
 }
 
+const VIEW_META: Record<
+  AppView,
+  { kicker: string; title: string; meta: string | null }
+> = {
+  whole: {
+    kicker: 'POSTER STUDIO',
+    title: '海报设计',
+    meta: 'core-ai · 整图生成与编辑',
+  },
+  tasks: {
+    kicker: 'TASK CENTER',
+    title: '任务中心',
+    meta: null,
+  },
+  assets: {
+    kicker: 'ASSET LIBRARY',
+    title: '资产管理',
+    meta: null,
+  },
+  brands: {
+    kicker: 'BRAND LIBRARY',
+    title: '品牌风格',
+    meta: null,
+  },
+}
+
 export default function App() {
   const [view, setView] = useState<AppView>(() => readView())
   const [brands, setBrands] = useState<BrandStyle[]>([])
@@ -57,7 +86,7 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([])
   const [assetsLoading, setAssetsLoading] = useState(true)
   const [assetsError, setAssetsError] = useState<string | null>(null)
-  const [uploadingKind, setUploadingKind] = useState<AssetKind | null>(null)
+  const [uploading, setUploading] = useState(false)
 
   const loadBrands = useCallback(async (showLoading = true) => {
     if (showLoading) {
@@ -168,35 +197,18 @@ export default function App() {
     }
   }
 
-  const handleUpload = async (kind: AssetKind, file: File): Promise<boolean> => {
-    setUploadingKind(kind)
+  const handleUpload = async (file: File): Promise<boolean> => {
+    setUploading(true)
     setAssetsError(null)
     try {
-      await uploadAsset(file, kind)
+      await uploadAsset(file)
       await loadAssets()
       return true
     } catch (reason: unknown) {
       setAssetsError(errorMessage(reason))
       return false
     } finally {
-      setUploadingKind(null)
-    }
-  }
-
-  const handleUseSamples = async (): Promise<string | null> => {
-    setAssetsError(null)
-    try {
-      const result = await getSamples()
-      await loadAssets()
-      if (result.skipped.length > 0) {
-        return `已载入 ${result.imported.length} 个素材，跳过 ${result.skipped.length} 个（${result.skipped
-          .map((item) => item.file)
-          .join('、')}）`
-      }
-      return `已载入 ${result.imported.length} 个素材`
-    } catch (reason: unknown) {
-      setAssetsError(errorMessage(reason))
-      return null
+      setUploading(false)
     }
   }
 
@@ -211,32 +223,44 @@ export default function App() {
     }
   }
 
+  const handleOpenTask = (taskId: string) => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('view')
+    url.searchParams.set('whole', taskId)
+    window.history.replaceState({}, '', url)
+    setView('whole')
+  }
+
+  const handleCreateTask = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('view')
+    url.searchParams.delete('whole')
+    window.history.replaceState({}, '', url)
+    setView('whole')
+  }
+
+  const viewMeta = VIEW_META[view]
+
   return (
     <div className="app-layout">
       <Sidebar view={view} onChange={handleViewChange} />
       <div className="app-main">
         <header className="topbar">
           <div className="topbar-title">
-            <span className="topbar-kicker">
-              {view === 'whole'
-                ? 'POSTER STUDIO'
-                : view === 'brands'
-                  ? 'BRAND LIBRARY'
-                  : 'ASSET LIBRARY'}
-            </span>
-            <strong>
-              {view === 'whole' ? '海报设计' : view === 'brands' ? '品牌风格' : '资产管理'}
-            </strong>
+            <span className="topbar-kicker">{viewMeta.kicker}</span>
+            <strong>{viewMeta.title}</strong>
           </div>
-          {view !== 'brands' ? (
+          {viewMeta.meta ? (
             <div className="topbar-meta">
               <span className="status-dot status-dot-live" aria-hidden="true" />
-              <span>{view === 'whole' ? 'core-ai · 整图生成与编辑' : 'COS · 图片素材与参考图'}</span>
+              <span>{viewMeta.meta}</span>
             </div>
           ) : null}
         </header>
 
-        {view === 'whole' ? (
+        {view === 'tasks' ? (
+          <TaskCenter onOpenTask={handleOpenTask} onCreate={handleCreateTask} />
+        ) : view === 'whole' ? (
           <WholeImageStudio
             brands={brands}
             brandsLoading={brandsLoading}
@@ -263,11 +287,9 @@ export default function App() {
             assets={assets}
             loading={assetsLoading}
             error={assetsError}
-            uploadingKind={uploadingKind}
+            uploading={uploading}
             onUpload={handleUpload}
-            onUseSamples={handleUseSamples}
             onDelete={handleDelete}
-            onRefresh={() => void loadAssets()}
           />
         )}
 
@@ -278,8 +300,10 @@ export default function App() {
               <span className="footer-sep" aria-hidden="true" />
               <span>每次修改都会保存为独立版本</span>
             </>
+          ) : view === 'tasks' ? (
+            <span>任务按候选批次归档 · 点击回到工作台继续编辑</span>
           ) : view === 'brands' ? null : (
-            <span>素材保存在腾讯云 COS · 海报设计时从资产库选择</span>
+            <span>素材保存在项目内本地目录 · 海报设计时从资产库选择</span>
           )}
         </footer>
       </div>

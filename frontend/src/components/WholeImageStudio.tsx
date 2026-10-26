@@ -15,11 +15,9 @@ import {
   listWholeImageVersions,
   selectWholeImageVersion,
   uploadAsset,
-  uploadBrandLogos,
 } from '../api'
 import type {
   Asset,
-  AssetKind,
   BrandLogoImage,
   BrandMode,
   BrandStyle,
@@ -80,21 +78,30 @@ function errorMessage(error: unknown): string {
 
 function assetFromTask(
   task: WholeImageTask,
-  kind: 'product' | 'logo' | 'brand_reference',
   assetId?: string | null,
 ): Asset | null {
   if (!assetId) {
     return null
   }
+  const image = task.model_input?.images.find((item) => item.asset_id === assetId)
   return {
     id: assetId,
-    kind,
-    original_name: '已保存的素材图',
+    original_name: image?.name || '已保存的素材图',
     width: 0,
     height: 0,
     mime_type: 'image/png',
     url: `/api/assets/${assetId}/file`,
     created_at: task.created_at,
+  }
+}
+
+function logoFromAsset(asset: Asset): BrandLogoImage {
+  return {
+    asset_id: asset.id,
+    original_name: asset.original_name,
+    url: asset.url,
+    width: asset.width,
+    height: asset.height,
   }
 }
 
@@ -129,7 +136,7 @@ export default function WholeImageStudio({
   const [styleReferencesUploading, setStyleReferencesUploading] = useState(false)
   const [logoUploading, setLogoUploading] = useState(false)
   const [logoDeleting, setLogoDeleting] = useState(false)
-  const [pickerKind, setPickerKind] = useState<AssetKind | null>(null)
+  const [pickerPurpose, setPickerPurpose] = useState<'product' | 'logo' | null>(null)
   const [studioTab, setStudioTab] = useState<StudioTab>('chat')
   const [creating, setCreating] = useState(() => Boolean(readWholeTaskId()))
   const [versionsLoading, setVersionsLoading] = useState(false)
@@ -158,7 +165,6 @@ export default function WholeImageStudio({
   const availableLogos = [
     ...brands.flatMap((brand) => brand.logo_images),
     ...assets
-      .filter((asset) => asset.kind === 'logo')
       .map((asset) => ({
         asset_id: asset.id,
         original_name: asset.original_name,
@@ -179,23 +185,34 @@ export default function WholeImageStudio({
     brandMode === 'preset'
       ? selectedBrand?.logo_images ?? []
       : availableLogos
-  const restoredLogo =
-    task &&
-    effectiveLogoId &&
+  const missingFromBase =
+    Boolean(effectiveLogoId) &&
     !baseLogoOptions.some((logo) => logo.asset_id === effectiveLogoId)
-      ? assetFromTask(task, 'logo', effectiveLogoId)
+  const selectedAssetLogo = missingFromBase
+    ? assets.find((asset) => asset.id === effectiveLogoId) ?? null
+    : null
+  const availableRestoredLogo = selectedAssetLogo
+    ? logoFromAsset(selectedAssetLogo)
+    : missingFromBase
+      ? availableLogos.find((logo) => logo.asset_id === effectiveLogoId) ?? null
       : null
+  const taskRestoredAsset =
+    missingFromBase && !availableRestoredLogo && task
+      ? assetFromTask(task, effectiveLogoId)
+      : null
+  const restoredLogo: BrandLogoImage | null =
+    availableRestoredLogo ??
+    (taskRestoredAsset
+      ? {
+          asset_id: taskRestoredAsset.id,
+          original_name: taskRestoredAsset.original_name,
+          url: taskRestoredAsset.url,
+          width: taskRestoredAsset.width,
+          height: taskRestoredAsset.height,
+        }
+      : null)
   const logoOptions: BrandLogoImage[] = restoredLogo
-    ? [
-        ...baseLogoOptions,
-        {
-          asset_id: restoredLogo.id,
-          original_name: restoredLogo.original_name,
-          url: restoredLogo.url,
-          width: restoredLogo.width,
-          height: restoredLogo.height,
-        },
-      ]
+    ? [...baseLogoOptions, restoredLogo]
     : baseLogoOptions
   const selectedPlacement =
     selectedPlatform?.placements.find((item) => item.id === effectivePlacementId) ??
@@ -247,11 +264,11 @@ export default function WholeImageStudio({
         )
         setStyleReferences(
           (restored.input.style_reference_asset_ids ?? [])
-            .map((id) => assetFromTask(restored, 'brand_reference', id))
+            .map((id) => assetFromTask(restored, id))
             .filter((asset): asset is Asset => Boolean(asset)),
         )
         const restoredProducts = (restored.input.product_asset_ids ?? [])
-          .map((id) => assetFromTask(restored, 'product', id))
+          .map((id) => assetFromTask(restored, id))
           .filter((asset): asset is Asset => Boolean(asset))
         setProducts(restoredProducts)
         lastVersionRef.current = restored.current_version_id
@@ -505,7 +522,7 @@ export default function WholeImageStudio({
     setError(null)
     try {
       const uploaded = await Promise.all(
-        accepted.map((file) => uploadAsset(file, 'brand_reference')),
+        accepted.map((file) => uploadAsset(file)),
       )
       setStyleReferences((previous) => [...previous, ...uploaded].slice(0, 3))
       setPromptOptimized(false)
@@ -517,32 +534,19 @@ export default function WholeImageStudio({
   }
 
   const handleUploadLogos = async (files: File[]) => {
-    if (brandMode !== 'preset' || !selectedBrand) {
-      setError('请先选择品牌风格后再上传 Logo')
-      return
-    }
-
-    const existingIds = new Set(selectedBrand.logo_images.map((logo) => logo.asset_id))
-    if (selectedBrand.logo_images.length > 0) {
-      setError('品牌 Logo 最多 1 张，请先删除原 Logo 再添加')
-      return
-    }
-    const accepted = files.slice(0, 1)
-    if (!accepted.length) {
+    const file = files[0]
+    if (!file) {
       return
     }
 
     setLogoUploading(true)
     setError(null)
     try {
-      const detail = await uploadBrandLogos(selectedBrand.id, accepted)
-      const addedLogo = detail.logo_images.find((logo) => !existingIds.has(logo.asset_id))
-      await onRefreshBrands()
-      if (addedLogo) {
-        setSelectedLogoId(addedLogo.asset_id)
-        setLogoChoiceTouched(true)
-      }
+      const uploaded = await uploadAsset(file)
+      setSelectedLogoId(uploaded.id)
+      setLogoChoiceTouched(true)
       setPromptOptimized(false)
+      onLoadAssets()
     } catch (reason: unknown) {
       setError(errorMessage(reason))
     } finally {
@@ -571,10 +575,14 @@ export default function WholeImageStudio({
     }
   }
   const openPicker = () => {
-    setPickerKind('product')
+    setPickerPurpose('product')
     if (assets.length === 0) {
       onLoadAssets()
     }
+  }
+  const openLogoPicker = () => {
+    setPickerPurpose('logo')
+    onLoadAssets()
   }
 
   return (
@@ -591,7 +599,7 @@ export default function WholeImageStudio({
         selectedLogoId={effectiveLogoId}
         logoUploading={logoUploading}
         logoDeleting={logoDeleting}
-        canAddLogo={brandMode === 'preset' && selectedBrand !== null && selectedBrand.logo_images.length === 0}
+        canAddLogo
         platforms={platforms}
         platformsLoading={platformsLoading}
         platformsError={platformsError}
@@ -611,6 +619,7 @@ export default function WholeImageStudio({
           setPromptOptimized(false)
         }}
         onUploadLogos={(files) => void handleUploadLogos(files)}
+        onPickLogo={openLogoPicker}
         onRemoveLogo={(assetId) => void handleRemoveLogo(assetId)}
         onPlatformChange={(platformId) => {
           const next = platforms.find((item) => item.id === platformId)
@@ -707,22 +716,31 @@ export default function WholeImageStudio({
       ) : null}
 
       <AssetPicker
-        key={pickerKind ?? 'whole-closed'}
-        open={pickerKind !== null}
-        kind={pickerKind ?? 'product'}
+        key={pickerPurpose ?? 'whole-closed'}
+        open={pickerPurpose !== null}
+        purpose={pickerPurpose ?? 'product'}
         assets={assets}
         loading={assetsLoading}
-        multi
-        selectedIds={products.map((asset) => asset.id)}
-        max={6}
-        onClose={() => setPickerKind(null)}
+        multi={pickerPurpose !== 'logo'}
+        selectedIds={pickerPurpose === 'logo' ? [] : products.map((asset) => asset.id)}
+        max={pickerPurpose === 'logo' ? 1 : 6}
+        onClose={() => setPickerPurpose(null)}
+        onSelect={(asset) => {
+          if (pickerPurpose !== 'logo') {
+            return
+          }
+          setSelectedLogoId(asset.id)
+          setLogoChoiceTouched(true)
+          setPromptOptimized(false)
+          setPickerPurpose(null)
+        }}
         onConfirm={(selected) => {
           setProducts(selected)
           setPromptOptimized(false)
-          setPickerKind(null)
+          setPickerPurpose(null)
         }}
         onGoAssets={() => {
-          setPickerKind(null)
+          setPickerPurpose(null)
           onGoAssets()
         }}
       />

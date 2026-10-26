@@ -73,11 +73,11 @@ def _task_request(db, settings, store):
 
 
 def _seed_product(settings, store, db, product_png):
-    prepared = storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+    prepared = storage.prepare_upload(settings, store, product_png, "dish.png")
     db.assets.insert_one(
         {
             "_id": prepared.id,
-            "kind": "product",
+            "source": "upload",
             "original_name": prepared.original_name,
             "path": prepared.path,
             "prepared_path": prepared.prepared_path,
@@ -112,7 +112,7 @@ def test_project_skill_imports_three_references(settings, store):
     assert len(brand.reference_asset_ids) == 3
     assert len(brand.logo_asset_ids) == 1
     assert brand.cover_asset_id in brand.reference_asset_ids
-    assert db.assets.find_one({"_id": brand.logo_asset_ids[0]})["kind"] == "logo"
+    assert db.assets.find_one({"_id": brand.logo_asset_ids[0]})["source"] == "upload"
     assert [item["hex"] for item in brand.colors] == [
         "#304521",
         "#5D8343",
@@ -441,7 +441,7 @@ def test_upload_and_delete_brand_reference(tmp_path, settings, store):
         for item in uploaded["reference_images"]
         if item["asset_id"] not in {ref["asset_id"] for ref in before["reference_images"]}
     )
-    assert db.assets.find_one({"_id": new_asset_id})["kind"] == "brand_reference"
+    assert db.assets.find_one({"_id": new_asset_id})["source"] == "upload"
 
     deleted = brand_routes.delete_reference("custom", new_asset_id, request)
     assert len(deleted["reference_images"]) == 1
@@ -461,7 +461,7 @@ def test_upload_and_delete_brand_logos(tmp_path, settings, store):
     )
     assert len(uploaded["logo_images"]) == 3
     logo_ids = [item["asset_id"] for item in uploaded["logo_images"]]
-    assert all(db.assets.find_one({"_id": item})["kind"] == "logo" for item in logo_ids)
+    assert all(db.assets.find_one({"_id": item})["source"] == "upload" for item in logo_ids)
 
     deleted = brand_routes.delete_logo("custom", logo_ids[0], request)
     assert [item["asset_id"] for item in deleted["logo_images"]] == [logo_ids[1], logo_ids[2]]
@@ -649,7 +649,7 @@ def test_task_brand_snapshot_registers_immutable_references(
     refs = stored["brand"]["references"]
     assert len(refs) == 3
     assert all(ref["asset_id"] and len(ref["sha256"]) == 64 for ref in refs)
-    assert all(db.assets.find_one({"_id": ref["asset_id"]})["kind"] == "brand_reference" for ref in refs)
+    assert all(db.assets.find_one({"_id": ref["asset_id"]})["source"] == "upload" for ref in refs)
     restored = brand_style.brand_for_task(stored, db, store)
     assert len(restored.reference_paths) == 3
     assert all(path.exists() for path in restored.reference_paths)

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import uuid
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
@@ -11,6 +16,8 @@ from app.services import brand_rules, brand_style, platform_presets, whole_image
 from app.services.canvas import canvas_size
 
 router = APIRouter(prefix="/api/whole-image", tags=["whole-image"])
+
+TASK_GROUP_STATUSES = {"all", "active", "ready", "failed"}
 
 
 def _edit_state(doc: dict[str, Any]) -> dict[str, Any]:
@@ -28,6 +35,195 @@ def _edit_state(doc: dict[str, Any]) -> dict[str, Any]:
         "source_version_id": edit.get("source_version_id"),
         "error": edit.get("error"),
     }
+
+
+def _task_input(doc: dict[str, Any]) -> dict[str, Any]:
+    value = doc.get("input")
+    return value if isinstance(value, dict) else {}
+
+
+def _task_group_key(doc: dict[str, Any]) -> str:
+    batch_id = str(_task_input(doc).get("candidate_batch_id") or "").strip()
+    return batch_id or str(doc["_id"])
+
+
+def _task_is_active(doc: dict[str, Any]) -> bool:
+    edit = doc.get("edit")
+    edit_status = edit.get("status") if isinstance(edit, dict) else None
+    return doc.get("status") in {"queued", "running"} or edit_status == "running"
+
+
+def _task_is_retryable(doc: dict[str, Any]) -> bool:
+    edit = doc.get("edit")
+    edit_status = edit.get("status") if isinstance(edit, dict) else None
+    return doc.get("status") == "failed" or edit_status == "failed"
+
+
+def _task_error_message(doc: dict[str, Any]) -> str | None:
+    edit = doc.get("edit")
+    if isinstance(edit, dict) and edit.get("status") == "failed":
+        message = str(edit.get("error") or "").strip()
+        if message:
+            return message
+    error = doc.get("error")
+    if isinstance(error, dict):
+        message = str(error.get("message") or "").strip()
+        if message:
+            return message
+    return None
+
+
+def _candidate_summary(doc: dict[str, Any]) -> dict[str, Any]:
+    input_data = _task_input(doc)
+    output_id = doc.get("output_asset_id")
+    version = int(doc.get("current_version") or 0)
+    version_id = doc.get("selected_version_id") or doc.get("current_version_id")
+    edit = doc.get("edit")
+    edit_status = edit.get("status") if isinstance(edit, dict) else None
+    return {
+        "id": doc["_id"],
+        "candidate_index": int(input_data.get("candidate_index") or 0),
+        "status": str(doc.get("status") or "failed"),
+        "stage": str(doc.get("stage") or "failed"),
+        "progress": int(doc.get("progress") or 0),
+        "current_version": version,
+        "preview_url": (
+            f"/api/assets/{output_id}/file?v={version}" if output_id else None
+        ),
+        "download_url": (
+            f"/api/whole-image/tasks/{quote(str(doc['_id']))}/download"
+            f"?version_id={quote(str(version_id))}"
+            if output_id and version_id
+            else None
+        ),
+        "edit_status": str(edit_status or "idle"),
+        "error": _task_error_message(doc),
+        "created_at": doc.get("created_at"),
+        "updated_at": doc.get("updated_at"),
+    }
+
+
+def _as_utc(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _task_sort_key(doc: dict[str, Any]) -> tuple[int, datetime, str]:
+    return (
+        int(_task_input(doc).get("candidate_index") or 0),
+        _as_utc(doc.get("created_at")),
+        str(doc["_id"]),
+    )
+
+
+def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, Any]:
+    tasks = sorted(docs, key=_task_sort_key)
+    active_count = sum(1 for doc in tasks if _task_is_active(doc))
+    succeeded_count = sum(1 for doc in tasks if doc.get("status") == "succeeded")
+    failed_count = sum(1 for doc in tasks if doc.get("status") == "failed")
+    retryable_count = sum(1 for doc in tasks if _task_is_retryable(doc))
+    if active_count:
+        group_status = "active"
+    elif succeeded_count:
+        group_status = "ready"
+    else:
+        group_status = "failed"
+    representative = next(
+        (doc for doc in tasks if doc.get("status") == "succeeded"),
+        None,
+    )
+    if representative is None:
+        representative = next(
+            (doc for doc in tasks if _task_is_active(doc)),
+            tasks[0],
+        )
+    candidates = [_candidate_summary(doc) for doc in tasks]
+    representative_candidate = next(
+        (item for item in candidates if item["id"] == representative["_id"]),
+        candidates[0],
+    )
+    first_input = _task_input(tasks[0])
+    brand = tasks[0].get("brand")
+    platform = next((doc.get("platform") for doc in tasks if doc.get("platform")), None)
+    placement = next(
+        (doc.get("placement") for doc in tasks if doc.get("placement")),
+        None,
+    )
+    canvas = next(
+        (doc.get("canvas") for doc in tasks if isinstance(doc.get("canvas"), dict)),
+        None,
+    ) or {"width": 0, "height": 0}
+    error_message = next(
+        (
+            message
+            for message in (_task_error_message(doc) for doc in tasks)
+            if message
+        ),
+        None,
+    )
+    created_at = min((_as_utc(doc.get("created_at")) for doc in tasks))
+    updated_at = max((_as_utc(doc.get("updated_at")) for doc in tasks))
+    return {
+        "id": group_id,
+        "status": group_status,
+        "prompt": str(first_input.get("prompt") or ""),
+        "brand_name": str((brand or {}).get("name") or "") or None,
+        "platform_name": str((platform or {}).get("name") or "") or None,
+        "placement_name": str((placement or {}).get("name") or "") or None,
+        "canvas": {
+            "width": int(canvas.get("width") or 0),
+            "height": int(canvas.get("height") or 0),
+        },
+        "candidate_count": len(tasks),
+        "active_count": active_count,
+        "succeeded_count": succeeded_count,
+        "failed_count": failed_count,
+        "retryable_count": retryable_count,
+        "representative_task_id": str(representative["_id"]),
+        "preview_url": representative_candidate["preview_url"],
+        "download_url": representative_candidate["download_url"],
+        "error_message": error_message,
+        "candidates": candidates,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
+def _build_task_groups(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for doc in docs:
+        grouped.setdefault(_task_group_key(doc), []).append(doc)
+    items = [
+        _task_group_summary(group_id, group_docs)
+        for group_id, group_docs in grouped.items()
+    ]
+    items.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
+    return items
+
+
+def _encode_task_cursor(item: dict[str, Any]) -> str:
+    payload = json.dumps(
+        {
+            "created_at": item["created_at"].isoformat(),
+            "group_id": item["id"],
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_task_cursor(cursor: str) -> tuple[datetime, str]:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        created_at = datetime.fromisoformat(str(payload["created_at"]))
+        group_id = str(payload["group_id"])
+    except (ValueError, KeyError, TypeError, binascii.Error) as exc:
+        raise HTTPException(status_code=422, detail="任务游标无效") from exc
+    return _as_utc(created_at), group_id
 
 
 def _version_for_task(
@@ -61,7 +257,7 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
             {
                 "asset_id": asset_id,
                 "name": str(image.get("name") or "参考图片"),
-                "kind": str(image.get("kind") or "reference"),
+                "role": str(image.get("role") or image.get("kind") or "reference"),
                 "preview_url": f"/api/assets/{asset_id}/file" if asset else None,
             }
         )
@@ -193,8 +389,8 @@ def create_task(
         raise HTTPException(status_code=422, detail="素材图不能重复")
     for product_id in product_ids:
         product = db.assets.find_one({"_id": product_id})
-        if product is None or product.get("kind") not in {"product", "logo"}:
-            raise HTTPException(status_code=422, detail="素材图不存在或类型不正确")
+        if product is None:
+            raise HTTPException(status_code=422, detail="素材图不存在")
     brand_mode = payload.brand_mode or ("preset" if payload.brand_id else "none")
     brand: brand_style.BrandStyle | None = None
     brand_snapshot: dict[str, Any] | None = None
@@ -215,16 +411,14 @@ def create_task(
             raise HTTPException(status_code=422, detail="风格参考图不能重复")
         for asset_id in style_reference_ids:
             asset = db.assets.find_one({"_id": asset_id})
-            if asset is None or asset.get("kind") != "brand_reference":
-                raise HTTPException(status_code=422, detail="风格参考图不存在或类型不正确")
+            if asset is None:
+                raise HTTPException(status_code=422, detail="风格参考图不存在")
 
     logo_asset_id = payload.logo_asset_id
     if logo_asset_id:
         logo_asset = db.assets.find_one({"_id": logo_asset_id})
-        if logo_asset is None or logo_asset.get("kind") != "logo":
-            raise HTTPException(status_code=422, detail="Logo 不存在或类型不正确")
-        if brand is not None and logo_asset_id not in brand.logo_asset_ids:
-            raise HTTPException(status_code=422, detail="所选 Logo 不属于当前品牌风格")
+        if logo_asset is None:
+            raise HTTPException(status_code=422, detail="Logo 不存在")
 
     platform_id = payload.platform_id or (brand.platform_id if brand else None)
     placement_id = payload.placement_id or (brand.placement_id if brand else None)
@@ -321,6 +515,53 @@ def create_task(
     return task_out(db, doc)
 
 
+@router.get("/tasks")
+def list_tasks(
+    request: Request,
+    status: str = "all",
+    limit: int = 24,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    if status not in TASK_GROUP_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail="status 只支持 all、active、ready 或 failed",
+        )
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
+
+    db = request.app.state.db
+    docs = list(db.whole_tasks.find({}).sort("created_at", -1))
+    items = _build_task_groups(docs)
+    if status != "all":
+        items = [item for item in items if item["status"] == status]
+    total = len(items)
+
+    if cursor:
+        cursor_created_at, cursor_group_id = _decode_task_cursor(cursor)
+        items = [
+            item
+            for item in items
+            if item["created_at"] < cursor_created_at
+            or (
+                item["created_at"] == cursor_created_at
+                and item["id"] < cursor_group_id
+            )
+        ]
+
+    page = items[:limit]
+    next_cursor = (
+        _encode_task_cursor(page[-1])
+        if page and len(items) > len(page)
+        else None
+    )
+    return {
+        "items": page,
+        "next_cursor": next_cursor,
+        "total": total,
+    }
+
+
 @router.get("/batches/{batch_id}")
 def get_task_batch(batch_id: str, request: Request) -> list[dict[str, Any]]:
     db = request.app.state.db
@@ -338,6 +579,87 @@ def get_task_batch(batch_id: str, request: Request) -> list[dict[str, Any]]:
 def get_task(task_id: str, request: Request) -> dict[str, Any]:
     db = request.app.state.db
     return task_out(db, _get_task_or_404(db, task_id))
+
+
+@router.post("/tasks/{task_id}/retry", status_code=202)
+def retry_task(
+    task_id: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    _require_configured(request)
+    db = request.app.state.db
+
+    retried_generation = db.whole_tasks.find_one_and_update(
+        {"_id": task_id, "status": "failed"},
+        {
+            "$set": {
+                "status": "queued",
+                "stage": "pending",
+                "progress": 0,
+                "error": None,
+                "generation.status": "queued",
+                "generation.error": None,
+                "generation.started_at": None,
+                "provider.status": "queued",
+                "model_input_attempt": None,
+                "updated_at": whole_image.utcnow(),
+            }
+        },
+        return_document=True,
+    )
+    if retried_generation is not None:
+        background_tasks.add_task(
+            whole_image.run_generation,
+            db,
+            request.app.state.settings,
+            request.app.state.store,
+            request.app.state.core_ai,
+            task_id,
+        )
+        return task_out(db, retried_generation)
+
+    doc = _get_task_or_404(db, task_id)
+    if _task_is_active(doc):
+        raise HTTPException(status_code=409, detail="任务正在执行，请稍候")
+    edit = doc.get("edit") if isinstance(doc.get("edit"), dict) else {}
+    if doc.get("status") != "succeeded" or edit.get("status") != "failed":
+        raise HTTPException(status_code=409, detail="当前任务没有可重试的失败项")
+    instruction = str(edit.get("instruction") or "").strip()
+    source_version_id = str(edit.get("source_version_id") or "").strip()
+    if not instruction or not source_version_id:
+        raise HTTPException(status_code=409, detail="失败记录缺少重试所需信息")
+
+    retried_edit = db.whole_tasks.find_one_and_update(
+        {
+            "_id": task_id,
+            "status": "succeeded",
+            "edit.status": "failed",
+        },
+        {
+            "$set": {
+                "stage": "editing",
+                "progress": 40,
+                "edit.status": "running",
+                "edit.error": None,
+                "updated_at": whole_image.utcnow(),
+            }
+        },
+        return_document=True,
+    )
+    if retried_edit is None:
+        raise HTTPException(status_code=409, detail="任务状态已变化，请刷新后重试")
+    background_tasks.add_task(
+        whole_image.run_edit,
+        db,
+        request.app.state.settings,
+        request.app.state.store,
+        request.app.state.core_ai,
+        task_id,
+        instruction,
+        source_version_id,
+    )
+    return task_out(db, retried_edit)
 
 
 @router.post("/tasks/{task_id}/edits", status_code=202)

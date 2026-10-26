@@ -1,5 +1,3 @@
-export type AssetKind = 'product' | 'logo' | 'decoration' | 'brand_reference'
-
 export type BrandMode = 'preset' | 'reference' | 'none'
 export type Ratio = '1:1' | '9:16' | '4:5' | '16:9' | '3:4' | '4:3'
 export type ImageModel =
@@ -95,18 +93,12 @@ export type BrandDetail = BrandStyle & {
 
 export type Asset = {
   id: string
-  kind: AssetKind
   original_name: string
   width: number
   height: number
   mime_type: string
   url: string
   created_at: string
-}
-
-export type SampleImportResult = {
-  imported: Asset[]
-  skipped: Array<{ file: string; reason: string }>
 }
 
 // ---------- Whole-image flow ----------
@@ -147,14 +139,21 @@ export type WholeImageModelInput = {
   images: Array<{
     asset_id: string
     name: string
-    kind: string
+    role: string
     preview_url: string | null
   }>
 }
 
+export type WholeImageTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted'
+
 export type WholeImageTask = {
   id: string
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
+  status: WholeImageTaskStatus
   stage: string
   progress: number
   input: {
@@ -208,4 +207,51 @@ export type WholeImageVersion = {
   preview_url: string | null
   download_url: string | null
   created_at: string
+}
+
+export type WholeImageTaskGroupStatus = 'active' | 'ready' | 'failed'
+
+export type WholeImageTaskGroupFilter = 'all' | WholeImageTaskGroupStatus
+
+export type WholeImageTaskGroupCandidate = {
+  id: string
+  candidate_index: number
+  status: WholeImageTaskStatus
+  stage: string
+  progress: number
+  current_version: number
+  preview_url: string | null
+  download_url: string | null
+  edit_status: 'idle' | 'running' | 'failed'
+  error: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type WholeImageTaskGroup = {
+  id: string
+  status: WholeImageTaskGroupStatus
+  prompt: string
+  brand_name: string | null
+  platform_name: string | null
+  placement_name: string | null
+  canvas: { width: number; height: number }
+  candidate_count: number
+  active_count: number
+  succeeded_count: number
+  failed_count: number
+  retryable_count: number
+  representative_task_id: string
+  preview_url: string | null
+  download_url: string | null
+  error_message: string | null
+  candidates: WholeImageTaskGroupCandidate[]
+  created_at: string
+  updated_at: string
+}
+
+export type WholeImageTaskGroupPage = {
+  items: WholeImageTaskGroup[]
+  next_cursor: string | null
+  total: number
 }

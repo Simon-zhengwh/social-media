@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -9,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.services import brand_rules, platform_presets, storage
+from app.services import asset_records, brand_rules, platform_presets, storage
 from app.services.image_ref import ImageRef, image_ref_from_asset
 
 logger = logging.getLogger(__name__)
@@ -505,32 +504,14 @@ def _asset_for_path(
     store: Any,
     settings: Any,
     path: Path,
-    *,
-    kind: str = "brand_reference",
 ) -> dict[str, Any]:
     try:
         data = path.read_bytes()
     except OSError as exc:
         raise BrandError("brand_reference_missing", f"品牌参考图无法读取：{path.name}") from exc
-    digest = hashlib.sha256(data).hexdigest()
-    asset = db.assets.find_one({"kind": kind, "sha256": digest})
-    if asset is not None:
-        return asset
-    prepared = storage.prepare_upload(settings, store, data, path.name, kind)
-    document = {
-        "_id": prepared.id,
-        "kind": prepared.kind,
-        "original_name": prepared.original_name,
-        "path": prepared.path,
-        "prepared_path": prepared.prepared_path,
-        "mime_type": prepared.mime_type,
-        "width": prepared.width,
-        "height": prepared.height,
-        "bytes": prepared.bytes,
-        "sha256": prepared.sha256,
-        "created_at": datetime.now(timezone.utc),
-    }
-    db.assets.insert_one(document)
+    document, _ = asset_records.persist_upload(
+        db, settings, store, data, path.name
+    )
     return document
 
 
@@ -561,12 +542,12 @@ def snapshot_brand(
     logo_asset_ids = list(brand.logo_asset_ids[:MAX_BRAND_LOGOS])
     if not logo_asset_ids and brand.logo_path is not None:
         logo_asset_ids.append(
-            _asset_for_path(db, store, settings, brand.logo_path, kind="logo")["_id"]
+            _asset_for_path(db, store, settings, brand.logo_path)["_id"]
         )
     validated_logo_ids: list[str] = []
     for asset_id in dict.fromkeys(logo_asset_ids):
         asset = db.assets.find_one({"_id": asset_id})
-        if asset is None or asset.get("kind") != "logo":
+        if asset is None:
             raise BrandError("brand_logo_missing", f"品牌 Logo 不存在：{asset_id}")
         validated_logo_ids.append(asset_id)
     logo_asset_ids = validated_logo_ids[:MAX_BRAND_LOGOS]
@@ -655,9 +636,7 @@ def _import_loaded_brand(
     reference_asset_ids = [document["_id"] for document in reference_docs]
     logo_asset_ids = list(brand.logo_asset_ids[:MAX_BRAND_LOGOS])
     if brand.logo_path is not None:
-        logo_asset = _asset_for_path(
-            db, store, settings, brand.logo_path, kind="logo"
-        )
+        logo_asset = _asset_for_path(db, store, settings, brand.logo_path)
         if logo_asset["_id"] not in logo_asset_ids:
             logo_asset_ids.insert(0, logo_asset["_id"])
     cover_asset_id: str | None = None

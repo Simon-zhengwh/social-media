@@ -15,10 +15,9 @@ from tests.conftest import png_bytes
 
 
 def test_prepare_upload_preserves_original_and_metadata(settings, store, product_png):
-    result = storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+    result = storage.prepare_upload(settings, store, product_png, "dish.png")
     assert result.width == 320
     assert result.height == 240
-    assert result.kind == "product"
     assert result.mime_type == "image/png"
     assert store.get_bytes(result.path) == product_png
     assert store.exists(result.prepared_path)
@@ -47,7 +46,7 @@ def test_common_image_formats_are_supported(
     buffer = io.BytesIO()
     Image.new("RGB", (64, 48), (180, 90, 50)).save(buffer, format=image_format)
     result = storage.prepare_upload(
-        settings, store, buffer.getvalue(), filename, "product"
+        settings, store, buffer.getvalue(), filename
     )
     assert result.mime_type == expected_mime
     assert result.prepared_path.endswith(".png")
@@ -65,7 +64,7 @@ def test_oversized_upload_is_downscaled_instead_of_rejected(settings, store, tri
     Image.new("RGB", (2400, 1800), (180, 90, 50)).save(buffer, format="JPEG")
 
     result = storage.prepare_upload(
-        settings, store, buffer.getvalue(), "large-photo.jpg", "product"
+        settings, store, buffer.getvalue(), "large-photo.jpg"
     )
 
     assert result.width == 1800
@@ -76,13 +75,13 @@ def test_oversized_upload_is_downscaled_instead_of_rejected(settings, store, tri
 def test_safety_pixel_limit_still_applies(settings, store, product_png):
     settings.max_image_pixels = 1_000
     with pytest.raises(storage.StorageError) as exc:
-        storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+        storage.prepare_upload(settings, store, product_png, "dish.png")
     assert exc.value.code == "image_too_large"
     assert "安全上限" in str(exc.value)
 
 
 def test_logo_keeps_transparency(settings, store, logo_png):
-    result = storage.prepare_upload(settings, store, logo_png, "logo.png", "logo")
+    result = storage.prepare_upload(settings, store, logo_png, "logo.png")
     image = storage.open_image(store, result.prepared_path)
     assert image.mode == "RGBA"
     assert image.getpixel((0, 0))[3] == 0
@@ -91,14 +90,8 @@ def test_logo_keeps_transparency(settings, store, logo_png):
 
 def test_corrupt_image_is_rejected(settings, store):
     with pytest.raises(storage.StorageError) as exc:
-        storage.prepare_upload(settings, store, b"not an image", "bad.png", "product")
+        storage.prepare_upload(settings, store, b"not an image", "bad.png")
     assert exc.value.code == "invalid_image"
-
-
-def test_invalid_kind_is_rejected(settings, store, product_png):
-    with pytest.raises(storage.StorageError) as exc:
-        storage.prepare_upload(settings, store, product_png, "dish.png", "background")
-    assert exc.value.code == "invalid_kind"
 
 
 def test_default_upload_limit_is_20_mb():
@@ -108,7 +101,7 @@ def test_default_upload_limit_is_20_mb():
 def test_size_limit_is_enforced(settings, store, product_png):
     settings.max_upload_bytes = 10
     with pytest.raises(storage.StorageError) as exc:
-        storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+        storage.prepare_upload(settings, store, product_png, "dish.png")
     assert exc.value.code == "file_too_large"
     assert "MB 限制" in str(exc.value)
 
@@ -126,18 +119,18 @@ def test_exif_orientation_is_applied(settings, store):
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", exif=exif)
     result = storage.prepare_upload(
-        settings, store, buffer.getvalue(), "rotated.jpg", "product"
+        settings, store, buffer.getvalue(), "rotated.jpg"
     )
     assert (result.width, result.height) == (60, 120)
 
 
-def test_blank_logo_is_rejected(settings, store):
+def test_fully_transparent_image_is_rejected(settings, store):
     image = Image.new("RGBA", (128, 128), (255, 255, 255, 1))
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     with pytest.raises(storage.StorageError) as exc:
-        storage.prepare_upload(settings, store, buffer.getvalue(), "logo.png", "logo")
-    assert exc.value.code == "blank_logo"
+        storage.prepare_upload(settings, store, buffer.getvalue(), "logo.png")
+    assert exc.value.code == "blank_asset"
 
 
 def test_local_object_store_delete(store):
@@ -148,12 +141,12 @@ def test_local_object_store_delete(store):
 
 
 def test_delete_asset_can_force_remove_referenced_asset(settings, store, product_png):
-    prepared = storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+    prepared = storage.prepare_upload(settings, store, product_png, "dish.png")
     db = mongomock.MongoClient().db
     db.assets.insert_one(
         {
             "_id": prepared.id,
-            "kind": "product",
+            "source": "upload",
             "path": prepared.path,
             "prepared_path": prepared.prepared_path,
         }
@@ -180,12 +173,12 @@ def test_delete_asset_can_force_remove_referenced_asset(settings, store, product
 def test_delete_asset_is_blocked_when_whole_image_task_uses_it(
     settings, store, product_png
 ):
-    prepared = storage.prepare_upload(settings, store, product_png, "dish.png", "product")
+    prepared = storage.prepare_upload(settings, store, product_png, "dish.png")
     db = mongomock.MongoClient().db
     db.assets.insert_one(
         {
             "_id": prepared.id,
-            "kind": "product",
+            "source": "upload",
             "path": prepared.path,
             "prepared_path": prepared.prepared_path,
         }
@@ -204,12 +197,12 @@ def test_delete_asset_is_blocked_when_whole_image_task_uses_it(
 
 
 def test_delete_asset_is_blocked_when_brand_logo_uses_it(settings, store, logo_png):
-    prepared = storage.prepare_upload(settings, store, logo_png, "logo.png", "logo")
+    prepared = storage.prepare_upload(settings, store, logo_png, "logo.png")
     db = mongomock.MongoClient().db
     db.assets.insert_one(
         {
             "_id": prepared.id,
-            "kind": "logo",
+            "source": "upload",
             "path": prepared.path,
             "prepared_path": prepared.prepared_path,
         }

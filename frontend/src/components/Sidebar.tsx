@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 
-export type AppView = 'whole' | 'assets' | 'brands'
+export type AppView = 'whole' | 'tasks' | 'assets' | 'brands'
 
 type Props = {
   view: AppView
@@ -27,6 +27,17 @@ function BrandsIcon() {
   )
 }
 
+function TasksIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <rect x="3.2" y="3.1" width="13.6" height="4.2" rx="1.4" />
+      <rect x="3.2" y="8.9" width="13.6" height="4.2" rx="1.4" />
+      <path d="M3.2 15.1h8.6" />
+      <path d="M13.1 15.1h3.7" />
+    </svg>
+  )
+}
+
 function AssetsIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -48,6 +59,12 @@ const NAV_ITEMS: Array<{
     label: '海报设计',
     hint: '生成与改图',
     icon: WholeImageIcon,
+  },
+  {
+    key: 'tasks',
+    label: '任务中心',
+    hint: '生成记录与候选',
+    icon: TasksIcon,
   },
   {
     key: 'assets',
@@ -82,7 +99,7 @@ export default function Sidebar({ view, onChange }: Props) {
         </svg>
         <span className="sidebar-brand-copy">
           <strong>社媒工作台</strong>
-          <span>SICHUAN GOURMET</span>
+          <span>social media</span>
         </span>
       </div>
 

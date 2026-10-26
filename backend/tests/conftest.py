@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from app.config import PROJECT_DIR, Settings
+from app.config import Settings
 from app.services.object_store import LocalObjectStore
 
 
@@ -14,7 +14,6 @@ from app.services.object_store import LocalObjectStore
 def settings(tmp_path: Path) -> Settings:
     return Settings(
         storage_dir=str(tmp_path / "storage"),
-        sample_dir=str(PROJECT_DIR / "seejoy素材" / "素材"),
         core_ai_api_key="test-key",
         core_ai_image_timeout_seconds=5,
     )

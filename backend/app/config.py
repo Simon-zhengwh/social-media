@@ -10,8 +10,7 @@ PROJECT_DIR = BACKEND_DIR.parent
 class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://127.0.0.1:27018"
     mongodb_database: str = "social_media"
-    storage_dir: str = "../storage"
-    sample_dir: str = "../seejoy素材/素材"
+    storage_dir: str = "../local_media"
     skills_dir: str = "../.agents/skills"
 
     core_ai_gateway_base_url: str = (
@@ -20,7 +19,7 @@ class Settings(BaseSettings):
     core_ai_server_base_url: str = "https://core-ai-server.connexup-uat.net"
     core_ai_api_key: str = ""
     core_ai_prompt_agent_id: str = "9a7eb9c3-0d57-4841-83b2-ea9191ff8dd8"
-    core_ai_prompt_agent_timeout_seconds: int = 190
+    core_ai_prompt_agent_timeout_seconds: int = 900
     core_ai_image_model: str = "gpt-image-2.5-sunburst"
     core_ai_design_model: str = "gpt-6.1-sol"
     core_ai_image_quality: str = "high"
@@ -32,6 +31,11 @@ class Settings(BaseSettings):
     image_downscale_pixel_threshold: int = 25_000_000
     max_image_pixels: int = 60_000_000
     max_download_bytes: int = 30_000_000
+
+    image_host_base_url: str = "https://43.139.235.133:5002"
+    image_host_upload_token: str = ""
+    image_host_public_base_url: str = "https://43.139.235.133/img"
+    image_host_timeout_seconds: int = 60
 
     cos_secret_id: str = ""
     cos_secret_key: str = ""
@@ -49,11 +53,6 @@ class Settings(BaseSettings):
     @property
     def storage_path(self) -> Path:
         path = Path(self.storage_dir)
-        return (path if path.is_absolute() else BACKEND_DIR / path).resolve()
-
-    @property
-    def sample_path(self) -> Path:
-        path = Path(self.sample_dir)
         return (path if path.is_absolute() else BACKEND_DIR / path).resolve()
 
     @property

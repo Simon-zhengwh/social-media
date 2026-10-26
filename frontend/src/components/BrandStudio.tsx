@@ -61,9 +61,9 @@ const styleFields: { key: keyof BrandStyleFields; label: string; hint: string; e
   { key: 'subject_style', label: '主体表现', hint: '描述商品、人物等主体的表现方式。', example: '真实菜品摄影拼贴，保持食物细节和自然色泽。', required: true },
   { key: 'background', label: '背景与质感', hint: '描述背景颜色、材质和氛围。', example: '奶油白背景，带轻微纸张纹理。', required: true },
   { key: 'layout', label: '排版偏好', hint: '说明视觉重点、文字层级和疏密偏好，可调整默认建议。', example: '菜品为主，标题放大，优惠条件放在次级区域。' },
-  { key: 'decoration', label: '装饰元素', hint: '选填；不需要装饰时可明确填写“无”。', example: '少量手写箭头、撕纸边缘和促销色块。' },
-  { key: 'identity', label: '固定识别元素', hint: '选填；填写品牌固定角色或其他视觉标记。', example: '白布幽灵角色，佩戴深色墨镜。' },
-  { key: 'restrictions', label: '专属禁忌与补充', hint: '选填；补充该风格特有的限制。', example: '不使用霓虹效果，不添加未定稿角色。' },
+  { key: 'decoration', label: '装饰元素', hint: '不需要装饰时可明确填写“无”。', example: '少量手写箭头、撕纸边缘和促销色块。' },
+  { key: 'identity', label: '固定识别元素', hint: '填写品牌固定角色或其他视觉标记。', example: '白布幽灵角色，佩戴深色墨镜。' },
+  { key: 'restrictions', label: '专属禁忌与补充', hint: '补充该风格特有的限制。', example: '不使用霓虹效果，不添加未定稿角色。' },
 ]
 
 const ruleFields: { key: Exclude<keyof BrandRules, 'version'>; label: string; hint: string }[] = [
@@ -108,6 +108,28 @@ function colorFromHex(hex: string): BrandColor {
   return { hex }
 }
 
+function CommonRulesCard({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      className="brand-common-rules-card"
+      onClick={onOpen}
+    >
+      <span className="brand-common-rules-mark" aria-hidden="true">规</span>
+      <span className="brand-common-rules-copy">
+        <span className="brand-common-rules-title">
+          <strong>通用规范</strong>
+          <span className="brand-common-rules-chip">适用于全部品牌风格</span>
+        </span>
+        <span className="brand-common-rules-description">
+          文案准确 · 素材使用 · Logo · 可读性
+        </span>
+      </span>
+      <span className="brand-common-rules-action">查看与编辑 <span aria-hidden="true">→</span></span>
+    </button>
+  )
+}
+
 export default function BrandStudio({
   brands,
   platforms,
@@ -133,7 +155,7 @@ export default function BrandStudio({
   const [uploadingLogo, setUploadingLogo] = useState(false)
   const [uploadingReference, setUploadingReference] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
-  const [confirmDelete, setConfirmDelete] = useState<{ kind: 'logo' | 'reference'; id: string } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<{ target: 'logo' | 'reference'; id: string } | null>(null)
   const assetDeleteDialogRef = useRef<HTMLDialogElement>(null)
   const [coverBusyId, setCoverBusyId] = useState<string | null>(null)
   const [editingColor, setEditingColor] = useState<number | null>(null)
@@ -406,7 +428,7 @@ export default function BrandStudio({
       invalidatePreview()
     } catch (reason) {
       setRulesError(reason instanceof ApiError && (reason.code === 'http_409' || reason.code === 'version_conflict')
-        ? '通用规范已被其他页面更新。请先保留本次文字，再点击“重新载入”获取最新版本。'
+        ? '通用规范已被其他页面更新，本次修改未保存。请返回后重新打开再修改。'
         : errorText(reason))
     } finally {
       setRulesSaving(false)
@@ -426,14 +448,13 @@ export default function BrandStudio({
             <div className="brand-form-grid">
               {ruleFields.map(({ key, label, hint }) => (
                 <label className="brand-field brand-field-wide" key={key}>
-                  <span>{label} · 必填</span><small>{hint}</small>
-                  <textarea rows={4} maxLength={4000} value={rules[key]} onChange={(event) => setRules({ ...rules, [key]: event.target.value })} />
+                  <span>{label} <span className="asset-required" aria-hidden="true">*</span></span><small>{hint}</small>
+                  <textarea required rows={4} maxLength={4000} value={rules[key]} onChange={(event) => setRules({ ...rules, [key]: event.target.value })} />
                 </label>
               ))}
             </div>
           ) : null}
           <div className="brand-detail-footer-actions">
-            <button type="button" className="mp-btn-ghost" disabled={rulesLoading || rulesSaving} onClick={() => void loadRules()}>重新载入</button>
             <button type="button" className="mp-btn-primary" disabled={!rules || rulesLoading || rulesSaving} onClick={() => void saveRules()}>{rulesSaving ? '保存中…' : '保存通用规范'}</button>
           </div>
         </div>
@@ -444,15 +465,8 @@ export default function BrandStudio({
   if (!selectedId && !creating) {
     return (
       <section className="asset-page brand-page">
-        <div className="asset-head">
-          <div>
-            <span className="eyebrow">03 · 品牌库</span>
-            <h1>品牌风格</h1>
-            <p className="panel-lead">为同一商家维护不同发布平台、用途与品牌视觉。</p>
-          </div>
+        <div className="asset-head asset-head-actions">
           <div className="asset-stats">
-            <span><strong className="tnum">{brands.length}</strong> 套风格</span>
-            <button type="button" className="mp-btn-ghost" onClick={() => { setShowRules(true); void loadRules() }}>通用规范</button>
             <button type="button" className="mp-btn-primary" onClick={() => {
               setCreating(true)
               setDetail(null)
@@ -467,6 +481,7 @@ export default function BrandStudio({
         {brandsError ? <div className="asset-notice asset-notice-error">{brandsError}</div> : null}
         {error ? <div className="asset-notice asset-notice-error">{error}</div> : null}
         {notice ? <div className="asset-notice">{notice}</div> : null}
+        <CommonRulesCard onOpen={() => { setShowRules(true); void loadRules() }} />
         {brandsLoading ? (
           <div className="brand-card-grid">
             {[0, 1, 2].map((item) => (
@@ -477,53 +492,56 @@ export default function BrandStudio({
               </div>
             ))}
           </div>
-        ) : brands.length === 0 ? (
-          <div className="asset-empty"><strong>还没有品牌配置</strong><span>点击“新建风格”，按表单填写视觉要求。</span></div>
         ) : (
-          <div className="brand-card-grid">
-            {brands.map((brand) => (
-              <article
-                className="brand-card"
-                key={brand.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => void openBrand(brand.id)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    void openBrand(brand.id)
-                  }
-                }}
-              >
-                <div className="brand-card-cover">
-                  {brand.cover_url ? (
-                    <img src={brand.cover_url} alt={`${brand.name} 风格封面`} />
-                  ) : (
-                    <span className="brand-cover-placeholder">{brand.short_name.slice(0, 2)}</span>
-                  )}
-                </div>
-                <div className="brand-card-open">
-                  <span className="brand-card-title">
-                    <strong>{brand.name}</strong>
-                    <span className="brand-platform-chip">{brand.platform || '未配置平台'}{brand.purpose ? ` · ${brand.purpose}` : ''}</span>
-                  </span>
-                  <span className="brand-card-summary">{brand.summary || '品牌专属视觉规范'}</span>
-                </div>
-                <div className="brand-card-footer">
-                  <span className="brand-palette-mini">
-                    {brand.colors.slice(0, 6).map((color) => <i key={color.hex} style={{ background: color.hex }} title={color.hex} />)}
-                    {brand.logo_images[0] ? (
-                      <img
-                        className="brand-card-logo-static"
-                        src={brand.logo_images[0].url}
-                        alt={brand.logo_images[0].original_name || `${brand.name} Logo`}
-                      />
-                    ) : null}
-                  </span>
-                </div>
-              </article>
-            ))}
-          </div>
+          <>
+            <div className="brand-card-grid">
+              {brands.map((brand) => (
+                <article
+                  className="brand-card"
+                  key={brand.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => void openBrand(brand.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      void openBrand(brand.id)
+                    }
+                  }}
+                >
+                  <div className="brand-card-cover">
+                    {brand.cover_url ? (
+                      <img src={brand.cover_url} alt={`${brand.name} 风格封面`} />
+                    ) : (
+                      <span className="brand-cover-placeholder">{brand.short_name.slice(0, 2)}</span>
+                    )}
+                  </div>
+                  <div className="brand-card-open">
+                    <span className="brand-card-title">
+                      <strong>{brand.name}</strong>
+                      <span className="brand-platform-chip">{brand.platform || '未配置平台'}{brand.purpose ? ` · ${brand.purpose}` : ''}</span>
+                    </span>
+                    <span className="brand-card-summary">{brand.summary || '品牌专属视觉规范'}</span>
+                  </div>
+                  <div className="brand-card-footer">
+                    <span className="brand-palette-mini">
+                      {brand.colors.slice(0, 6).map((color) => <i key={color.hex} style={{ background: color.hex }} title={color.hex} />)}
+                      {brand.logo_images[0] ? (
+                        <img
+                          className="brand-card-logo-static"
+                          src={brand.logo_images[0].url}
+                          alt={brand.logo_images[0].original_name || `${brand.name} Logo`}
+                        />
+                      ) : null}
+                    </span>
+                  </div>
+                </article>
+              ))}
+            </div>
+            {brands.length === 0 ? (
+              <p className="brand-empty-note">还没有独立品牌风格，点击“新建风格”开始配置。</p>
+            ) : null}
+          </>
         )}
       </section>
     )
@@ -559,14 +577,14 @@ export default function BrandStudio({
 
               <div className="brand-form-grid brand-basics-grid">
                 <label className="brand-field brand-field-wide">
-                  <span>风格名称 · 必填</span>
+                  <span>风格名称 <span className="asset-required" aria-hidden="true">*</span></span>
                   <small>用名称区分商家及其视觉风格。</small>
                   <input placeholder="例如：喜聚 · 暖调复古" required maxLength={80} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} />
                 </label>
 
                 <label className="brand-field">
-                  <span>适用平台 · 必填</span>
-                  <select value={draft.platform_id} onChange={(event) => {
+                  <span>适用平台 <span className="asset-required" aria-hidden="true">*</span></span>
+                  <select required value={draft.platform_id} onChange={(event) => {
                     const next = platforms.find((item) => item.id === event.target.value)
                     updateDraft({ platform_id: event.target.value, placement_id: next?.default_placement_id ?? '' })
                   }}>
@@ -575,13 +593,13 @@ export default function BrandStudio({
                   </select>
                 </label>
                 <label className="brand-field">
-                  <span>发布用途 · 必填</span>
-                  <select value={draft.placement_id} disabled={!selectedPlatform} onChange={(event) => updateDraft({ placement_id: event.target.value })}>
+                  <span>发布用途 <span className="asset-required" aria-hidden="true">*</span></span>
+                  <select required value={draft.placement_id} disabled={!selectedPlatform} onChange={(event) => updateDraft({ placement_id: event.target.value })}>
                     {selectedPlatform ? selectedPlatform.placements.map((placement) => <option key={placement.id} value={placement.id}>{placement.name}</option>) : <option value="">请选择用途</option>}
                   </select>
                 </label>
                 <label className="brand-field brand-field-wide">
-                  <span>风格定位 · 必填</span>
+                  <span>风格定位 <span className="asset-required" aria-hidden="true">*</span></span>
                   <small>用几个关键词概括整体气质。</small>
                   <textarea rows={2} required maxLength={500} placeholder="例如：温暖、复古、轻手作感" value={draft.summary} onChange={(event) => updateDraft({ summary: event.target.value })} />
                 </label>
@@ -589,7 +607,7 @@ export default function BrandStudio({
 
               <div className="brand-visual-assets">
                 <div className="brand-asset-group">
-                  <div className="brand-subhead"><strong>品牌 Logo</strong><span>选填 · {detail?.logo_images.length ?? 0}/5</span></div>
+                  <div className="brand-subhead"><strong>品牌 Logo</strong><span>{detail?.logo_images.length ?? 0}/5</span></div>
                   <div className="brand-logo-strip">
                     {detail?.logo_images.map((logo) => (
                       <div className="brand-logo-chip" key={logo.asset_id}>
@@ -599,7 +617,7 @@ export default function BrandStudio({
                           alt={logo.original_name}
                           title={logo.original_name}
                         />
-                        <button type="button" className="brand-logo-remove" onClick={() => setConfirmDelete({ kind: 'logo', id: logo.asset_id })} aria-label="移除 Logo" disabled={deletingId === logo.asset_id}>×</button>
+                        <button type="button" className="brand-logo-remove" onClick={() => setConfirmDelete({ target: 'logo', id: logo.asset_id })} aria-label="移除 Logo" disabled={deletingId === logo.asset_id}>×</button>
                       </div>
                     ))}
                     {!logosFull ? (
@@ -647,7 +665,7 @@ export default function BrandStudio({
                 <div className="brand-form-grid">
                   {styleFields.map(({ key, label, hint, example, required }) => (
                     <label className="brand-field" key={key}>
-                      <span>{label} · {required ? '必填' : key === 'palette_notes' ? '配色二选一' : '选填'}</span>
+                      <span>{label}{required ? <> <span className="asset-required" aria-hidden="true">*</span></> : key === 'palette_notes' ? ' · 配色二选一' : null}</span>
                       <small>{hint}</small>
                       <textarea rows={3} required={required} maxLength={key === 'restrictions' ? 6000 : 4000} placeholder={`例如：${example}`} value={draft.style_fields![key]} onChange={(event) => updateDraft({ style_fields: { ...draft.style_fields!, [key]: event.target.value } })} />
                     </label>
@@ -705,7 +723,7 @@ export default function BrandStudio({
                     <div className="brand-reference-meta"><strong>{reference.original_name}</strong><span>{reference.width} × {reference.height}</span></div>
                     <div className="brand-reference-actions">
                       {reference.is_cover ? <span className="brand-cover-badge">当前封面</span> : <button type="button" className="mp-btn-ghost mp-btn-small" onClick={() => void setCover(reference.asset_id)} disabled={coverBusyId !== null}>{coverBusyId === reference.asset_id ? '设置中…' : '设为封面'}</button>}
-                      <button type="button" className="brand-reference-delete" onClick={() => setConfirmDelete({ kind: 'reference', id: reference.asset_id })} disabled={deletingId === reference.asset_id}>删除</button>
+                      <button type="button" className="brand-reference-delete" onClick={() => setConfirmDelete({ target: 'reference', id: reference.asset_id })} disabled={deletingId === reference.asset_id}>删除</button>
                     </div>
                   </article>
                 ))}
@@ -728,13 +746,13 @@ export default function BrandStudio({
                     onClose={() => setConfirmDelete(null)}
                   >
                     <strong id="brand-asset-delete-title">
-                      移除{confirmDelete.kind === 'logo' ? '品牌 Logo' : '参考图'}？
+                      移除{confirmDelete.target === 'logo' ? '品牌 Logo' : '参考图'}？
                     </strong>
                     <p>确认从当前风格中移除？素材文件和历史任务会保留。</p>
                     <div className="brand-delete-modal-actions">
                       <button type="button" onClick={() => setConfirmDelete(null)} autoFocus>取消</button>
                       <button type="button" className="is-danger" onClick={() => {
-                        if (confirmDelete.kind === 'logo') void removeLogo(confirmDelete.id)
+                        if (confirmDelete.target === 'logo') void removeLogo(confirmDelete.id)
                         else void removeReference(confirmDelete.id)
                       }}>确认移除</button>
                     </div>

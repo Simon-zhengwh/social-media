@@ -116,7 +116,7 @@ def _save_output_asset(
     db.assets.insert_one(
         {
             "_id": asset_id,
-            "kind": "output",
+            "source": "generated",
             "original_name": f"{task_id}-v{version}.png",
             "path": relative,
             "prepared_path": relative,
@@ -173,8 +173,8 @@ def _load_reference_images(
     logo_id = str(input_data.get("logo_asset_id") or "").strip()
     if logo_id:
         logo = db.assets.find_one({"_id": logo_id})
-        if logo is None or logo.get("kind") != "logo":
-            raise StudioError("logo_missing", "Logo 不存在或类型不正确", 422)
+        if logo is None:
+            raise StudioError("logo_missing", "Logo 不存在", 422)
         try:
             references.append(image_ref_from_asset(db, store, logo_id))
         except Exception as exc:  # noqa: BLE001 - surface a clear user error
@@ -186,7 +186,7 @@ def _load_reference_images(
         style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
     for asset_id in dict.fromkeys(style_ids):
         asset = db.assets.find_one({"_id": asset_id})
-        if asset is None or asset.get("kind") != "brand_reference":
+        if asset is None:
             raise StudioError("style_reference_missing", "风格参考图不存在", 422)
         try:
             references.append(image_ref_from_asset(db, store, str(asset_id)))
@@ -269,7 +269,7 @@ def _model_input_images(
 ) -> list[dict[str, str]]:
     images: list[dict[str, str]] = []
     asset_ids = [
-        (asset_id, None)
+        (asset_id, "product")
         for asset_id in list(input_data.get("product_asset_ids") or [])[:6]
     ]
     logo_id = str(input_data.get("logo_asset_id") or "").strip()
@@ -279,11 +279,13 @@ def _model_input_images(
         style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
         if input_data.get("brand_mode") == "preset" and brand:
             style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
-        asset_ids.extend((asset_id, None) for asset_id in dict.fromkeys(style_ids))
+        asset_ids.extend(
+            (asset_id, "style_reference") for asset_id in dict.fromkeys(style_ids)
+        )
     if source_asset_id:
         asset_ids.append((source_asset_id, "current_design"))
 
-    for asset_id, kind_override in asset_ids:
+    for asset_id, role in asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:
             continue
@@ -291,7 +293,7 @@ def _model_input_images(
             {
                 "asset_id": str(asset_id),
                 "name": str(asset.get("original_name") or "参考图片"),
-                "kind": kind_override or str(asset.get("kind") or "reference"),
+                "role": role,
             }
         )
     return images

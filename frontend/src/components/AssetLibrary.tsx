@@ -1,20 +1,14 @@
 import { useState } from 'react'
-import type { Asset, AssetKind } from '../types'
+import type { Asset } from '../types'
 import { ZoomableImage } from './ImageLightbox'
 
 type Props = {
   assets: Asset[]
   loading: boolean
   error: string | null
-  uploadingKind: AssetKind | null
-  onUpload: (kind: AssetKind, file: File) => Promise<boolean>
-  onUseSamples: () => Promise<string | null>
+  uploading: boolean
+  onUpload: (file: File) => Promise<boolean>
   onDelete: (asset: Asset) => Promise<boolean>
-  onRefresh: () => void
-}
-
-function kindLabel(kind: AssetKind) {
-  return kind === 'product' ? '图片素材' : '参考图'
 }
 
 function formatDate(value: string) {
@@ -32,37 +26,19 @@ export default function AssetLibrary({
   assets,
   loading,
   error,
-  uploadingKind,
+  uploading,
   onUpload,
-  onUseSamples,
   onDelete,
-  onRefresh,
 }: Props) {
   const [notice, setNotice] = useState<string | null>(null)
-  const [sampleBusy, setSampleBusy] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
-  const productCount = assets.filter((asset) => asset.kind === 'product').length
-  const referenceCount = assets.length - productCount
 
-  const handleSamples = async () => {
-    setSampleBusy(true)
+  const handleFile = async (file: File) => {
     setNotice(null)
-    try {
-      const message = await onUseSamples()
-      if (message) {
-        setNotice(message)
-      }
-    } finally {
-      setSampleBusy(false)
-    }
-  }
-
-  const handleFile = async (kind: AssetKind, file: File) => {
-    setNotice(null)
-    const ok = await onUpload(kind, file)
+    const ok = await onUpload(file)
     if (ok) {
-      setNotice(kind === 'product' ? '图片已上传' : '素材已上传')
+      setNotice('图片已上传')
     }
   }
 
@@ -80,26 +56,10 @@ export default function AssetLibrary({
     }
   }
 
-  const disabled = uploadingKind !== null || sampleBusy
+  const disabled = uploading
 
   return (
     <section className="asset-page">
-      <div className="asset-head">
-        <div>
-          <span className="eyebrow">02 · 资产库</span>
-          <h1>资产管理</h1>
-          <p className="panel-lead">管理图片素材；品牌参考图请在「品牌风格」中维护。</p>
-        </div>
-        <div className="asset-stats">
-          <span>
-            <strong className="tnum">{productCount}</strong> 图片素材
-          </span>
-          <span>
-            <strong className="tnum">{referenceCount}</strong> 素材图
-          </span>
-        </div>
-      </div>
-
       <div className="asset-toolbar">
         <label className={`mp-btn-secondary mp-btn-small upload-trigger${disabled ? ' is-disabled' : ''}`}>
           <input
@@ -109,25 +69,14 @@ export default function AssetLibrary({
             onChange={(event) => {
               const file = event.target.files?.[0]
               if (file) {
-                void handleFile('product', file)
+                void handleFile(file)
               }
               event.target.value = ''
             }}
           />
           上传图片
         </label>
-        <button
-          type="button"
-          className="mp-btn-secondary mp-btn-small"
-          onClick={() => void handleSamples()}
-          disabled={disabled}
-        >
-          {sampleBusy ? '载入中…' : '载入示例素材'}
-        </button>
-        <button type="button" className="mp-btn-ghost mp-btn-small" onClick={onRefresh} disabled={loading}>
-          刷新
-        </button>
-        {uploadingKind ? <span className="asset-busy">上传中…</span> : null}
+        {uploading ? <span className="asset-busy">上传中…</span> : null}
       </div>
 
       {notice ? <div className="asset-notice">{notice}</div> : null}
@@ -146,14 +95,14 @@ export default function AssetLibrary({
       ) : assets.length === 0 ? (
         <div className="asset-empty">
           <strong>还没有素材</strong>
-          <span>上传图片，或载入示例素材后开始生成。</span>
+          <span>上传图片后开始生成。</span>
         </div>
       ) : (
         <div className="asset-grid">
           {assets.map((asset) => {
             return (
               <article className="asset-card" key={asset.id}>
-                <div className={`asset-thumb asset-thumb-${asset.kind}`}>
+                <div className="asset-thumb">
                   <ZoomableImage
                     className="asset-thumb-preview"
                     src={asset.url}
@@ -162,9 +111,6 @@ export default function AssetLibrary({
                   />
                 </div>
                 <div className="asset-card-head">
-                  <span className={`asset-kind asset-kind-${asset.kind}`}>
-                    {kindLabel(asset.kind)}
-                  </span>
                   <span className="asset-date">{formatDate(asset.created_at)}</span>
                 </div>
                 <strong className="asset-name" title={asset.original_name}>

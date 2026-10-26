@@ -13,7 +13,7 @@
 - 品牌风格页面支持紧凑基本信息编辑、生成规范折叠编辑、参考图管理，以及最多 5 张 Logo 和最多 6 个主色调管理。颜色统一使用 `#RRGGBB` HEX。
 - 品牌风格支持按固定表单新建和编辑：配色说明、字体、主体表现、背景、排版、装饰、固定识别元素与专属要求；规范预览由后端统一组装。
 - 「通用规范」可在品牌风格页编辑，覆盖文案准确、素材使用、Logo 和可读性。更新应用于新任务；任务保存当时的规范正文和版本，历史任务不变。
-- 资产管理支持上传图片、载入 `seejoy素材/素材/` 示例素材、查看已保存素材和删除素材。
+- 资产管理支持上传图片、查看已保存素材和删除素材。
 - 每次生成支持 1–6 张候选，默认 3 张；候选可在结果区切换，选中的版本继续编辑。
 - 发布平台为选填项：选择平台后可指定用途，比例、尺寸和安全区规则由平台预设统一提供；不选择时可手动指定画幅比例。
 - 当前包含小红书、Instagram、TikTok、Google Business Profile 和 Meta 广告，支持 3:4、4:3、1:1、4:5、9:16、16:9 画布。
@@ -21,20 +21,24 @@
 - 支持 `gpt-image-2.5-sunburst`、`gemini-3.1-flash-image`、`seedream-5-pro-image-to-image`，默认使用 `gpt-image-2.5-sunburst`。
 - 提示词输入框支持 AI 优化，会根据当前品牌、素材、平台规则和商家信息生成可直接用于整图生成的提示词。
 - 优化 Agent 使用 `.agents/skills/image-gen-prompt/`：从官方 `imagegen` skill 抽取提示词编写原则、可选字段和示例，按任务需要组织提示词。
-- 图片通过 COS URL 传给 Agent，并区分内容素材与风格参考；下游生图只附内容素材，参考风格转成提示词描述。
+- 图片默认保存在项目内 `local_media/objects/`；提示词优化按需把本地图片上传到自建图床，使用永久 443 公网直链供外部模型读取。
 - 接口返回 `{"prompt":"..."}`，保留非空和长度校验；不要求固定七段、独立事实数组或案例专用的设计规则。优化后的提示词直接交给生图模型。
 - 生成和改图调用 core-ai `/images/generations` 与 `/images/edits`；自然语言改图以选定版本作为源图，不调用旧的图层规划或文字渲染链路。
 - 多轮改图仅发送本轮修改要求、原始内容素材（含选定 Logo）和选中版本的生成图，附简短图片顺序说明；不重复发送品牌规范、风格参考图、平台规则、初始生成提示词或历史修改指令。
 - 改图提示词要求生成图仅作为风格与排版参考，禁止以其为底图反复重绘或复制主体细节；主体与 Logo 细节取自原始素材，只做本轮指定的修改，其余内容保持一致。这是模型提示词约束，不保证像素级无损。
-- 任务、版本、候选和模型输入快照保存在 MongoDB；图片保存在 COS，未配置 COS 时回退到本地 `storage/objects/`。
+- 任务、版本、候选和模型输入快照保存在 MongoDB；图片以本地对象存储为主，保存到项目内 `local_media/objects/`。
+- 侧边栏「任务中心」按候选批次聚合展示生成记录，可筛选状态、下载成品、页内重试失败项，并点击任务回到工作台继续编辑。
 - 刷新页面可通过 `?whole=<task_id>` 恢复整图任务和当前版本。
+- 任务中心使用 `?view=tasks`；打开任务后会切换到 `?view=whole&whole=<task_id>`（整图页省略 `view` 参数）。
 
 ## 工作流接口
 
 | 接口 | 用途 |
 |---|---|
 | `POST /api/whole-image/tasks` | 创建整图任务，返回 202 |
+| `GET /api/whole-image/tasks?status=...&limit=...&cursor=...` | 按候选批次获取任务列表 |
 | `GET /api/whole-image/tasks/{id}` | 获取任务、当前版本和模型输入 |
+| `POST /api/whole-image/tasks/{id}/retry` | 重试失败的生成或改图任务，返回 202 |
 | `POST /api/whole-image/tasks/{id}/edits` | 基于 `source_version_id` 执行自然语言改图 |
 | `GET /api/whole-image/tasks/{id}/versions` | 获取版本列表 |
 | `POST /api/whole-image/tasks/{id}/versions/{version_id}/select` | 选择继续编辑的版本 |
@@ -45,7 +49,7 @@
 
 | 接口 | 用途 |
 |---|---|
-| `GET /api/assets` | 素材列表，可使用 `?kind=` 过滤 |
+| `GET /api/assets` | 获取资产库中的全部上传图片 |
 | `POST /api/assets` | 上传图片素材 |
 | `DELETE /api/assets/{id}` | 删除素材；被整图任务引用时需显式 `force=true` |
 | `GET /api/brands` / `GET /api/brands/{id}` | 品牌列表与详情 |
@@ -60,7 +64,6 @@
 | `DELETE /api/brands/{id}/logos/{asset_id}` | 从当前风格移除 Logo 关联 |
 | `GET /api/platforms` | 平台、用途、尺寸和安全区规则 |
 | `POST /api/prompts/optimize` | 优化整图生成提示词 |
-| `GET /api/samples` | 导入 `seejoy素材/素材/` 示例素材 |
 | `GET /api/health` | MongoDB、对象存储和模型配置健康检查 |
 
 ## 环境
@@ -97,7 +100,7 @@ npm install
 npm run dev -- --host 127.0.0.1
 ```
 
-打开 <http://127.0.0.1:5173>，进入「资产管理」载入示例素材，再回到「海报设计」选择素材并生成。接口文档位于 <http://127.0.0.1:8000/docs>。
+打开 <http://127.0.0.1:5173>，进入「资产管理」上传图片，再回到「海报设计」选择素材并生成。接口文档位于 <http://127.0.0.1:8000/docs>。
 
 ## 配置
 
@@ -106,33 +109,38 @@ npm run dev -- --host 127.0.0.1
 ```dotenv
 MONGODB_URI=mongodb://127.0.0.1:27018
 MONGODB_DATABASE=social_media
-STORAGE_DIR=../storage
-SAMPLE_DIR=../seejoy素材/素材
+STORAGE_DIR=../local_media
 SKILLS_DIR=../.agents/skills
 
 CORE_AI_GATEWAY_BASE_URL=https://core-ai-server.connexup-uat.net/api/gateway/v1
 CORE_AI_SERVER_BASE_URL=https://core-ai-server.connexup-uat.net
 CORE_AI_API_KEY=replace_me
 CORE_AI_PROMPT_AGENT_ID=9a7eb9c3-0d57-4841-83b2-ea9191ff8dd8
-CORE_AI_PROMPT_AGENT_TIMEOUT_SECONDS=190
+CORE_AI_PROMPT_AGENT_TIMEOUT_SECONDS=900
 CORE_AI_IMAGE_MODEL=gpt-image-2.5-sunburst
 CORE_AI_DESIGN_MODEL=gpt-6.1-sol
 CORE_AI_IMAGE_QUALITY=high
 CORE_AI_IMAGE_TIMEOUT_SECONDS=300
 LLM_TIMEOUT_SECONDS=120
 
-COS_SECRET_ID=replace_me
-COS_SECRET_KEY=replace_me
-COS_BUCKET=your-bucket-1250000000
-COS_REGION=ap-guangzhou
+IMAGE_HOST_BASE_URL=https://43.139.235.133:5002
+IMAGE_HOST_UPLOAD_TOKEN=replace_me
+IMAGE_HOST_PUBLIC_BASE_URL=https://43.139.235.133/img
+IMAGE_HOST_TIMEOUT_SECONDS=60
+
+# 默认留空，使用 local_media/objects。
+COS_SECRET_ID=
+COS_SECRET_KEY=
+COS_BUCKET=
+COS_REGION=
 COS_PREFIX=social-media
 ```
 
-正式运行建议配置 COS；未配置时图片写入本地对象存储，仅适合开发和离线测试。
+当前默认使用本地对象存储。提示词优化需要配置自建图床；图片仅在第一次需要外部模型读取时上传，返回 URL 会缓存在素材记录中。COS 配置留空即可，仅保留兼容入口。
 
 ## 品牌与素材
 
-品牌运行时配置保存在 MongoDB 的 `brands` 集合。品牌参考图和封面在 `assets` 集合中的 `kind` 为 `brand_reference`，品牌 Logo 的 `kind` 为 `logo`。任务创建时会把平台、用途、主色调、Logo 和参考图 asset id 写入 `whole_tasks.brand` 快照，后续品牌修改不会影响旧任务。生成页可单独选择当前风格的 Logo，默认使用第一张，也可选择不使用。
+品牌运行时配置保存在 MongoDB 的 `brands` 集合。资产库中的图片不预设内容、Logo 或参考图角色；同一张图片可以在生成页按位置分别作为内容素材、Logo 或风格参考，角色由任务字段和品牌关联决定。任务创建时会把平台、用途、主色调、Logo 和参考图 asset id 写入 `whole_tasks.brand` 快照，后续品牌修改不会影响旧任务。生成页可单独选择当前风格的 Logo，默认使用第一张，也可选择不使用。
 
 首次导入或重新导入 skill：
 
@@ -143,12 +151,6 @@ Set-Location backend
 
 默认只导入不存在的品牌；覆盖已有品牌加 `--force`，只导入某个品牌加 `--only seejoy`。
 
-同步 `seejoy素材/素材/` 文件夹会清空并重新导入全部素材：
-
-```powershell
-Set-Location backend
-.\.venv\Scripts\python.exe scripts\sync_materials.py
-```
 
 将现有喜聚、朵颐规范整理为表单字段（保留素材关联和历史任务）：
 
@@ -160,6 +162,26 @@ Set-Location backend
 ```
 
 备份写入 `storage/backups/brand-templates/<时间>/brand-templates.ejson`。原规范在风格详情中只读留存。已有结构化风格不会被 skill 的 `--force` 导入覆盖。
+
+将现有素材、风格卡片图片和最近 N 个任务的图片迁移到本地（默认预览，`--apply` 执行）：
+
+```powershell
+Set-Location backend
+.\.venv\Scripts\python.exe scripts\migrate_media_to_local.py --recent-tasks 10
+.\.venv\Scripts\python.exe scripts\migrate_media_to_local.py --recent-tasks 10 --apply
+```
+
+运行时对象位于 `local_media/objects/`；便于浏览的归档位于 `local_media/archive/materials/`、`archive/brand-styles/` 和 `archive/recent-tasks/`。迁移报告写入 `local_media/migration-report.json`。
+
+将迁移后的全部素材和最近 10 个任务图片上传到自建图床：
+
+```powershell
+Set-Location backend
+.\.venv\Scripts\python.exe scripts\upload_local_media_to_image_host.py
+.\.venv\Scripts\python.exe scripts\upload_local_media_to_image_host.py --apply
+```
+
+图床返回的永久 443 直链会写回素材记录并保存在 `local_media/image-host-report.json`。
 
 ## 提示词优化基准
 
@@ -193,8 +215,8 @@ npm run lint
 backend/            FastAPI、整图生成与编辑服务
 frontend/           React + TypeScript 单页工作台
 .agents/skills/     品牌 skill 种子与文档
-storage/            本地对象存储回退和实验产物
-seejoy素材/素材/    示例素材
+local_media/        本地运行时对象与素材、风格、任务归档
+storage/            备份、日志和实验产物
 docker-compose.yml  MongoDB，127.0.0.1:27018
 ```
 

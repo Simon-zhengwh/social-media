@@ -42,6 +42,7 @@ type Props = {
   onUploadStyleReferences: (files: File[]) => void
   onRemoveStyleReference: (assetId: string) => void
   onUploadLogos: (files: File[]) => void
+  onPickLogo: () => void
   onRemoveLogo: (assetId: string) => void
   onPlatformChange: (platformId: string) => void
   onPlacementChange: (placementId: string) => void
@@ -82,6 +83,7 @@ export default function WholeImageForm({
   onUploadStyleReferences,
   onRemoveStyleReference,
   onUploadLogos,
+  onPickLogo,
   onRemoveLogo,
   onPlatformChange,
   onPlacementChange,
@@ -150,6 +152,7 @@ export default function WholeImageForm({
         logoDeleting={logoDeleting}
         canAddLogo={canAddLogo}
         onUploadLogos={onUploadLogos}
+        onPickLogo={onPickLogo}
         onRemoveLogo={onRemoveLogo}
       />
 
@@ -163,7 +166,7 @@ export default function WholeImageForm({
               <div className="product-thumb" key={product.id}>
                 <ZoomableImage
                   className="product-thumb-preview"
-                  imageClassName={`product-thumb-img product-thumb-img-${product.kind}`}
+                  imageClassName="product-thumb-img"
                   src={product.url}
                   alt={product.original_name}
                   title={product.original_name}

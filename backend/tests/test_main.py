@@ -6,5 +6,7 @@ def test_public_routes_only_expose_whole_image_workflow() -> None:
 
     assert not any(path == "/api/tasks" or path.startswith("/api/tasks/") for path in paths)
     assert "/api/whole-image/tasks" in paths
+    assert "/api/whole-image/tasks/{task_id}/retry" in paths
     assert "/api/whole-image/tasks/{task_id}/edits" in paths
     assert "/api/prompts/optimize" in paths
+    assert "/api/samples" not in paths

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 from datetime import datetime, timezone
 from io import BytesIO
@@ -10,25 +9,9 @@ from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFil
 from PIL import Image, ImageOps
 
 from app.schemas import BrandUpdate, DuplicateBrandRequest
-from app.services import brand_rules, brand_style, platform_presets, storage
+from app.services import asset_records, brand_rules, brand_style, platform_presets
 
 router = APIRouter(prefix="/api/brands", tags=["brands"])
-
-
-def _asset_document(prepared: storage.PreparedUpload) -> dict[str, Any]:
-    return {
-        "_id": prepared.id,
-        "kind": prepared.kind,
-        "original_name": prepared.original_name,
-        "path": prepared.path,
-        "prepared_path": prepared.prepared_path,
-        "mime_type": prepared.mime_type,
-        "width": prepared.width,
-        "height": prepared.height,
-        "bytes": prepared.bytes,
-        "sha256": prepared.sha256,
-        "created_at": datetime.now(timezone.utc),
-    }
 
 
 def _brand_document(db: Any, brand_id: str) -> dict[str, Any]:
@@ -58,7 +41,7 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
     logo_images: list[dict[str, Any]] = []
     for asset_id in brand.logo_asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
-        if asset is None or asset.get("kind") != "logo":
+        if asset is None:
             continue
         logo_images.append({
             "asset_id": asset_id,
@@ -115,7 +98,6 @@ def list_brands(request: Request) -> list[dict[str, Any]]:
             }
             for asset_id in brand.logo_asset_ids
             if (asset := db.assets.find_one({"_id": asset_id})) is not None
-            and asset.get("kind") == "logo"
         ]
         items.append(item)
     return items
@@ -191,8 +173,8 @@ def update_brand(
     )[:brand_style.MAX_BRAND_LOGOS]
     for logo_id in logo_ids:
         asset = db.assets.find_one({"_id": logo_id})
-        if asset is None or asset.get("kind") != "logo":
-            raise HTTPException(status_code=422, detail="品牌 Logo 不存在或类型不正确")
+        if asset is None:
+            raise HTTPException(status_code=422, detail="品牌 Logo 不存在")
     colors = (
         [item.model_dump() for item in payload.colors]
         if "colors" in payload.model_fields_set
@@ -306,8 +288,6 @@ def _persist_uploaded_asset(
     settings: Any,
     store: Any,
     file: UploadFile,
-    *,
-    kind: str,
 ) -> dict[str, Any]:
     data = file.file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
@@ -315,14 +295,9 @@ def _persist_uploaded_asset(
             status_code=413,
             detail=f"文件超过 {settings.max_upload_bytes / 1_000_000:g} MB 限制",
         )
-    digest = hashlib.sha256(data).hexdigest()
-    asset = db.assets.find_one({"kind": kind, "sha256": digest})
-    if asset is None:
-        prepared = storage.prepare_upload(
-            settings, store, data, file.filename or "", kind
-        )
-        asset = _asset_document(prepared)
-        db.assets.insert_one(asset)
+    asset, _ = asset_records.persist_upload(
+        db, settings, store, data, file.filename or ""
+    )
     return asset
 
 
@@ -344,7 +319,6 @@ def upload_logos(
             request.app.state.settings,
             request.app.state.store,
             file,
-            kind="logo",
         )
         asset_id = str(asset["_id"])
         if asset_id not in logo_ids:
@@ -388,21 +362,7 @@ def upload_reference(
     reference_ids = list(document.get("reference_asset_ids") or [])[:brand_style.MAX_BRAND_REFERENCES]
     if len(reference_ids) >= brand_style.MAX_BRAND_REFERENCES:
         raise HTTPException(status_code=422, detail=f"品牌参考图最多 {brand_style.MAX_BRAND_REFERENCES} 张")
-    data = file.file.read(settings.max_upload_bytes + 1)
-    if len(data) > settings.max_upload_bytes:
-        raise HTTPException(status_code=413, detail=f"文件超过 {settings.max_upload_bytes / 1_000_000:g} MB 限制")
-    digest = hashlib.sha256(data).hexdigest()
-    asset = db.assets.find_one({"kind": "brand_reference", "sha256": digest})
-    if asset is None:
-        prepared = storage.prepare_upload(
-            settings,
-            store,
-            data,
-            file.filename or "",
-            "brand_reference",
-        )
-        asset = _asset_document(prepared)
-        db.assets.insert_one(asset)
+    asset = _persist_uploaded_asset(db, settings, store, file)
     asset_id = str(asset["_id"])
     if asset_id not in reference_ids:
         reference_ids.append(asset_id)

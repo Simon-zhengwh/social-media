@@ -54,7 +54,6 @@ class StorageError(Exception):
 @dataclass
 class PreparedUpload:
     id: str
-    kind: str
     original_name: str
     path: str
     prepared_path: str
@@ -106,10 +105,7 @@ def prepare_upload(
     store: ObjectStore,
     data: bytes,
     original_name: str,
-    kind: str,
 ) -> PreparedUpload:
-    if kind not in {"product", "logo", "decoration", "brand_reference"}:
-        raise StorageError("invalid_kind", "只支持 product、logo、decoration 或 brand_reference 素材")
     if not data:
         raise StorageError("empty_file", "文件为空")
     if len(data) > settings.max_upload_bytes:
@@ -136,7 +132,7 @@ def prepare_upload(
         len(data) > settings.image_compress_threshold_bytes
         or pixel_count > settings.image_downscale_pixel_threshold
     )
-    max_side = 2048 if kind == "product" else 1600 if kind == "brand_reference" else 1024
+    max_side = 2048
     if needs_compression:
         max_side = min(max_side, 1800)
 
@@ -144,7 +140,8 @@ def prepare_upload(
         with Image.open(io.BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source)
             image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
-            prepared = image.convert("RGBA" if kind in {"logo", "decoration"} else "RGB")
+            has_alpha = "A" in image.getbands() or "transparency" in image.info
+            prepared = image.convert("RGBA" if has_alpha else "RGB")
     except (
         UnidentifiedImageError,
         OSError,
@@ -153,10 +150,10 @@ def prepare_upload(
     ) as exc:
         raise StorageError("invalid_image", "图片解码失败") from exc
 
-    if kind in {"logo", "decoration"} and prepared.mode == "RGBA":
+    if prepared.mode == "RGBA":
         alpha = prepared.getchannel("A")
         if alpha.getextrema()[1] < 16:
-            raise StorageError("blank_logo" if kind == "logo" else "blank_asset", "图片几乎全透明，请检查文件")
+            raise StorageError("blank_asset", "图片几乎全透明，请检查文件")
 
     asset_id = f"asset_{uuid.uuid4().hex}"
     extension, mime_type = _upload_descriptor(image_format, original_name)
@@ -167,7 +164,6 @@ def prepare_upload(
 
     return PreparedUpload(
         id=asset_id,
-        kind=kind,
         original_name=original_name or f"upload{extension}",
         path=original_key,
         prepared_path=prepared_key,

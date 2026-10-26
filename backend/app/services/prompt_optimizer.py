@@ -5,7 +5,7 @@ from typing import Any
 
 from app.config import Settings
 from app.schemas import PromptOptimizeRequest
-from app.services import brand_rules, brand_style, platform_presets
+from app.services import brand_rules, brand_style, image_host, platform_presets
 from app.services.core_ai import CoreAIError
 from app.services.object_store import CosObjectStore
 
@@ -30,8 +30,8 @@ def _validate_products(db: Any, asset_ids: list[str]) -> list[str]:
         raise PromptOptimizerError("product_required", "请先选择 1–6 张素材图", 422)
     for asset_id in asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
-        if asset is None or asset.get("kind") not in {"product", "logo"}:
-            raise PromptOptimizerError("product_missing", "素材图不存在或类型不正确", 422)
+        if asset is None:
+            raise PromptOptimizerError("product_missing", "素材图不存在", 422)
     return asset_ids
 
 
@@ -40,25 +40,17 @@ def _validate_style_refs(db: Any, asset_ids: list[str]) -> list[str]:
         raise PromptOptimizerError("style_reference_limit", "风格参考图最多 3 张", 422)
     for asset_id in asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
-        if asset is None or asset.get("kind") != "brand_reference":
-            raise PromptOptimizerError("style_reference_missing", "风格参考图不存在或类型不正确", 422)
+        if asset is None:
+            raise PromptOptimizerError("style_reference_missing", "风格参考图不存在", 422)
     return asset_ids
 
 
-def _validate_logo(
-    db: Any,
-    asset_id: str | None,
-    brand: brand_style.BrandStyle | None,
-) -> str | None:
+def _validate_logo(db: Any, asset_id: str | None) -> str | None:
     if not asset_id:
         return None
     asset = db.assets.find_one({"_id": asset_id})
-    if asset is None or asset.get("kind") != "logo":
-        raise PromptOptimizerError("logo_missing", "Logo 不存在或类型不正确", 422)
-    if brand is not None and asset_id not in brand.logo_asset_ids:
-        raise PromptOptimizerError(
-            "logo_not_in_brand", "所选 Logo 不属于当前品牌风格", 422
-        )
+    if asset is None:
+        raise PromptOptimizerError("logo_missing", "Logo 不存在", 422)
     return asset_id
 
 
@@ -74,17 +66,43 @@ def _platform_context(request: PromptOptimizeRequest) -> str:
     return platform_presets.prompt_context(platform, placement)
 
 
-def _cos_reference_url(db: Any, store: CosObjectStore, asset_id: str, expires: int) -> str:
+def _reference_url(
+    db: Any,
+    settings: Settings,
+    store: Any,
+    asset_id: str,
+) -> str:
     asset = db.assets.find_one({"_id": asset_id})
-    key = (asset.get("prepared_path") or asset.get("path")) if asset else None
+    if asset is None:
+        raise PromptOptimizerError("reference_unavailable", f"参考图不存在：{asset_id}", 422)
+
+    if settings.image_host_base_url.strip() and settings.image_host_upload_token.strip():
+        try:
+            return image_host.upload_asset(db, store, settings, asset_id)
+        except image_host.ImageHostError as exc:
+            status_code = {
+                "image_host_quota": 507,
+                "image_host_file_too_large": 413,
+                "image_host_unsupported": 415,
+                "image_host_not_configured": 503,
+                "image_host_auth": 503,
+            }.get(exc.code, 502)
+            raise PromptOptimizerError(exc.code, exc.message, status_code) from exc
+
+    key = asset.get("prepared_path") or asset.get("path")
     if not key:
         raise PromptOptimizerError("reference_unavailable", f"参考图不存在：{asset_id}", 422)
-    try:
-        # Uploaded assets already live in COS; a fresh signed URL makes them
-        # readable to this run without duplicating the object.
-        return store.presign(key, expires=expires)
-    except Exception as exc:  # noqa: BLE001 - COS SDK errors vary
-        raise PromptOptimizerError("reference_unavailable", "无法获取参考图的 COS 地址", 502) from exc
+    if settings.cos_enabled and isinstance(store, CosObjectStore):
+        try:
+            # Compatibility for deployments that explicitly keep COS enabled.
+            return store.presign(key, expires=settings.cos_presign_expiry_seconds)
+        except Exception as exc:  # noqa: BLE001 - COS SDK errors vary
+            raise PromptOptimizerError("reference_unavailable", "无法获取参考图的 COS 地址", 502) from exc
+    raise PromptOptimizerError(
+        "image_host_not_configured",
+        "请配置图床地址和上传令牌，以便外部模型读取本地图片",
+        503,
+    )
 
 
 def optimize_prompt(
@@ -127,10 +145,7 @@ def optimize_prompt(
                 "brand_purpose_mismatch", "品牌风格与发布用途不匹配", 422
             )
 
-    logo_asset_id = _validate_logo(db, request.logo_asset_id, brand)
-
-    if not settings.cos_enabled or not isinstance(store, CosObjectStore):
-        raise PromptOptimizerError("cos_required", "提示词优化需要先配置腾讯云 COS", 503)
+    logo_asset_id = _validate_logo(db, request.logo_asset_id)
 
     platform_request = request
     if brand is not None and brand.platform_id and not request.platform_id:
@@ -176,22 +191,21 @@ def optimize_prompt(
     content_images: list[dict[str, str]] = []
     style_images: list[dict[str, str]] = []
     logo_images: list[dict[str, str]] = []
-    expires = max(settings.cos_presign_expiry_seconds, settings.core_ai_prompt_agent_timeout_seconds + 60)
     for index, asset_id in enumerate(product_ids, start=1):
-        url = _cos_reference_url(db, store, asset_id, expires)
+        url = _reference_url(db, settings, store, asset_id)
         content_images.append({"label": f"素材图 {index}", "url": url})
     brand_ids = brand.reference_asset_ids[:brand_style.MAX_BRAND_REFERENCES] if brand else []
     for index, asset_id in enumerate(brand_ids, start=1):
-        url = _cos_reference_url(db, store, asset_id, expires)
+        url = _reference_url(db, settings, store, asset_id)
         style_images.append({"label": f"品牌参考图 {index}", "url": url})
     if request.brand_mode == "reference":
         for index, asset_id in enumerate(style_reference_ids, start=1):
-            url = _cos_reference_url(db, store, asset_id, expires)
+            url = _reference_url(db, settings, store, asset_id)
             style_images.append({"label": f"风格参考图 {index}", "url": url})
     if logo_asset_id:
         logo_images.append({
             "label": "商家 Logo（必须保留）",
-            "url": _cos_reference_url(db, store, logo_asset_id, expires),
+            "url": _reference_url(db, settings, store, logo_asset_id),
         })
     input_parts.append("图片清单（JSON）：\n" + json.dumps(
         {

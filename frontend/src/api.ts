@@ -1,6 +1,5 @@
 import type {
   Asset,
-  AssetKind,
   BrandDetail,
   BrandMode,
   BrandColor,
@@ -10,7 +9,8 @@ import type {
   ImageModel,
   PlatformPreset,
   Ratio,
-  SampleImportResult,
+  WholeImageTaskGroupFilter,
+  WholeImageTaskGroupPage,
   WholeImageTask,
   WholeImageVersion,
 } from './types'
@@ -54,14 +54,8 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return payload as T
 }
 
-export async function getSamples(): Promise<SampleImportResult> {
-  const response = await fetch('/api/samples')
-  return parseResponse<SampleImportResult>(response)
-}
-
-export async function listAssets(kind?: AssetKind): Promise<Asset[]> {
-  const query = kind ? `?kind=${encodeURIComponent(kind)}` : ''
-  const response = await fetch(`/api/assets${query}`)
+export async function listAssets(): Promise<Asset[]> {
+  const response = await fetch('/api/assets')
   return parseResponse<Asset[]>(response)
 }
 
@@ -199,10 +193,9 @@ export async function duplicateBrand(
   return parseResponse<BrandDetail>(response)
 }
 
-export async function uploadAsset(file: File, kind: AssetKind): Promise<Asset> {
+export async function uploadAsset(file: File): Promise<Asset> {
   const form = new FormData()
   form.append('file', file)
-  form.append('kind', kind)
   const response = await fetch('/api/assets', { method: 'POST', body: form })
   return parseResponse<Asset>(response)
 }
@@ -248,6 +241,30 @@ export async function createWholeImageTask(
 export async function listWholeImageTaskBatch(batchId: string): Promise<WholeImageTask[]> {
   const response = await fetch(`/api/whole-image/batches/${encodeURIComponent(batchId)}`)
   return parseResponse<WholeImageTask[]>(response)
+}
+
+export async function listWholeImageTaskGroups(options: {
+  status?: WholeImageTaskGroupFilter
+  limit?: number
+  cursor?: string | null
+} = {}): Promise<WholeImageTaskGroupPage> {
+  const params = new URLSearchParams({
+    status: options.status ?? 'all',
+    limit: String(options.limit ?? 24),
+  })
+  if (options.cursor) {
+    params.set('cursor', options.cursor)
+  }
+  const response = await fetch(`/api/whole-image/tasks?${params.toString()}`)
+  return parseResponse<WholeImageTaskGroupPage>(response)
+}
+
+export async function retryWholeImageTask(taskId: string): Promise<WholeImageTask> {
+  const response = await fetch(
+    `/api/whole-image/tasks/${encodeURIComponent(taskId)}/retry`,
+    { method: 'POST' },
+  )
+  return parseResponse<WholeImageTask>(response)
 }
 
 export async function getWholeImageTask(taskId: string): Promise<WholeImageTask> {
