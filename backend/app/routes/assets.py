@@ -103,6 +103,17 @@ def _asset_referenced(db: Any, asset_id: str) -> bool:
             "$or": [
                 {"input.product_asset_ids": asset_id},
                 {"input.style_reference_asset_ids": asset_id},
+                {"input.logo_asset_id": asset_id},
+            ]
+        }
+    ):
+        return True
+    if db.brands.find_one(
+        {
+            "$or": [
+                {"reference_asset_ids": asset_id},
+                {"logo_asset_ids": asset_id},
+                {"cover_asset_id": asset_id},
             ]
         }
     ):
@@ -122,7 +133,7 @@ def delete_asset(asset_id: str, request: Request, force: bool = False) -> Respon
     if not force and _asset_referenced(db, asset_id):
         raise HTTPException(
             status_code=409,
-            detail="该素材正被任务或历史版本引用；如确认历史记录可失效，请使用强制删除。",
+            detail="该素材正被品牌配置、任务或历史版本引用；如确认关联可失效，请使用强制删除。",
         )
     keys = {asset.get("path"), asset.get("prepared_path")}
     for key in keys:

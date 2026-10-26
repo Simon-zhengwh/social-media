@@ -201,3 +201,25 @@ def test_delete_asset_is_blocked_when_whole_image_task_uses_it(
         delete_asset(prepared.id, request)
 
     assert exc.value.status_code == 409
+
+
+def test_delete_asset_is_blocked_when_brand_logo_uses_it(settings, store, logo_png):
+    prepared = storage.prepare_upload(settings, store, logo_png, "logo.png", "logo")
+    db = mongomock.MongoClient().db
+    db.assets.insert_one(
+        {
+            "_id": prepared.id,
+            "kind": "logo",
+            "path": prepared.path,
+            "prepared_path": prepared.prepared_path,
+        }
+    )
+    db.brands.insert_one({"_id": "brand", "logo_asset_ids": [prepared.id]})
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(db=db, store=store))
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        delete_asset(prepared.id, request)
+
+    assert exc.value.status_code == 409

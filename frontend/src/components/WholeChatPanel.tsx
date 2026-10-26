@@ -9,12 +9,17 @@ type Props = {
   onSend: (instruction: string) => void
 }
 
-const QUICK_COMMANDS = [
-  '背景换成橙色，产品再突出一点',
-  '整体换成更年轻大胆的风格',
-  '标题改成「夏日限定」',
-  '保留构图，只把文字改得更有冲击力',
-]
+const messageTime = new Intl.DateTimeFormat('zh-CN', {
+  month: 'numeric',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+})
+
+function formatMessageTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : messageTime.format(date)
+}
 
 function MessageItem({ message }: { message: WholeImageMessage }) {
   const failed = message.status === 'failed'
@@ -30,6 +35,7 @@ function MessageItem({ message }: { message: WholeImageMessage }) {
       </div>
       <span className="chat-meta">
         {message.version ? `v${message.version} · ` : ''}
+        {message.created_at ? `${formatMessageTime(message.created_at)} · ` : ''}
         {message.role === 'user' ? '你' : '设计模型'}
       </span>
     </li>
@@ -59,20 +65,34 @@ export default function WholeChatPanel({ messages, edit, stage, disabled, onSend
 
   return (
     <section className="studio-panel chat-panel">
-      <div className="studio-panel-head">
-        <div>
-          <span className="eyebrow">WHOLE IMAGE EDIT</span>
-          <h3>对话修改</h3>
+      {messages.length > 3 || running ? (
+        <div className="chat-head-actions chat-head-actions-bar">
+          {messages.length > 3 ? (
+            <>
+              <button
+                type="button"
+                onClick={() => listRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+              >
+                最早
+              </button>
+              <button
+                type="button"
+                onClick={() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })}
+              >
+                最新
+              </button>
+            </>
+          ) : null}
+          {running ? (
+            <span className="edit-running">
+              <span className="spinner spinner-dark" aria-hidden="true" />
+              {stage === 'editing' ? '正在处理' : '处理中'}
+            </span>
+          ) : null}
         </div>
-        {running ? (
-          <span className="edit-running">
-            <span className="spinner spinner-dark" aria-hidden="true" />
-            {stage === 'editing' ? '原始素材 + 当前版本' : '处理中'}
-          </span>
-        ) : null}
-      </div>
+      ) : null}
 
-      <ul className="chat-list" ref={listRef} aria-live="polite">
+      <ul className="chat-list" ref={listRef} aria-live="polite" aria-label="完整对话记录">
         {messages.length === 0 ? (
           <li className="chat-empty">
             <strong>生成完成后，可以继续说想改什么</strong>
@@ -99,19 +119,6 @@ export default function WholeChatPanel({ messages, edit, stage, disabled, onSend
         </div>
       ) : null}
 
-      <div className="quick-commands">
-        {QUICK_COMMANDS.map((command) => (
-          <button
-            key={command}
-            type="button"
-            onClick={() => send(command)}
-            disabled={disabled || running}
-          >
-            {command}
-          </button>
-        ))}
-      </div>
-
       <form
         className="chat-composer"
         onSubmit={(event) => {
@@ -123,7 +130,6 @@ export default function WholeChatPanel({ messages, edit, stage, disabled, onSend
           value={draft}
           rows={2}
           maxLength={1000}
-          placeholder="例如：背景换成浅蓝色，其他都不要动"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -144,9 +150,7 @@ export default function WholeChatPanel({ messages, edit, stage, disabled, onSend
           </svg>
         </button>
       </form>
-      <p className="chat-footnote">
-        每轮对话都会以首轮素材为约束、当前选中版本为视觉参考，并延续历史修改。
-      </p>
+
     </section>
   )
 }

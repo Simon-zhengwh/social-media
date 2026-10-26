@@ -9,13 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.services import storage
+from app.services import platform_presets, storage
 from app.services.image_ref import ImageRef, image_ref_from_asset
 
 logger = logging.getLogger(__name__)
 
 BRAND_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 MAX_BRAND_REFERENCES = 5
+MAX_BRAND_LOGOS = 5
+MAX_BRAND_COLORS = 6
 IMAGE_SUFFIXES = storage.SUPPORTED_IMAGE_SUFFIXES
 
 DEFAULT_PALETTE = {
@@ -60,9 +62,15 @@ class BrandStyle:
     summary: str
     is_default: bool
     cover_path: Path | None
+    logo_path: Path | None
     logo_keywords: tuple[str, ...]
     platform: str = ""
     note: str = ""
+    platform_id: str = ""
+    placement_id: str = ""
+    purpose: str = ""
+    colors: tuple[dict[str, Any], ...] = ()
+    logo_asset_ids: tuple[str, ...] = ()
     layout_guide: str = FALLBACK_LAYOUT_GUIDE
     background_guide: str = FALLBACK_BACKGROUND_GUIDE
     reference_paths: tuple[Path, ...] = ()
@@ -76,6 +84,11 @@ class BrandStyle:
             "name": self.name,
             "short_name": self.short_name,
             "summary": self.summary,
+            "platform_id": self.platform_id,
+            "placement_id": self.placement_id,
+            "purpose": self.purpose,
+            "colors": [dict(item) for item in self.colors],
+            "logo_asset_ids": list(self.logo_asset_ids),
             "layout_guide": self.layout_guide,
             "background_guide": self.background_guide,
             "logo_keywords": list(self.logo_keywords),
@@ -91,10 +104,15 @@ class BrandStyle:
             "short_name": self.short_name,
             "summary": self.summary,
             "platform": self.platform,
+            "platform_id": self.platform_id,
+            "placement_id": self.placement_id,
+            "purpose": self.purpose,
             "note": self.note,
             "is_default": self.is_default,
             "cover_url": cover_url,
             "logo_keywords": list(self.logo_keywords),
+            "colors": [dict(item) for item in self.colors],
+            "logo_asset_ids": list(self.logo_asset_ids),
         }
 
 
@@ -104,8 +122,13 @@ def _default_brand() -> BrandStyle:
         name="SEEJOY 喜聚",
         short_name="喜聚",
         summary="深森林绿、品牌红与奶油白的餐饮促销海报。",
+        platform="小红书",
+        platform_id="xiaohongshu",
+        placement_id="note",
+        purpose="图文笔记 / 封面",
         is_default=True,
         cover_path=None,
+        logo_path=None,
         logo_keywords=("seejoy", "喜聚"),
     )
 
@@ -177,6 +200,74 @@ def _normalize_asset_ids(raw: Any, *, limit: int = MAX_BRAND_REFERENCES) -> tupl
     return tuple(ids)
 
 
+PLATFORM_ALIASES = {
+    "小红书": "xiaohongshu",
+    "rednote": "xiaohongshu",
+    "xiaohongshu": "xiaohongshu",
+    "instagram": "instagram",
+    "ig": "instagram",
+    "tiktok": "tiktok",
+    "google business profile": "google-business-profile",
+    "google": "google-business-profile",
+    "google-business-profile": "google-business-profile",
+    "meta 广告": "meta-ads",
+    "meta ads": "meta-ads",
+    "meta-ads": "meta-ads",
+}
+
+
+def normalize_platform_id(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    return PLATFORM_ALIASES.get(text, text if text in platform_presets.PLATFORM_BY_ID else "")
+
+
+def platform_placement(
+    platform_id: str | None,
+    placement_id: str | None,
+) -> tuple[str, str, str]:
+    normalized_platform = normalize_platform_id(platform_id)
+    if not normalized_platform:
+        raise BrandError("platform_required", "请选择发布平台")
+    try:
+        platform, placement = platform_presets.resolve_placement(
+            normalized_platform, placement_id
+        )
+    except platform_presets.PlatformError as exc:
+        raise BrandError("invalid_placement", exc.message) from exc
+    return platform.id, placement.id, placement.name
+
+
+def platform_name(platform_id: str | None) -> str:
+    platform = platform_presets.PLATFORM_BY_ID.get(str(platform_id or "").strip())
+    return platform.name if platform else ""
+
+
+def _normalize_colors(raw: Any) -> tuple[dict[str, Any], ...]:
+    if not isinstance(raw, list):
+        return ()
+    colors: list[dict[str, Any]] = []
+    for item in raw[:MAX_BRAND_COLORS]:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("hex") or "").strip().lstrip("#").upper()
+        if not re.fullmatch(r"[0-9A-F]{6}", value):
+            continue
+        colors.append(
+            {
+                "hex": f"#{value}",
+            }
+        )
+    return tuple(colors)
+
+
+def color_context(colors: tuple[dict[str, Any], ...] | list[dict[str, Any]]) -> str:
+    return ", ".join(
+        f"{item['hex']}"
+        for item in colors
+        if isinstance(item, dict) and item.get("hex")
+    )
+
+
 def load_brand_skill(skill_dir: Path) -> BrandStyle:
     """Load a brand skill from disk. Runtime code does not call this; import uses it."""
     skill_dir = skill_dir.resolve()
@@ -208,6 +299,8 @@ def load_brand_skill(skill_dir: Path) -> BrandStyle:
     cover_path = (
         _safe_path(skill_dir, cover_raw, label="封面图") if cover_raw else None
     )
+    logo_raw = raw.get("logo")
+    logo_path = _safe_path(skill_dir, logo_raw, label="Logo") if logo_raw else None
 
     assets_dir = (skill_dir / "assets").resolve()
     reference_paths: list[Path] = []
@@ -220,15 +313,31 @@ def load_brand_skill(skill_dir: Path) -> BrandStyle:
     if cover_path is None and reference_paths:
         cover_path = reference_paths[0]
 
+    raw_platform = str(raw.get("platform_id") or raw.get("platform") or "").strip()
+    try:
+        normalized_platform, placement_id, purpose = platform_placement(
+            raw_platform, str(raw.get("placement_id") or "").strip()
+        )
+    except BrandError:
+        normalized_platform, placement_id, purpose = "", "", ""
+
     return BrandStyle(
         id=brand_id,
         name=name,
         short_name=str(raw.get("short_name") or name).strip(),
         summary=str(raw.get("summary") or "").strip(),
-        platform=str(raw.get("platform") or "").strip(),
+        platform=platform_name(normalized_platform) or raw_platform,
         note=str(raw.get("note") or "").strip(),
+        platform_id=normalized_platform,
+        placement_id=placement_id,
+        purpose=purpose,
+        colors=_normalize_colors(raw.get("colors")),
+        logo_asset_ids=_normalize_asset_ids(
+            raw.get("logo_asset_ids"), limit=MAX_BRAND_LOGOS
+        ),
         is_default=_as_bool(raw.get("is_default")),
         cover_path=cover_path,
+        logo_path=logo_path,
         logo_keywords=_normalize_keywords(raw.get("logo_keywords")),
         layout_guide=_read_text(layout_path, label="layout 指南"),
         background_guide=_read_text(background_path, label="background 指南"),
@@ -249,15 +358,30 @@ def brand_from_document(document: Any) -> BrandStyle:
     background_guide = str(document.get("background_guide") or "").strip()
     if not layout_guide or not background_guide:
         raise BrandError("invalid_brand", "品牌排版指南和背景指南不能为空")
+    raw_platform = str(document.get("platform_id") or document.get("platform") or "").strip()
+    try:
+        normalized_platform, placement_id, purpose = platform_placement(
+            raw_platform, str(document.get("placement_id") or "").strip()
+        )
+    except BrandError:
+        normalized_platform, placement_id, purpose = "", "", ""
     return BrandStyle(
         id=brand_id,
         name=name,
         short_name=str(document.get("short_name") or name).strip(),
         summary=str(document.get("summary") or "").strip(),
-        platform=str(document.get("platform") or "").strip(),
+        platform=platform_name(normalized_platform) or raw_platform,
         note=str(document.get("note") or "").strip(),
+        platform_id=normalized_platform,
+        placement_id=placement_id,
+        purpose=purpose,
+        colors=_normalize_colors(document.get("colors")),
+        logo_asset_ids=_normalize_asset_ids(
+            document.get("logo_asset_ids"), limit=MAX_BRAND_LOGOS
+        ),
         is_default=_as_bool(document.get("is_default")),
         cover_path=None,
+        logo_path=None,
         logo_keywords=_normalize_keywords(document.get("logo_keywords")),
         layout_guide=layout_guide,
         background_guide=background_guide,
@@ -321,13 +445,30 @@ def brand_from_snapshot(snapshot: Any) -> BrandStyle | None:
     cover_asset_id = str(snapshot.get("cover_asset_id") or "").strip() or None
     if cover_asset_id is None and reference_asset_ids:
         cover_asset_id = reference_asset_ids[0]
+    raw_platform = str(snapshot.get("platform_id") or snapshot.get("platform") or "").strip()
+    try:
+        normalized_platform, placement_id, purpose = platform_placement(
+            raw_platform, str(snapshot.get("placement_id") or "").strip()
+        )
+    except BrandError:
+        normalized_platform, placement_id, purpose = "", "", ""
     return BrandStyle(
         id=brand_id,
         name=str(snapshot.get("name") or brand_id),
         short_name=str(snapshot.get("short_name") or snapshot.get("name") or brand_id),
         summary=str(snapshot.get("summary") or ""),
+        platform=platform_name(normalized_platform) or raw_platform,
+        note=str(snapshot.get("note") or ""),
+        platform_id=normalized_platform,
+        placement_id=placement_id,
+        purpose=purpose,
+        colors=_normalize_colors(snapshot.get("colors")),
+        logo_asset_ids=_normalize_asset_ids(
+            snapshot.get("logo_asset_ids"), limit=MAX_BRAND_LOGOS
+        ),
         is_default=False,
         cover_path=None,
+        logo_path=None,
         logo_keywords=_normalize_keywords(snapshot.get("logo_keywords")),
         layout_guide=layout_guide,
         background_guide=background_guide,
@@ -404,6 +545,19 @@ def snapshot_brand(
                 _reference_entry(_asset_for_path(db, store, settings, path))
             )
 
+    logo_asset_ids = list(brand.logo_asset_ids[:MAX_BRAND_LOGOS])
+    if not logo_asset_ids and brand.logo_path is not None:
+        logo_asset_ids.append(
+            _asset_for_path(db, store, settings, brand.logo_path, kind="logo")["_id"]
+        )
+    validated_logo_ids: list[str] = []
+    for asset_id in dict.fromkeys(logo_asset_ids):
+        asset = db.assets.find_one({"_id": asset_id})
+        if asset is None or asset.get("kind") != "logo":
+            raise BrandError("brand_logo_missing", f"品牌 Logo 不存在：{asset_id}")
+        validated_logo_ids.append(asset_id)
+    logo_asset_ids = validated_logo_ids[:MAX_BRAND_LOGOS]
+
     cover_asset_id = brand.cover_asset_id
     if cover_asset_id and db.assets.find_one({"_id": cover_asset_id}) is None:
         logger.warning("brand cover asset missing: %s", cover_asset_id)
@@ -416,6 +570,7 @@ def snapshot_brand(
     snapshot = brand.snapshot(references)
     snapshot["cover_asset_id"] = cover_asset_id
     snapshot["reference_asset_ids"] = [item["asset_id"] for item in references]
+    snapshot["logo_asset_ids"] = logo_asset_ids
     return snapshot
 
 
@@ -485,6 +640,13 @@ def _import_loaded_brand(
         for path in brand.reference_paths[:MAX_BRAND_REFERENCES]
     ]
     reference_asset_ids = [document["_id"] for document in reference_docs]
+    logo_asset_ids = list(brand.logo_asset_ids[:MAX_BRAND_LOGOS])
+    if brand.logo_path is not None:
+        logo_asset = _asset_for_path(
+            db, store, settings, brand.logo_path, kind="logo"
+        )
+        if logo_asset["_id"] not in logo_asset_ids:
+            logo_asset_ids.insert(0, logo_asset["_id"])
     cover_asset_id: str | None = None
     if brand.cover_path is not None:
         cover_asset_id = _asset_for_path(db, store, settings, brand.cover_path)["_id"]
@@ -499,6 +661,10 @@ def _import_loaded_brand(
         "summary": brand.summary,
         "platform": brand.platform,
         "note": brand.note,
+        "platform_id": brand.platform_id,
+        "placement_id": brand.placement_id,
+        "colors": [dict(item) for item in brand.colors],
+        "logo_asset_ids": logo_asset_ids[:MAX_BRAND_LOGOS],
         "is_default": brand.is_default,
         "layout_guide": brand.layout_guide,
         "background_guide": brand.background_guide,
@@ -513,6 +679,7 @@ def _import_loaded_brand(
         "brand_id": brand.id,
         "status": "imported",
         "reference_count": len(reference_asset_ids),
+        "logo_count": len(logo_asset_ids[:MAX_BRAND_LOGOS]),
         "cover_asset_id": cover_asset_id,
     }
 

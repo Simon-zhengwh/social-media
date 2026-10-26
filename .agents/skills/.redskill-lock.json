@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "skills": {
+    "retro-geometric-poster": {
+      "name": "retro-geometric-poster",
+      "version": "1.0.2",
+      "source": "redskill",
+      "install_dir": "D:\\ai_project\\social-media\\.agents\\skills\\retro-geometric-poster",
+      "installed_at": "1792748116667",
+      "sha256": "f12ad008044b0000673c0535ac80ef639c382839655ff54e97de3486d9fc3793"
+    }
+  }
+}

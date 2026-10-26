@@ -9,18 +9,20 @@ import {
   ApiError,
   createWholeImageEdit,
   createWholeImageTask,
+  deleteBrandLogo,
   getWholeImageTask,
   listWholeImageTaskBatch,
   listWholeImageVersions,
   selectWholeImageVersion,
   uploadAsset,
+  uploadBrandLogos,
 } from '../api'
 import type {
   Asset,
   AssetKind,
+  BrandLogoImage,
   BrandMode,
   BrandStyle,
-  MerchantInfo,
   PlatformPreset,
   Ratio,
   WholeImageTask,
@@ -38,6 +40,7 @@ type Props = {
   assets: Asset[]
   assetsLoading: boolean
   onLoadAssets: () => void
+  onRefreshBrands: () => Promise<void>
   onGoAssets: () => void
 }
 
@@ -86,7 +89,7 @@ function assetFromTask(
   return {
     id: assetId,
     kind,
-    original_name: '已保存的参考素材',
+    original_name: '已保存的素材图',
     width: 0,
     height: 0,
     mime_type: 'image/png',
@@ -105,6 +108,7 @@ export default function WholeImageStudio({
   assets,
   assetsLoading,
   onLoadAssets,
+  onRefreshBrands,
   onGoAssets,
 }: Props) {
   const [task, setTask] = useState<WholeImageTask | null>(null)
@@ -113,16 +117,18 @@ export default function WholeImageStudio({
   const [selectedPlatformId, setSelectedPlatformId] = useState('')
   const [selectedPlacementId, setSelectedPlacementId] = useState('')
   const [selectedRatio, setSelectedRatio] = useState<Ratio>('9:16')
-  const [merchantInfo, setMerchantInfo] = useState<MerchantInfo>({ address: '', phone: '' })
   const [prompt, setPrompt] = useState('')
   const [promptOptimized, setPromptOptimized] = useState(false)
-  const [imageModel, setImageModel] = useState(DEFAULT_IMAGE_MODEL)
   const [candidateCount, setCandidateCount] = useState(3)
   const [candidateTasks, setCandidateTasks] = useState<WholeImageTask[]>([])
   const [selectedBrandId, setSelectedBrandId] = useState('')
+  const [selectedLogoId, setSelectedLogoId] = useState('')
+  const [logoChoiceTouched, setLogoChoiceTouched] = useState(false)
   const [brandMode, setBrandMode] = useState<BrandMode>('preset')
   const [styleReferences, setStyleReferences] = useState<Asset[]>([])
   const [styleReferencesUploading, setStyleReferencesUploading] = useState(false)
+  const [logoUploading, setLogoUploading] = useState(false)
+  const [logoDeleting, setLogoDeleting] = useState(false)
   const [pickerKind, setPickerKind] = useState<AssetKind | null>(null)
   const [studioTab, setStudioTab] = useState<StudioTab>('chat')
   const [creating, setCreating] = useState(() => Boolean(readWholeTaskId()))
@@ -133,12 +139,66 @@ export default function WholeImageStudio({
   const submitLock = useRef(false)
   const lastVersionRef = useRef<string | null>(null)
 
-  const effectiveBrandId =
-    selectedBrandId || brands.find((brand) => brand.is_default)?.id || brands[0]?.id || ''
   const selectedPlatform =
     platforms.find((item) => item.id === selectedPlatformId) ?? null
+  const effectivePlacementId =
+    selectedPlacementId || selectedPlatform?.default_placement_id || ''
+  const brandsForPlatform = selectedPlatformId
+    ? brands.filter(
+        (brand) =>
+          brand.platform_id === selectedPlatformId &&
+          brand.placement_id === effectivePlacementId,
+      )
+    : []
+  const effectiveBrandId =
+    selectedBrandId && brandsForPlatform.some((brand) => brand.id === selectedBrandId)
+      ? selectedBrandId
+      : brandsForPlatform[0]?.id ?? ''
+  const selectedBrand = brandsForPlatform.find((brand) => brand.id === effectiveBrandId) ?? null
+  const availableLogos = [
+    ...brands.flatMap((brand) => brand.logo_images),
+    ...assets
+      .filter((asset) => asset.kind === 'logo')
+      .map((asset) => ({
+        asset_id: asset.id,
+        original_name: asset.original_name,
+        url: asset.url,
+        width: asset.width,
+        height: asset.height,
+      })),
+  ].filter(
+    (logo, index, logos) =>
+      logos.findIndex((candidate) => candidate.asset_id === logo.asset_id) === index,
+  )
+  const effectiveLogoId = logoChoiceTouched
+    ? selectedLogoId
+    : brandMode === 'preset'
+      ? selectedBrand?.logo_images[0]?.asset_id ?? ''
+      : ''
+  const baseLogoOptions: BrandLogoImage[] =
+    brandMode === 'preset'
+      ? selectedBrand?.logo_images ?? []
+      : availableLogos
+  const restoredLogo =
+    task &&
+    effectiveLogoId &&
+    !baseLogoOptions.some((logo) => logo.asset_id === effectiveLogoId)
+      ? assetFromTask(task, 'logo', effectiveLogoId)
+      : null
+  const logoOptions: BrandLogoImage[] = restoredLogo
+    ? [
+        ...baseLogoOptions,
+        {
+          asset_id: restoredLogo.id,
+          original_name: restoredLogo.original_name,
+          url: restoredLogo.url,
+          width: restoredLogo.width,
+          height: restoredLogo.height,
+        },
+      ]
+    : baseLogoOptions
   const selectedPlacement =
-    selectedPlatform?.placements.find((item) => item.id === selectedPlacementId) ??
+    selectedPlatform?.placements.find((item) => item.id === effectivePlacementId) ??
     selectedPlatform?.placements.find((item) => item.id === selectedPlatform.default_placement_id) ??
     null
 
@@ -168,16 +228,14 @@ export default function WholeImageStudio({
         setPrompt(restored.input.prompt ?? '')
         setPromptOptimized(restored.input.prompt_optimized === true)
         setSelectedRatio(restored.input.ratio ?? '9:16')
-        setImageModel(restored.input.image_model ?? DEFAULT_IMAGE_MODEL)
         setCandidateCount(restored.input.candidate_count ?? 3)
         if (restored.platform?.id) {
           setSelectedPlatformId(restored.platform.id)
           setSelectedPlacementId(restored.placement?.id ?? restored.platform.default_placement_id)
         }
-        if (restored.input.merchant_info) {
-          setMerchantInfo(restored.input.merchant_info)
-        }
         setSelectedBrandId(restored.input.brand_id ?? '')
+        setSelectedLogoId(restored.input.logo_asset_id ?? '')
+        setLogoChoiceTouched(true)
         const restoredBrandId = restored.input.brand_id ?? ''
         setBrandMode(
           restored.input.brand_mode ??
@@ -288,7 +346,7 @@ export default function WholeImageStudio({
   const active = Boolean(task && (task.status === 'queued' || task.status === 'running'))
   const studioReady = Boolean(task?.status === 'succeeded' && task.current_version_id)
   const showStudioInspector = Boolean(studioReady || task?.model_input)
-  const busy = creating || active || editRunning
+  const busy = creating || active || editRunning || logoUploading || logoDeleting
   const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id)
 
   const handleGenerate = async (
@@ -303,10 +361,10 @@ export default function WholeImageStudio({
       return
     }
     if (products.length === 0) {
-      setError('请先从资产管理选择参考素材')
+      setError('请先从资产管理选择素材图')
       return
     }
-    if (brandMode === 'preset' && !brands.some((brand) => brand.id === effectiveBrandId)) {
+    if (brandMode === 'preset' && !brandsForPlatform.some((brand) => brand.id === effectiveBrandId)) {
       setError('请选择一个预设品牌风格')
       return
     }
@@ -326,21 +384,18 @@ export default function WholeImageStudio({
       const created = await Promise.all(
         Array.from({ length: candidateCount }, (_, index) =>
           createWholeImageTask({
-            image_model: imageModel,
+            image_model: DEFAULT_IMAGE_MODEL,
             prompt: promptOverride,
             prompt_optimized: optimizedOverride,
             brand_id: brandMode === 'preset' ? effectiveBrandId : null,
             brand_mode: brandMode,
+            logo_asset_id: effectiveLogoId || null,
             style_reference_asset_ids:
               brandMode === 'reference' ? styleReferences.map((asset) => asset.id) : [],
             product_asset_ids: products.map((asset) => asset.id),
             ratio: selectedPlatform ? undefined : selectedRatio,
             platform_id: selectedPlatform?.id ?? null,
             placement_id: selectedPlacement?.id ?? null,
-            merchant_info:
-              selectedPlatform && selectedPlatform.contact_policy !== 'forbidden'
-                ? merchantInfo
-                : null,
             candidate_count: candidateCount,
             candidate_batch_id: batchId,
             candidate_index: index,
@@ -415,18 +470,30 @@ export default function WholeImageStudio({
   }
 
   const handleBrandChange = (brandId: string) => {
+    const brand = brands.find((item) => item.id === brandId)
     setSelectedBrandId(brandId)
     setBrandMode('preset')
+    setSelectedLogoId('')
+    setLogoChoiceTouched(false)
+    if (brand?.platform_id) {
+      const nextPlatform = platforms.find((item) => item.id === brand.platform_id)
+      setSelectedPlatformId(brand.platform_id)
+      setSelectedPlacementId(
+        brand.placement_id || nextPlatform?.default_placement_id || '',
+      )
+    }
     setPromptOptimized(false)
   }
 
   const handleBrandModeChange = (mode: BrandMode) => {
     setBrandMode(mode)
     setPromptOptimized(false)
+    setSelectedLogoId('')
+    setLogoChoiceTouched(mode !== 'preset')
     if (mode === 'preset' && !selectedBrandId) {
-      setSelectedBrandId(
-        brands.find((brand) => brand.is_default)?.id ?? brands[0]?.id ?? '',
-      )
+      const next = brandsForPlatform.find((brand) => brand.is_default) ?? brandsForPlatform[0]
+      setSelectedBrandId(next?.id ?? '')
+      setLogoChoiceTouched(false)
     }
   }
 
@@ -449,6 +516,60 @@ export default function WholeImageStudio({
     }
   }
 
+  const handleUploadLogos = async (files: File[]) => {
+    if (brandMode !== 'preset' || !selectedBrand) {
+      setError('请先选择品牌风格后再上传 Logo')
+      return
+    }
+
+    const existingIds = new Set(selectedBrand.logo_images.map((logo) => logo.asset_id))
+    if (selectedBrand.logo_images.length > 0) {
+      setError('品牌 Logo 最多 1 张，请先删除原 Logo 再添加')
+      return
+    }
+    const accepted = files.slice(0, 1)
+    if (!accepted.length) {
+      return
+    }
+
+    setLogoUploading(true)
+    setError(null)
+    try {
+      const detail = await uploadBrandLogos(selectedBrand.id, accepted)
+      const addedLogo = detail.logo_images.find((logo) => !existingIds.has(logo.asset_id))
+      await onRefreshBrands()
+      if (addedLogo) {
+        setSelectedLogoId(addedLogo.asset_id)
+        setLogoChoiceTouched(true)
+      }
+      setPromptOptimized(false)
+    } catch (reason: unknown) {
+      setError(errorMessage(reason))
+    } finally {
+      setLogoUploading(false)
+    }
+  }
+  const handleRemoveLogo = async (assetId: string) => {
+    const belongsToCurrentBrand =
+      brandMode === 'preset' &&
+      selectedBrand?.logo_images.some((logo) => logo.asset_id === assetId) === true
+
+    setLogoDeleting(true)
+    setError(null)
+    try {
+      if (belongsToCurrentBrand && selectedBrand) {
+        await deleteBrandLogo(selectedBrand.id, assetId)
+        await onRefreshBrands()
+      }
+      setSelectedLogoId('')
+      setLogoChoiceTouched(brandMode !== 'preset')
+      setPromptOptimized(false)
+    } catch (reason: unknown) {
+      setError(errorMessage(reason))
+    } finally {
+      setLogoDeleting(false)
+    }
+  }
   const openPicker = () => {
     setPickerKind('product')
     if (assets.length === 0) {
@@ -459,23 +580,27 @@ export default function WholeImageStudio({
   return (
     <main className={`workspace${showStudioInspector ? ' has-studio' : ''}`}>
       <WholeImageForm
-        brands={brands}
+        brands={brandsForPlatform}
         selectedBrandId={effectiveBrandId}
         brandsLoading={brandsLoading}
         brandsError={brandsError}
         brandMode={brandMode}
         styleReferences={styleReferences}
         styleReferencesUploading={styleReferencesUploading}
+        logoOptions={logoOptions}
+        selectedLogoId={effectiveLogoId}
+        logoUploading={logoUploading}
+        logoDeleting={logoDeleting}
+        canAddLogo={brandMode === 'preset' && selectedBrand !== null && selectedBrand.logo_images.length === 0}
         platforms={platforms}
         platformsLoading={platformsLoading}
         platformsError={platformsError}
         selectedPlatformId={selectedPlatformId}
-        selectedPlacementId={selectedPlacementId}
+        selectedPlacementId={effectivePlacementId}
         selectedRatio={selectedRatio}
-        merchantInfo={merchantInfo}
         products={products}
-        imageModel={imageModel}
         prompt={prompt}
+        promptOptimized={promptOptimized}
         candidateCount={candidateCount}
         busy={busy}
         onBrandChange={handleBrandChange}
@@ -485,13 +610,21 @@ export default function WholeImageStudio({
           setStyleReferences((previous) => previous.filter((asset) => asset.id !== assetId))
           setPromptOptimized(false)
         }}
+        onUploadLogos={(files) => void handleUploadLogos(files)}
+        onRemoveLogo={(assetId) => void handleRemoveLogo(assetId)}
         onPlatformChange={(platformId) => {
           const next = platforms.find((item) => item.id === platformId)
           setSelectedPlatformId(platformId)
           setSelectedPlacementId(next?.default_placement_id ?? '')
+          setSelectedBrandId('')
+          setSelectedLogoId('')
+          setLogoChoiceTouched(false)
           setPromptOptimized(false)
         }}
         onPlacementChange={(value) => {
+          setSelectedBrandId('')
+          setSelectedLogoId('')
+          setLogoChoiceTouched(false)
           setSelectedPlacementId(value)
           setPromptOptimized(false)
         }}
@@ -499,22 +632,16 @@ export default function WholeImageStudio({
           setSelectedRatio(value)
           setPromptOptimized(false)
         }}
-        onMerchantChange={(value) => {
-          setMerchantInfo(value)
-          setPromptOptimized(false)
-        }}
         onPickProducts={openPicker}
         onRemoveProduct={(id) => {
           setProducts((previous) => previous.filter((item) => item.id !== id))
           setPromptOptimized(false)
         }}
-        onImageModelChange={setImageModel}
         onPromptChange={(value, optimized) => {
           setPrompt(value)
           setPromptOptimized(optimized === true)
         }}
         onCandidateCountChange={setCandidateCount}
-        onGoAssets={onGoAssets}
         onGenerate={() => void handleGenerate()}
       />
 
@@ -587,7 +714,7 @@ export default function WholeImageStudio({
         loading={assetsLoading}
         multi
         selectedIds={products.map((asset) => asset.id)}
-        max={4}
+        max={6}
         onClose={() => setPickerKind(null)}
         onConfirm={(selected) => {
           setProducts(selected)

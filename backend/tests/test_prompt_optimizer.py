@@ -16,7 +16,7 @@ from app.services.object_store import CosObjectStore
 @pytest.fixture
 def settings(tmp_path):
     return Settings(
-        storage_dir=str(tmp_path / "storage"), sample_dir=str(PROJECT_DIR / "素材"),
+        storage_dir=str(tmp_path / "storage"), sample_dir=str(PROJECT_DIR / "seejoy素材" / "素材"),
         core_ai_api_key="test-key", cos_secret_id="test", cos_secret_key="test",
         cos_bucket="test-bucket", cos_region="ap-guangzhou",
     )
@@ -128,7 +128,6 @@ def _optimize(db, settings, store, client, **overrides):
         "product_asset_ids": [],
         "platform_id": None,
         "placement_id": None,
-        "merchant_info": None,
     }
     revision_guidance = overrides.pop("revision_guidance", None)
     payload.update(overrides)
@@ -140,6 +139,28 @@ def _optimize(db, settings, store, client, **overrides):
         request=PromptOptimizeRequest(**payload),
         revision_guidance=revision_guidance,
     )
+
+
+def test_optimizer_passes_all_six_products_and_rejects_seven(settings, store):
+    import json
+
+    db = mongomock.MongoClient().db
+    products = [
+        _seed_asset(db, settings, store, f"product-{index}.png", "product", (index * 30, 60, 80))
+        for index in range(6)
+    ]
+    client = FakeCoreAI()
+    _optimize(db, settings, store, client, brand_mode="none", brand_id=None, product_asset_ids=products)
+    manifest = json.loads(client.calls[0]["input"].split("图片清单（JSON）：\n", 1)[1])
+    assert [image["label"] for image in manifest["content_images"]] == [
+        f"素材图 {index}" for index in range(1, 7)
+    ]
+    assert [image["url"] for image in manifest["content_images"]] == [
+        store.presign(db.assets.find_one({"_id": asset_id})["prepared_path"], 3600)
+        for asset_id in products
+    ]
+    with pytest.raises(ValidationError):
+        PromptOptimizeRequest(product_asset_ids=[*products, "seventh"])
 
 
 def test_blank_prompt_uses_products_brand_reference_and_xiaohongshu_rules(
@@ -156,7 +177,6 @@ def test_blank_prompt_uses_products_brand_reference_and_xiaohongshu_rules(
         product_asset_ids=products,
         platform_id="xiaohongshu",
         placement_id="note",
-        merchant_info={"address": "119 W 31st St", "phone": "555-0100"},
     )
 
     assert result == "优化后的中文海报提示词"
@@ -168,10 +188,27 @@ def test_blank_prompt_uses_products_brand_reference_and_xiaohongshu_rules(
     assert "品牌：SEEJOY 喜聚" in text
     assert "使用毛笔主标题" in text
     assert "小红书" in text
-    assert "不得出现地址" in text
+    assert "商家地址和联系电话" not in text
     assert "素材图 1" in text
     assert "品牌参考图 1" in text
+    assert "额外贴纸或涂鸦最多一处" not in text
 
+
+def test_unified_generation_guide_is_injected_once(settings, store, optimizer_db):
+    db, products, _ = optimizer_db
+    guide = "统一生成规范：暖调复古、实拍保真、少文字。"
+    db.brands.update_one(
+        {"_id": "seejoy"},
+        {"$set": {"layout_guide": guide, "background_guide": guide}},
+    )
+    client = FakeCoreAI()
+
+    _optimize(db, settings, store, client, product_asset_ids=products)
+
+    text = client.calls[0]["input"]
+    assert text.count(guide) == 1
+    assert "品牌生成规范：" in text
+    assert "品牌摄影与背景规范" not in text
 
 def test_unselected_platform_uses_freeform_guidance(settings, store, optimizer_db):
     db, products, _ = optimizer_db
@@ -209,6 +246,101 @@ def test_reference_mode_uses_uploaded_style_images_without_preset_guide(
     assert "整图直接生成" in text
 
 
+def test_image_manifest_keeps_content_sources_separate_from_style_sources(
+    settings, store, optimizer_db
+):
+    import json
+
+    db, products, brand_reference = optimizer_db
+    client = FakeCoreAI()
+    _optimize(db, settings, store, client, product_asset_ids=products)
+
+    manifest = json.loads(client.calls[0]["input"].split("图片清单（JSON）：\n", 1)[1])
+    assert [image["label"] for image in manifest["content_images"]] == ["素材图 1", "素材图 2"]
+    assert [image["label"] for image in manifest["style_images"]] == ["品牌参考图 1"]
+    assert products[1] in manifest["content_images"][1]["url"]
+    assert brand_reference in manifest["style_images"][0]["url"]
+
+
+def test_optimizer_includes_generation_metadata_and_selected_logo(
+    settings, store, optimizer_db
+):
+    db, products, _ = optimizer_db
+    logo = _seed_asset(db, settings, store, "merchant-logo.png", "logo", (10, 20, 30))
+    db.brands.update_one(
+        {"_id": "seejoy"},
+        {
+            "$set": {
+                "platform_id": "instagram",
+                "placement_id": "story",
+                "colors": [
+                    {"hex": "#0D4317"},
+                    {"hex": "#B12310"},
+                ],
+                "logo_asset_ids": [logo],
+            }
+        },
+    )
+    client = FakeCoreAI()
+
+    _optimize(
+        db,
+        settings,
+        store,
+        client,
+        product_asset_ids=products[:1],
+        platform_id="instagram",
+        placement_id="story",
+        logo_asset_id=logo,
+    )
+
+    text = client.calls[0]["input"]
+    manifest = __import__("json").loads(text.split("图片清单（JSON）：\n", 1)[1])
+    assert "品牌用途：Story / Reels 封面" in text
+    assert "#0D4317" in text
+    assert "#B12310" in text
+    assert "商家 Logo" in text
+    assert logo in manifest["logo_images"][0]["url"]
+    assert manifest["logo_images"][0]["url"].endswith("?signed=1")
+
+
+def test_optimizer_rejects_brand_style_for_another_platform(settings, store, optimizer_db):
+    db, products, _ = optimizer_db
+    db.brands.update_one(
+        {"_id": "seejoy"},
+        {"$set": {"platform_id": "instagram", "placement_id": "story"}},
+    )
+
+    with pytest.raises(prompt_optimizer.PromptOptimizerError) as exc:
+        _optimize(
+            db,
+            settings,
+            store,
+            FakeCoreAI(),
+            product_asset_ids=products[:1],
+            platform_id="xiaohongshu",
+            placement_id="note",
+        )
+
+    assert exc.value.code == "brand_platform_mismatch"
+
+
+@pytest.mark.parametrize("prompt", [
+    "Primary request: a ceramic mug\nStyle/medium: product photography",
+    'Use case: ads-marketing\nSubject: visiting chef\nText (verbatim): "欢迎到店"',
+    "用真实人物照片制作一张活动海报，保持人物身份与动作。",
+])
+def test_optimizer_accepts_flexible_prompt_without_custom_fact_schema(settings, store, optimizer_db, prompt):
+    db, products, _ = optimizer_db
+    client = FakeCoreAI({"prompt": prompt})
+
+    assert _optimize(db, settings, store, client, product_asset_ids=products) == prompt
+    sent = client.calls[0]["input"]
+    assert "required_facts" not in sent
+    assert "七段" not in sent
+    assert "Text 分组" not in sent
+
+
 def test_optimizer_forwards_revision_guidance_for_benchmark(settings, store, optimizer_db):
     db, products, _ = optimizer_db
     client = FakeCoreAI()
@@ -225,7 +357,7 @@ def test_optimizer_forwards_revision_guidance_for_benchmark(settings, store, opt
 
     text = client.calls[0]["input"]
     assert "提高毛笔标题占比" in text
-    assert "只做高影响改进" in text
+    assert "本次修改要求" in text
 
 
 def test_rejects_invalid_or_repeated_assets(settings, store, optimizer_db):

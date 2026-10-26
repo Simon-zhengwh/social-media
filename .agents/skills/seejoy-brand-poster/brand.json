@@ -3,8 +3,19 @@
   "name": "SEEJOY 喜聚",
   "short_name": "喜聚",
   "summary": "深森林绿、品牌红与奶油白的真实菜品拼贴海报，超大毛笔标题配手写批注和促销色块。",
+  "platform_id": "xiaohongshu",
+  "placement_id": "note",
   "is_default": true,
   "cover": "assets/reference-2.jpg",
+  "logo": "logo.png",
+  "colors": [
+    { "hex": "#304521" },
+    { "hex": "#5D8343" },
+    { "hex": "#EFEDD7" },
+    { "hex": "#EA5514" },
+    { "hex": "#E50012" },
+    { "hex": "#748700" }
+  ],
   "logo_keywords": [
     "seejoy",
     "喜聚"

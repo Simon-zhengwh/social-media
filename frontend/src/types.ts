@@ -20,12 +20,22 @@ export type PlatformPreset = {
   id: string
   name: string
   summary: string
-  contact_policy: 'forbidden' | 'optional'
   default_placement_id: string
   placements: PlatformPlacement[]
+  content_rules: string[]
 }
 
-export type MerchantInfo = { address: string; phone: string }
+export type BrandColor = {
+  hex: string
+}
+
+export type BrandLogoImage = {
+  asset_id: string
+  original_name: string
+  url: string
+  width: number
+  height: number
+}
 
 export type BrandStyle = {
   id: string
@@ -33,10 +43,16 @@ export type BrandStyle = {
   short_name: string
   summary: string
   platform: string
+  platform_id: string
+  placement_id: string
+  purpose: string
   note: string
   is_default: boolean
   cover_url: string | null
   logo_keywords: string[]
+  colors: BrandColor[]
+  logo_asset_ids: string[]
+  logo_images: BrandLogoImage[]
 }
 
 export type BrandReferenceImage = {
@@ -127,19 +143,21 @@ export type WholeImageTask = {
     product_asset_ids?: string[]
     brand_id?: string
     brand_mode?: BrandMode
+    logo_asset_id?: string | null
     style_reference_asset_ids?: string[]
     candidate_count?: number
     candidate_batch_id?: string | null
     candidate_index?: number
     platform_id?: string | null
     placement_id?: string | null
-    merchant_info?: MerchantInfo | null
   }
   platform?: PlatformPreset | null
   placement?: PlatformPlacement | null
   brand?: {
     id: string | null
     name: string | null
+    purpose?: string | null
+    platform_id?: string | null
   }
   canvas: { width: number; height: number }
   provider: WholeImageProvider

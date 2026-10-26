@@ -3,8 +3,8 @@ import type {
   AssetKind,
   BrandDetail,
   BrandMode,
+  BrandColor,
   BrandStyle,
-  MerchantInfo,
   ImageModel,
   PlatformPreset,
   Ratio,
@@ -82,6 +82,10 @@ export type UpdateBrandPayload = {
   name: string
   short_name: string
   summary: string
+  platform_id: string
+  placement_id: string
+  colors: BrandColor[]
+  logo_asset_ids: string[]
   platform: string
   note: string
   layout_guide: string
@@ -103,6 +107,12 @@ export async function updateBrand(
   return parseResponse<BrandDetail>(response)
 }
 
+export async function deleteBrand(brandId: string): Promise<void> {
+  const response = await fetch(`/api/brands/${encodeURIComponent(brandId)}`, {
+    method: 'DELETE',
+  })
+  await parseResponse<void>(response)
+}
 export async function uploadBrandReference(
   brandId: string,
   file: File,
@@ -124,6 +134,42 @@ export async function deleteBrandReference(
     `/api/brands/${encodeURIComponent(brandId)}/references/${encodeURIComponent(assetId)}`,
     { method: 'DELETE' },
   )
+  return parseResponse<BrandDetail>(response)
+}
+
+export async function uploadBrandLogos(
+  brandId: string,
+  files: File[],
+): Promise<BrandDetail> {
+  const form = new FormData()
+  files.forEach((file) => form.append('files', file))
+  const response = await fetch(
+    `/api/brands/${encodeURIComponent(brandId)}/logos`,
+    { method: 'POST', body: form },
+  )
+  return parseResponse<BrandDetail>(response)
+}
+
+export async function deleteBrandLogo(
+  brandId: string,
+  assetId: string,
+): Promise<BrandDetail> {
+  const response = await fetch(
+    `/api/brands/${encodeURIComponent(brandId)}/logos/${encodeURIComponent(assetId)}`,
+    { method: 'DELETE' },
+  )
+  return parseResponse<BrandDetail>(response)
+}
+
+export async function duplicateBrand(
+  brandId: string,
+  payload: { name?: string; platform_id?: string; placement_id?: string },
+): Promise<BrandDetail> {
+  const response = await fetch(`/api/brands/${encodeURIComponent(brandId)}/duplicate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
   return parseResponse<BrandDetail>(response)
 }
 
@@ -152,6 +198,7 @@ export type WholeImageTaskCreatePayload = {
   ratio?: Ratio
   brand_id?: string | null
   brand_mode?: BrandMode
+  logo_asset_id?: string | null
   style_reference_asset_ids?: string[]
   candidate_count?: number
   candidate_batch_id?: string | null
@@ -159,7 +206,6 @@ export type WholeImageTaskCreatePayload = {
   product_asset_ids?: string[]
   platform_id?: string | null
   placement_id?: string | null
-  merchant_info?: MerchantInfo | null
 }
 
 export async function createWholeImageTask(
@@ -228,11 +274,11 @@ export type PromptOptimizePayload = {
   prompt: string
   brand_mode: BrandMode
   brand_id?: string | null
+  logo_asset_id?: string | null
   style_reference_asset_ids: string[]
   product_asset_ids: string[]
   platform_id?: string | null
   placement_id?: string | null
-  merchant_info?: MerchantInfo | null
 }
 
 export async function optimizePrompt(

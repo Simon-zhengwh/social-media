@@ -1,4 +1,5 @@
 import type { WholeImageModelInput } from '../types'
+import { ZoomableImage } from './ImageLightbox'
 
 type Props = {
   modelInput: WholeImageModelInput | null
@@ -63,7 +64,12 @@ export default function WholeModelInputPanel({ modelInput }: Props) {
                 {modelInput.images.map((image, index) => (
                   <figure key={`${image.asset_id}-${index}`}>
                     {image.preview_url ? (
-                      <img src={image.preview_url} alt={image.name} />
+                      <ZoomableImage
+                        className="model-input-image-button"
+                        src={image.preview_url}
+                        alt={image.name}
+                        title={image.name}
+                      />
                     ) : (
                       <div className="model-input-image-missing">图片不可用</div>
                     )}

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://127.0.0.1:27018"
     mongodb_database: str = "social_media"
     storage_dir: str = "../storage"
-    sample_dir: str = "../素材"
+    sample_dir: str = "../seejoy素材/素材"
     skills_dir: str = "../.agents/skills"
 
     core_ai_gateway_base_url: str = (

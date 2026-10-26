@@ -2,13 +2,13 @@ import PlatformSelector from './PlatformSelector'
 import BrandModeSelector from './BrandModeSelector'
 import CandidateCountSelector from './CandidateCountSelector'
 import PromptField from './PromptField'
-import ImageModelSelector from './ImageModelSelector'
+import LogoSelector from './LogoSelector'
+import { ZoomableImage } from './ImageLightbox'
 import type {
   Asset,
   BrandMode,
   BrandStyle,
-  ImageModel,
-  MerchantInfo,
+  BrandLogoImage,
   PlatformPreset,
   Ratio,
 } from '../types'
@@ -21,32 +21,35 @@ type Props = {
   brandMode: BrandMode
   styleReferences: Asset[]
   styleReferencesUploading: boolean
+  logoOptions: BrandLogoImage[]
+  selectedLogoId: string
+  logoUploading: boolean
+  logoDeleting: boolean
+  canAddLogo: boolean
   platforms: PlatformPreset[]
   platformsLoading: boolean
   platformsError: string | null
   selectedPlatformId: string
   selectedPlacementId: string
   selectedRatio: Ratio
-  merchantInfo: MerchantInfo
   products: Asset[]
-  imageModel: ImageModel
   prompt: string
+  promptOptimized: boolean
   candidateCount: number
   busy: boolean
   onBrandChange: (brandId: string) => void
   onBrandModeChange: (mode: BrandMode) => void
   onUploadStyleReferences: (files: File[]) => void
   onRemoveStyleReference: (assetId: string) => void
+  onUploadLogos: (files: File[]) => void
+  onRemoveLogo: (assetId: string) => void
   onPlatformChange: (platformId: string) => void
   onPlacementChange: (placementId: string) => void
   onRatioChange: (ratio: Ratio) => void
-  onMerchantChange: (merchant: MerchantInfo) => void
   onPickProducts: () => void
   onRemoveProduct: (id: string) => void
-  onImageModelChange: (value: ImageModel) => void
   onPromptChange: (value: string, optimized?: boolean) => void
   onCandidateCountChange: (value: number) => void
-  onGoAssets: () => void
   onGenerate: () => void
 }
 
@@ -58,32 +61,35 @@ export default function WholeImageForm({
   brandMode,
   styleReferences,
   styleReferencesUploading,
+  logoOptions,
+  selectedLogoId,
+  logoUploading,
+  logoDeleting,
+  canAddLogo,
   platforms,
   platformsLoading,
   platformsError,
   selectedPlatformId,
   selectedPlacementId,
   selectedRatio,
-  merchantInfo,
   products,
-  imageModel,
   prompt,
+  promptOptimized,
   candidateCount,
   busy,
   onBrandChange,
   onBrandModeChange,
   onUploadStyleReferences,
   onRemoveStyleReference,
+  onUploadLogos,
+  onRemoveLogo,
   onPlatformChange,
   onPlacementChange,
   onRatioChange,
-  onMerchantChange,
   onPickProducts,
   onRemoveProduct,
-  onImageModelChange,
   onPromptChange,
   onCandidateCountChange,
-  onGoAssets,
   onGenerate,
 }: Props) {
   const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId)
@@ -98,7 +104,7 @@ export default function WholeImageForm({
     (!selectedPlatformId || Boolean(selectedPlatform))
   const optimizationBlockedReason =
     products.length === 0
-      ? '请先选择参考素材'
+      ? '请先选择素材图'
       : !brandReady
         ? '请先选择有效的品牌风格'
         : selectedPlatformId && !selectedPlatform
@@ -107,27 +113,17 @@ export default function WholeImageForm({
 
   return (
     <section className="mp-card form-card">
-      <div className="panel-head">
-        <div>
-          <span className="eyebrow">01 · 需求</span>
-          <h1>自由设计一张完整海报</h1>
-          <p className="panel-lead">整图模型直接完成构图、文字和视觉设计，不拆分图层。</p>
-        </div>
-      </div>
-
       <PlatformSelector
         platforms={platforms}
         selectedPlatformId={selectedPlatformId}
         selectedPlacementId={selectedPlacementId}
         selectedRatio={selectedRatio}
-        merchantInfo={merchantInfo}
         loading={platformsLoading}
         error={platformsError}
         busy={busy}
         onPlatformChange={onPlatformChange}
         onPlacementChange={onPlacementChange}
         onRatioChange={onRatioChange}
-        onMerchantChange={onMerchantChange}
       />
 
       <BrandModeSelector
@@ -135,6 +131,7 @@ export default function WholeImageForm({
         selectedBrandId={selectedBrandId}
         brandsLoading={brandsLoading}
         brandsError={brandsError}
+        platformRequired={!selectedPlatformId}
         mode={brandMode}
         references={styleReferences}
         referencesUploading={styleReferencesUploading}
@@ -145,25 +142,31 @@ export default function WholeImageForm({
         onRemoveReference={onRemoveStyleReference}
       />
 
-      <ImageModelSelector
-        value={imageModel}
+      <LogoSelector
+        logos={logoOptions}
+        selectedLogoId={selectedLogoId}
         busy={busy}
-        onChange={onImageModelChange}
+        logoUploading={logoUploading}
+        logoDeleting={logoDeleting}
+        canAddLogo={canAddLogo}
+        onUploadLogos={onUploadLogos}
+        onRemoveLogo={onRemoveLogo}
       />
 
       <div className="product-block">
         <div className="product-block-head">
-          <strong>参考素材</strong>
-          <span>必选 · 最多 4 张</span>
+          <strong>素材图</strong>
         </div>
         {products.length > 0 ? (
           <div className="product-strip">
             {products.map((product, index) => (
               <div className="product-thumb" key={product.id}>
-                <img
-                  className={`product-thumb-img product-thumb-img-${product.kind}`}
+                <ZoomableImage
+                  className="product-thumb-preview"
+                  imageClassName={`product-thumb-img product-thumb-img-${product.kind}`}
                   src={product.url}
                   alt={product.original_name}
+                  title={product.original_name}
                 />
                 <span className="product-index">{index + 1}</span>
                 <button
@@ -176,7 +179,7 @@ export default function WholeImageForm({
                 </button>
               </div>
             ))}
-            {products.length < 4 ? (
+            {products.length < 6 ? (
               <button type="button" className="product-add" onClick={onPickProducts}>
                 <span className="upload-plus" aria-hidden="true" />
                 <span>添加</span>
@@ -186,32 +189,30 @@ export default function WholeImageForm({
         ) : (
           <button type="button" className="product-empty" onClick={onPickProducts}>
             <span className="upload-plus" aria-hidden="true" />
-            <strong>从资产管理选择参考素材</strong>
+            <strong>从资产管理选择素材图</strong>
             <span>可多选</span>
           </button>
         )}
-        <span className="product-hint">参考图只作为视觉输入，最终排版由模型一次完成。</span>
       </div>
 
       <PromptField
         label="设计需求"
         availability="必填"
         placeholder="例如：夏日冰美式新品海报，年轻、有设计感，标题写「夏日限定」"
-        hint="描述内容、风格、文案和限制；模型会直接输出完整设计。"
         prompt={prompt}
+        promptOptimized={promptOptimized}
         busy={busy}
         canOptimize={optimizationReady}
         optimizationBlockedReason={optimizationBlockedReason}
         optimizeContext={{
           brand_mode: brandMode,
           brand_id: brandMode === 'preset' ? selectedBrandId : null,
+          logo_asset_id: selectedLogoId || null,
           style_reference_asset_ids:
             brandMode === 'reference' ? styleReferences.map((asset) => asset.id) : [],
           product_asset_ids: products.map((asset) => asset.id),
           platform_id: selectedPlatform?.id ?? selectedPlatformId ?? null,
           placement_id: selectedPlacementId || null,
-          merchant_info:
-            selectedPlatform?.contact_policy !== 'forbidden' ? merchantInfo : null,
         }}
         onPromptChange={onPromptChange}
       />
@@ -222,10 +223,6 @@ export default function WholeImageForm({
         onChange={onCandidateCountChange}
       />
 
-      <button type="button" className="asset-library-link" onClick={onGoAssets}>
-        去资产管理上传或载入示例素材
-        <span aria-hidden="true">→</span>
-      </button>
 
       <button
         type="button"
@@ -248,9 +245,7 @@ export default function WholeImageForm({
           '生成设计'
         )}
       </button>
-      <p className="form-footnote">
-        首轮只调用一次图像模型。生成期间可离开页面，回来用链接继续查看。
-      </p>
+
     </section>
   )
 }

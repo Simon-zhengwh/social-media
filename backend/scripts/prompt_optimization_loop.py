@@ -28,14 +28,14 @@ from app.services.object_store import LocalObjectStore
 
 DEFAULT_SEED = "根据素材图和参考图生成小红书海报"
 DEFAULT_ASSETS = (
-    PROJECT_DIR / "素材" / "杜师傅.png",
-    PROJECT_DIR / "素材" / "粉丝邀请函.jpg",
+    PROJECT_DIR / "seejoy素材" / "素材" / "杜师傅.png",
+    PROJECT_DIR / "seejoy素材" / "素材" / "粉丝邀请函.jpg",
 )
-DEFAULT_BASELINE = PROJECT_DIR / "素材" / "基准图.png"
+DEFAULT_BASELINE = PROJECT_DIR / "seejoy素材" / "素材" / "基准图.png"
 DEFAULT_BRAND_SKILL = PROJECT_DIR / ".agents" / "skills" / "seejoy-brand-poster"
 WORKFLOW = "whole_image"
 TARGETS = {WORKFLOW: 50}
-WORKFLOW_LABELS = {WORKFLOW: "自由设计（整图）"}
+WORKFLOW_LABELS = {WORKFLOW: "海报设计（整图）"}
 DIMENSIONS = (
     ("information_accuracy", "任务与信息准确性", 25),
     ("composition_hierarchy", "构图与信息层级", 20),
@@ -223,7 +223,6 @@ def prepare_run(args: argparse.Namespace) -> dict[str, Any]:
         "brand_mode": "preset",
         "platform_id": "xiaohongshu",
         "placement_id": "note",
-        "merchant_info": None,
         "product_asset_ids": product_ids,
         "material_manifest": [
             {
@@ -333,7 +332,6 @@ def generate_round(args: argparse.Namespace) -> dict[str, Any]:
                 product_asset_ids=state["product_asset_ids"],
                 platform_id=state["platform_id"],
                 placement_id=state["placement_id"],
-                merchant_info=state["merchant_info"],
             )
             assert client is not None
             prompt = prompt_optimizer.optimize_prompt(

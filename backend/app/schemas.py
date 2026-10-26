@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -9,22 +10,37 @@ ImageModel = Literal[
 ]
 
 
-class MerchantInfo(BaseModel):
-    address: str = Field(default="", max_length=240)
-    phone: str = Field(default="", max_length=80)
+class BrandColor(BaseModel):
+    hex: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
 
-    @field_validator("address", "phone", mode="before")
+    @field_validator("hex", mode="before")
     @classmethod
-    def normalize_contact(cls, value: Any) -> str:
-        if value is None:
-            return ""
-        return str(value).strip()
+    def normalize_hex(cls, value: Any) -> str:
+        text = str(value or "").strip().upper()
+        if not re.fullmatch(r"#[0-9A-F]{6}", text):
+            raise ValueError("颜色必须是六位 HEX")
+        return text
+
+class DuplicateBrandRequest(BaseModel):
+    name: str = Field(default="", max_length=80)
+    platform_id: str = Field(default="", max_length=64)
+    placement_id: str = Field(default="", max_length=64)
+
+    @field_validator("name", "platform_id", "placement_id", mode="before")
+    @classmethod
+    def strip_duplicate_text(cls, value: Any) -> str:
+        return str(value or "").strip()
 
 
 class BrandUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     short_name: str = Field(default="", max_length=40)
     summary: str = Field(default="", max_length=500)
+    platform_id: str = Field(default="", max_length=64)
+    placement_id: str = Field(default="", max_length=64)
+    colors: list[BrandColor] = Field(default_factory=list, max_length=6)
+    logo_asset_ids: list[str] = Field(default_factory=list, max_length=5)
+    # Legacy fields remain accepted while existing records and clients migrate.
     platform: str = Field(default="", max_length=40)
     note: str = Field(default="", max_length=500)
     layout_guide: str = Field(min_length=1, max_length=20000)
@@ -37,6 +53,8 @@ class BrandUpdate(BaseModel):
         "name",
         "short_name",
         "summary",
+        "platform_id",
+        "placement_id",
         "platform",
         "note",
         "layout_guide",
@@ -61,22 +79,27 @@ class BrandUpdate(BaseModel):
                 result.append(text)
         return result
 
+    @field_validator("logo_asset_ids")
+    @classmethod
+    def normalize_logo_asset_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))[:5]
+
 
 class WholeImageTaskCreate(BaseModel):
     image_model: ImageModel = "gpt-image-2.5-sunburst"
     prompt: str = Field(min_length=1, max_length=5000)
     prompt_optimized: bool = False
     ratio: Literal["1:1", "9:16", "4:5", "16:9", "3:4", "4:3"] = "9:16"
-    product_asset_ids: list[str] = Field(default_factory=list, max_length=4)
+    product_asset_ids: list[str] = Field(default_factory=list, max_length=6)
     brand_id: str | None = Field(default=None, max_length=64)
     brand_mode: Literal["preset", "reference", "none"] | None = None
+    logo_asset_id: str | None = Field(default=None, max_length=128)
     style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)
     candidate_count: int = Field(default=3, ge=1, le=6)
     candidate_batch_id: str | None = Field(default=None, max_length=128)
     candidate_index: int = Field(default=0, ge=0, le=5)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)
-    merchant_info: MerchantInfo | None = None
 
     @field_validator("brand_id", mode="before")
     @classmethod
@@ -92,6 +115,12 @@ class WholeImageTaskCreate(BaseModel):
         if value is None:
             return ""
         return str(value).strip()
+
+    @field_validator("logo_asset_id", mode="before")
+    @classmethod
+    def normalize_logo_asset_id(cls, value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
 
 
 class WholeImageEditRequest(BaseModel):
@@ -110,11 +139,11 @@ class PromptOptimizeRequest(BaseModel):
     prompt: str = Field(default="", max_length=5000)
     brand_mode: Literal["preset", "reference", "none"] = "none"
     brand_id: str | None = Field(default=None, max_length=64)
+    logo_asset_id: str | None = Field(default=None, max_length=128)
     style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)
-    product_asset_ids: list[str] = Field(default_factory=list, max_length=4)
+    product_asset_ids: list[str] = Field(default_factory=list, max_length=6)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)
-    merchant_info: MerchantInfo | None = None
 
     @field_validator("prompt", mode="before")
     @classmethod
@@ -129,6 +158,12 @@ class PromptOptimizeRequest(BaseModel):
         if value is None:
             return None
         text = str(value).strip().lower()
+        return text or None
+
+    @field_validator("logo_asset_id", mode="before")
+    @classmethod
+    def normalize_optimizer_logo_id(cls, value: Any) -> str | None:
+        text = str(value or "").strip()
         return text or None
 
     @field_validator("style_reference_asset_ids", "product_asset_ids")

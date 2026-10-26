@@ -9,22 +9,6 @@ type Props = {
   onSelectCandidate?: (candidate: WholeImageTask) => void
 }
 
-const STAGE_LABELS: Record<string, string> = {
-  pending: '排队中',
-  generating: '模型生成完整图片',
-  editing: '原始素材 + 当前版本',
-  done: '已完成',
-  failed: '失败',
-}
-
-const STATUS_LABELS: Record<WholeImageTask['status'], string> = {
-  queued: '排队中',
-  running: '生成中',
-  succeeded: '已完成',
-  failed: '失败',
-  interrupted: '已中断',
-}
-
 function GhostPreview() {
   return (
     <div className="preview-empty">
@@ -41,16 +25,15 @@ function GhostPreview() {
   )
 }
 
-function LoadingPreview({ task }: { task: WholeImageTask }) {
+function LoadingPreview() {
   return (
-    <div className="preview-loading">
-      <span className="scanline" aria-hidden="true" />
-      <span className="preview-stage">{STAGE_LABELS[task.stage] ?? task.stage}</span>
-      <div className="progress-track" aria-hidden="true">
-        <span className="progress-fill" style={{ width: `${Math.max(4, task.progress)}%` }} />
-      </div>
-      <span className="progress-value">{task.progress}%</span>
-      <p>这次只调用一次图像模型，返回的就是最终完整图片。</p>
+    <div className="preview-loading" role="status" aria-live="polite">
+      <span className="generating-dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+      <strong>生成中</strong>
     </div>
   )
 }
@@ -62,7 +45,6 @@ export default function WholeImageResultPanel({
   candidates = [],
   onSelectCandidate,
 }: Props) {
-  const [largePreview, setLargePreview] = useState(false)
   const [candidatePreviewId, setCandidatePreviewId] = useState<string | null>(null)
   const previewCandidate =
     candidates.find((candidate) => candidate.id === candidatePreviewId) ??
@@ -95,29 +77,6 @@ export default function WholeImageResultPanel({
 
   return (
     <section className="studio-preview">
-      <div className="preview-head">
-        <div>
-          <span className="eyebrow">02 · 预览</span>
-          <h2>成品设计</h2>
-        </div>
-        <div className="preview-head-meta">
-          {task?.brand?.name ? <span className="brand-badge">{task.brand.name}</span> : null}
-          {task ? (
-            <span className="tnum">
-              {task.canvas.width} × {task.canvas.height}
-            </span>
-          ) : null}
-          {task && task.current_version > 0 ? (
-            <span className="version-badge tnum">v{task.current_version}</span>
-          ) : null}
-          {task ? (
-            <span className={`status-pill status-${task.status}`}>
-              <span className="status-dot" aria-hidden="true" />
-              {isEditing ? '修改中' : STATUS_LABELS[task.status]}
-            </span>
-          ) : null}
-        </div>
-      </div>
 
       <div className={`preview-frame${isReady ? ' is-ready' : ''}`} style={previewStyle}>
         {candidates.length > 1 ? (
@@ -141,23 +100,18 @@ export default function WholeImageResultPanel({
           </>
         ) : null}
         {isReady && task?.preview_url ? (
-          <button
-            type="button"
-            className="poster-image-button"
-            onClick={() => setLargePreview(true)}
-            aria-label="查看大图"
-          >
+          <div className="poster-image-button poster-image-static">
             <img className="poster-image" src={task.preview_url} alt="生成的完整设计" />
-          </button>
+          </div>
         ) : isActive && task ? (
-          <LoadingPreview task={task} />
+          <LoadingPreview />
         ) : (
           <GhostPreview />
         )}
         {isPreviewConfirmed && isReady && isEditing ? (
           <div className="preview-edit-overlay">
             <span className="scanline" aria-hidden="true" />
-            <strong>{STAGE_LABELS[task.stage] ?? '正在修改'}</strong>
+            <strong>修改中</strong>
             <span>基于当前图片重新调用编辑模型</span>
           </div>
         ) : null}
@@ -204,15 +158,7 @@ export default function WholeImageResultPanel({
 
       {isReady && task ? (
         <div className="result-footer">
-          <div className="legend-row">
-            <span className="legend-chip legend-ai">完整图片 v{task.current_version}</span>
-            <span className="legend-chip">{task.provider.model ?? '图像模型'}</span>
-            <span className="legend-chip">无图层拆分</span>
-          </div>
           <div className="preview-actions">
-            <button type="button" className="box-toggle" onClick={() => setLargePreview(true)}>
-              查看大图
-            </button>
             <a className="mp-btn-dark" href={task.download_url ?? '#'} download>
               <svg viewBox="0 0 20 20" aria-hidden="true" className="btn-icon">
                 <path
@@ -245,28 +191,6 @@ export default function WholeImageResultPanel({
         <p className="result-hint">填写左侧需求后，点击「生成设计」开始。</p>
       ) : null}
 
-      {largePreview && task?.preview_url ? (
-        <div
-          className="version-preview-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label="查看大图"
-          onClick={() => setLargePreview(false)}
-        >
-          <div
-            className="version-preview-card design-large-preview"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="version-preview-head">
-              <strong>v{task.current_version} · 当前设计</strong>
-              <button type="button" onClick={() => setLargePreview(false)}>
-                关闭
-              </button>
-            </div>
-            <img src={task.preview_url} alt="当前设计大图" />
-          </div>
-        </div>
-      ) : null}
     </section>
   )
 }

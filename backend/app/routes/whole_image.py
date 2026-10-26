@@ -190,11 +190,11 @@ def create_task(
 
     product_ids = list(dict.fromkeys(payload.product_asset_ids))
     if len(product_ids) != len(payload.product_asset_ids):
-        raise HTTPException(status_code=422, detail="参考素材不能重复")
+        raise HTTPException(status_code=422, detail="素材图不能重复")
     for product_id in product_ids:
         product = db.assets.find_one({"_id": product_id})
         if product is None or product.get("kind") not in {"product", "logo"}:
-            raise HTTPException(status_code=422, detail="参考素材不存在或类型不正确")
+            raise HTTPException(status_code=422, detail="素材图不存在或类型不正确")
     brand_mode = payload.brand_mode or ("preset" if payload.brand_id else "none")
     brand: brand_style.BrandStyle | None = None
     brand_snapshot: dict[str, Any] | None = None
@@ -218,13 +218,28 @@ def create_task(
             if asset is None or asset.get("kind") != "brand_reference":
                 raise HTTPException(status_code=422, detail="风格参考图不存在或类型不正确")
 
+    logo_asset_id = payload.logo_asset_id
+    if logo_asset_id:
+        logo_asset = db.assets.find_one({"_id": logo_asset_id})
+        if logo_asset is None or logo_asset.get("kind") != "logo":
+            raise HTTPException(status_code=422, detail="Logo 不存在或类型不正确")
+        if brand is not None and logo_asset_id not in brand.logo_asset_ids:
+            raise HTTPException(status_code=422, detail="所选 Logo 不属于当前品牌风格")
+
+    platform_id = payload.platform_id or (brand.platform_id if brand else None)
+    placement_id = payload.placement_id or (brand.placement_id if brand else None)
+    if brand is not None and brand.platform_id:
+        if platform_id and platform_id != brand.platform_id:
+            raise HTTPException(status_code=422, detail="品牌风格与发布平台不匹配")
+        if placement_id and brand.placement_id and placement_id != brand.placement_id:
+            raise HTTPException(status_code=422, detail="品牌风格与发布用途不匹配")
+
     platform_config: dict[str, Any] | None = None
-    if payload.platform_id:
+    if platform_id:
         try:
             platform_config = platform_presets.build_task_config(
-                payload.platform_id,
-                payload.placement_id,
-                payload.merchant_info.model_dump() if payload.merchant_info else None,
+                platform_id,
+                placement_id,
                 ratio=payload.ratio if "ratio" in payload.model_fields_set else None,
             )
         except platform_presets.PlatformError as exc:
@@ -250,13 +265,13 @@ def create_task(
             "product_asset_ids": product_ids,
             "brand_id": brand.id if brand else None,
             "brand_mode": brand_mode,
+            "logo_asset_id": logo_asset_id,
             "style_reference_asset_ids": style_reference_ids,
             "candidate_count": payload.candidate_count,
             "candidate_batch_id": payload.candidate_batch_id,
             "candidate_index": payload.candidate_index,
-            "platform_id": payload.platform_id,
+            "platform_id": platform_id,
             "placement_id": (platform_config or {}).get("placement", {}).get("id"),
-            "merchant_info": (platform_config or {}).get("merchant_info"),
         },
         "platform": (platform_config or {}).get("platform"),
         "placement": (platform_config or {}).get("placement"),

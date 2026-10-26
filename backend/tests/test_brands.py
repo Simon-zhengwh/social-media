@@ -9,12 +9,12 @@ from types import SimpleNamespace
 import mongomock
 import pytest
 from fastapi import BackgroundTasks, HTTPException, UploadFile
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from app.config import PROJECT_DIR
 from app.routes import brands as brand_routes
 from app.routes import whole_image as whole_routes
-from app.schemas import BrandUpdate, WholeImageTaskCreate
+from app.schemas import BrandUpdate, DuplicateBrandRequest, WholeImageTaskCreate
 from app.services import brand_style, storage
 
 
@@ -35,12 +35,18 @@ def _write_skill(
         "BACKGROUND GUIDE 测试背景", encoding="utf-8"
     )
     Image.new("RGB", (40, 60), (12, 34, 56)).save(skill / "assets" / "cover.png")
+    logo = Image.new("RGBA", (48, 48), (0, 0, 0, 0))
+    ImageDraw.Draw(logo).rectangle((10, 10, 38, 38), fill=(12, 34, 56, 255))
+    logo.save(skill / "logo.png")
     manifest = {
         "id": brand_id,
         "name": f"Brand {brand_id}",
         "summary": "test",
+        "platform_id": "xiaohongshu",
+        "placement_id": "note",
         "is_default": is_default,
         "cover": cover,
+        "logo": "logo.png",
         "logo_keywords": ["test", "测试"],
         "guides": {
             "layout": "references/layout.md",
@@ -101,12 +107,50 @@ def test_project_skill_imports_three_references(settings, store):
     brand = brand_style.get_brand(db, "seejoy")
     assert brand.name == "SEEJOY 喜聚"
     assert brand.is_default is True
+    assert brand.platform_id == "xiaohongshu"
+    assert brand.placement_id == "note"
     assert len(brand.reference_asset_ids) == 3
+    assert len(brand.logo_asset_ids) == 1
     assert brand.cover_asset_id in brand.reference_asset_ids
+    assert db.assets.find_one({"_id": brand.logo_asset_ids[0]})["kind"] == "logo"
+    assert [item["hex"] for item in brand.colors] == [
+        "#304521",
+        "#5D8343",
+        "#EFEDD7",
+        "#EA5514",
+        "#E50012",
+        "#748700",
+    ]
     assert "brush" in brand.layout_guide
     assert "不生成任何文字" in brand.background_guide
     assert "skill_dir" not in db.brands.find_one({"_id": "seejoy"})
 
+
+def test_delete_brand_promotes_another_default(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "primary", "primary", is_default=True)
+    _write_skill(tmp_path, "secondary", "secondary", is_default=False)
+    _import(db, settings, store, tmp_path)
+
+    response = brand_routes.delete_brand(
+        "primary",
+        _task_request(db, settings, store),
+    )
+
+    assert response.status_code == 204
+    assert db.brands.find_one({"_id": "primary"}) is None
+    remaining = db.brands.find_one({"_id": "secondary"})
+    assert remaining is not None
+    assert remaining["is_default"] is True
+
+
+def test_delete_brand_rejects_missing_brand(settings, store):
+    db = mongomock.MongoClient().db
+
+    with pytest.raises(HTTPException) as exc:
+        brand_routes.delete_brand("missing", _task_request(db, settings, store))
+
+    assert exc.value.status_code == 404
 
 def test_import_is_idempotent_and_force_updates(tmp_path, settings, store):
     db = mongomock.MongoClient().db
@@ -280,6 +324,40 @@ def test_update_brand_persists_editable_fields(tmp_path, settings, store):
     assert updated["layout_guide"] == "NEW LAYOUT"
 
 
+def test_update_brand_persists_platform_purpose_and_hex_colors(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    detail = brand_routes.get_brand("custom", request)
+
+    updated = brand_routes.update_brand(
+        "custom",
+        _update_payload(
+            detail,
+            platform_id="instagram",
+            placement_id="story",
+            colors=[
+                {"hex": "#0D4317"},
+                {"hex": "#B12310"},
+            ],
+        ),
+        request,
+    )
+
+    assert updated["platform_id"] == "instagram"
+    assert updated["placement_id"] == "story"
+    assert updated["purpose"] == "Story / Reels 封面"
+    assert updated["colors"] == [
+        {"hex": "#0D4317"},
+        {"hex": "#B12310"},
+    ]
+    stored = db.brands.find_one({"_id": "custom"})
+    assert stored["platform_id"] == "instagram"
+    assert stored["placement_id"] == "story"
+    assert stored["colors"][0] == {"hex": "#0D4317"}
+
+
 def test_brand_management_metadata_is_stored_and_listed(tmp_path, settings, store):
     db = mongomock.MongoClient().db
     _write_skill(tmp_path, "custom", "custom", is_default=True)
@@ -307,7 +385,7 @@ def test_brand_management_metadata_is_stored_and_listed(tmp_path, settings, stor
     assert stored["note"] == "优先用于节日促销和门店活动。"
 
 
-def test_brand_snapshot_excludes_management_metadata(tmp_path, settings, store):
+def test_brand_snapshot_keeps_generation_metadata(tmp_path, settings, store):
     db = mongomock.MongoClient().db
     _write_skill(tmp_path, "custom", "custom", is_default=True)
     _import(db, settings, store, tmp_path)
@@ -315,17 +393,27 @@ def test_brand_snapshot_excludes_management_metadata(tmp_path, settings, store):
     detail = brand_routes.get_brand("custom", request)
     brand_routes.update_brand(
         "custom",
-        _update_payload(detail, platform="Instagram", note="仅供运营筛选使用。"),
+        _update_payload(
+            detail,
+            platform_id="instagram",
+            placement_id="story",
+            colors=[{"hex": "#0D4317"}],
+        ),
         request,
     )
 
     brand = brand_style.get_brand(db, "custom")
-    assert brand.platform == "Instagram"
-    assert brand.note == "仅供运营筛选使用。"
+    assert brand.platform_id == "instagram"
+    assert brand.placement_id == "story"
+    assert brand.purpose == "Story / Reels 封面"
     snapshot = brand_style.snapshot_brand(brand, db, store, settings)
 
-    assert "platform" not in snapshot
-    assert "note" not in snapshot
+    assert snapshot["platform_id"] == "instagram"
+    assert snapshot["placement_id"] == "story"
+    assert snapshot["purpose"] == "Story / Reels 封面"
+    assert snapshot["colors"][0]["hex"] == "#0D4317"
+    assert snapshot["logo_asset_ids"] == list(brand.logo_asset_ids)
+    assert len(snapshot["logo_asset_ids"]) == len(set(snapshot["logo_asset_ids"]))
 
 
 def _upload_png(color=(240, 120, 20)) -> UploadFile:
@@ -358,6 +446,55 @@ def test_upload_and_delete_brand_reference(tmp_path, settings, store):
     deleted = brand_routes.delete_reference("custom", new_asset_id, request)
     assert len(deleted["reference_images"]) == 1
     assert db.assets.find_one({"_id": new_asset_id}) is not None
+
+
+def test_upload_and_delete_brand_logos(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+
+    uploaded = brand_routes.upload_logos(
+        "custom",
+        request,
+        [_upload_png((10, 20, 30)), _upload_png((40, 50, 60))],
+    )
+    assert len(uploaded["logo_images"]) == 3
+    logo_ids = [item["asset_id"] for item in uploaded["logo_images"]]
+    assert all(db.assets.find_one({"_id": item})["kind"] == "logo" for item in logo_ids)
+
+    deleted = brand_routes.delete_logo("custom", logo_ids[0], request)
+    assert [item["asset_id"] for item in deleted["logo_images"]] == [logo_ids[1], logo_ids[2]]
+    assert db.assets.find_one({"_id": logo_ids[0]}) is not None
+
+
+def test_duplicate_brand_creates_independent_platform_style(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    source = db.brands.find_one({"_id": "custom"})
+
+    duplicate = brand_routes.duplicate_brand(
+        "custom",
+        DuplicateBrandRequest(
+            name="Custom Instagram", platform_id="instagram", placement_id="square"
+        ),
+        request,
+    )
+
+    assert duplicate["id"] != "custom"
+    assert duplicate["name"] == "Custom Instagram"
+    assert duplicate["platform_id"] == "instagram"
+    assert duplicate["placement_id"] == "square"
+    assert duplicate["is_default"] is False
+    assert duplicate["reference_images"]
+    copy = db.brands.find_one({"_id": duplicate["id"]})
+    assert copy["reference_asset_ids"] == source["reference_asset_ids"]
+    assert copy["cover_asset_id"] == source["cover_asset_id"]
+
+    db.brands.update_one({"_id": duplicate["id"]}, {"$set": {"layout_guide": "INSTAGRAM LAYOUT"}})
+    assert db.brands.find_one({"_id": "custom"})["layout_guide"] == "LAYOUT GUIDE 测试规范"
 
 
 def test_five_brand_references_survive_save_and_task_snapshot(settings, store, product_png):

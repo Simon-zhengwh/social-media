@@ -317,11 +317,31 @@ def test_optimized_prompt_is_sent_without_duplicate_style_context(
     assert "TEST LAYOUT GUIDE" not in sent["prompt"]
     assert "TEST BACKGROUND GUIDE" not in sent["prompt"]
     assert "Style-only reference image" not in sent["prompt"]
+    assert "following the user's prompt and the assigned roles of attached images" in sent["prompt"]
+    assert "Text section" not in sent["prompt"]
     assert "1080×1440" in sent["prompt"]
-    assert "不得出现地址" in sent["prompt"]
+    assert "禁止出现地址、电话号码或二维码" in sent["prompt"]
+    assert "商家地址和联系电话" not in sent["prompt"]
     assert task["model_input_latest"]["images"] == [
         {"asset_id": product.id, "name": "person.png", "kind": "product"}
     ]
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_generation_does_not_impose_a_global_decoration_limit(settings, store, optimized):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(prompt="自由排版，价格和粉丝专享也要有设计感", prompt_optimized=optimized),
+        _request(db, settings, store, fake),
+        BackgroundTasks(),
+    )
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    sent = fake.generation_calls[0]["prompt"]
+    assert "at most one small auxiliary decorative accent" not in sent
+    assert "Do not add unrequested written stickers" not in sent
+    assert "Do not add other slogans, handwritten captions, notes, written stickers" not in sent
 
 
 def test_failed_generation_exposes_the_attempted_model_input(settings, store, product_png):
@@ -363,6 +383,74 @@ def test_task_rejects_invalid_image_model_and_candidate_limits():
     assert request.candidate_count == 6
     assert request.candidate_index == 5
     assert WholeImageTaskCreate(prompt="test").candidate_count == 3
+
+
+def test_task_accepts_six_product_images_and_rejects_seven():
+    products = [f"product_{index}" for index in range(6)]
+    assert WholeImageTaskCreate(prompt="test", product_asset_ids=products).product_asset_ids == products
+    with pytest.raises(ValidationError):
+        WholeImageTaskCreate(prompt="test", product_asset_ids=[*products, "product_7"])
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_six_products_reach_generation_and_edit_in_order(settings, store, product_png, logo_png, optimized):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    products = [
+        _seed_product(db, settings, store, fake._image((index * 30, 60, 80)), f"product-{index}.png")
+        for index in range(6)
+    ]
+    logo = _seed_product(db, settings, store, logo_png, "merchant-logo.png")
+    db.assets.update_one({"_id": logo.id}, {"$set": {"kind": "logo"}})
+    style = _seed_style_reference(db, settings, store, product_png, "brand-style.png")
+    request = _request(db, settings, store, fake)
+    db.brands.update_one(
+        {"_id": "seejoy"},
+        {"$set": {"logo_asset_ids": [logo.id], "reference_asset_ids": [style.id]}},
+    )
+    product_ids = [product.id for product in products]
+    content_names = [product.original_name for product in products] + ["merchant-logo.png"]
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="六张素材组合海报", prompt_optimized=optimized,
+            product_asset_ids=product_ids, logo_asset_id=logo.id,
+            brand_mode="preset", brand_id="seejoy",
+        ),
+        request, BackgroundTasks(),
+    )
+    task_id = created["id"]
+    whole_service.run_generation(db, settings, store, fake, task_id)
+    sent = fake.edit_calls[-1]
+    assert sent["reference_names"] == content_names + ([] if optimized else ["brand-style.png"])
+    assert "Subject/content reference image(s): 1-6." in sent["prompt"]
+    assert "Logo image 7." in sent["prompt"]
+    task = db.whole_tasks.find_one({"_id": task_id})
+    assert task["status"] == "succeeded"
+    assert [image["asset_id"] for image in task["model_input_latest"]["images"]] == (
+        product_ids + [logo.id] + ([] if optimized else [style.id])
+    )
+    version = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    source = db.assets.find_one({"_id": version["output_asset_id"]})
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(instruction="只把标题上移", source_version_id=version["_id"]),
+        request, BackgroundTasks(),
+    )
+    whole_service.run_edit(db, settings, store, fake, task_id, "只把标题上移", version["_id"])
+    sent = fake.edit_calls[-1]
+    assert sent["reference_names"] == content_names + [source["original_name"]]
+    assert sent["reference_bytes"] == [
+        *(store.get_bytes(product.prepared_path) for product in products),
+        store.get_bytes(logo.prepared_path), store.get_bytes(source["path"]),
+    ]
+    assert "Original content image(s): 1-6." in sent["prompt"]
+    assert "Image 7 is the original logo." in sent["prompt"]
+    assert "Image 8 is the generated design reference" in sent["prompt"]
+    task = db.whole_tasks.find_one({"_id": task_id})
+    assert task["edit"]["status"] == "idle"
+    assert [image["asset_id"] for image in task["model_input_latest"]["images"]] == (
+        product_ids + [logo.id, source["_id"]]
+    )
 
 
 @pytest.mark.parametrize(
@@ -443,6 +531,105 @@ def test_preset_brand_guides_and_reference_images_reach_image_model(settings, st
     assert fake.edit_calls[0]["reference_bytes"] == [
         store.get_bytes(brand_reference.prepared_path)
     ]
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_selected_logo_purpose_and_palette_reach_generation(
+    settings, store, product_png, optimized
+):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "dish.png")
+    logo = _seed_product(db, settings, store, product_png, "merchant-logo.png")
+    db.assets.update_one({"_id": logo.id}, {"$set": {"kind": "logo"}})
+    request = _request(db, settings, store, fake)
+    db.brands.update_one(
+        {"_id": "seejoy"},
+        {
+            "$set": {
+                "platform_id": "instagram",
+                "placement_id": "story",
+                "colors": [
+                    {"hex": "#0D4317"},
+                    {"hex": "#B12310"},
+                ],
+                "logo_asset_ids": [logo.id],
+            }
+        },
+    )
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="Story 新品海报",
+            prompt_optimized=optimized,
+            product_asset_ids=[product.id],
+            brand_id="seejoy",
+            brand_mode="preset",
+            platform_id="instagram",
+            placement_id="story",
+            logo_asset_id=logo.id,
+        ),
+        request,
+        BackgroundTasks(),
+    )
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    task = db.whole_tasks.find_one({"_id": created["id"]})
+    sent = fake.edit_calls[0]
+    assert task["status"] == "succeeded"
+    assert task["input"]["logo_asset_id"] == logo.id
+    assert task["brand"]["purpose"] == "Story / Reels 封面"
+    assert task["brand"]["colors"][0]["hex"] == "#0D4317"
+    assert sent["reference_names"] == ["dish.png", "merchant-logo.png"]
+    assert "Logo image 2" in sent["prompt"]
+    if not optimized:
+        assert "Brand purpose: Story / Reels 封面" in sent["prompt"]
+        assert "#0D4317" in sent["prompt"]
+    assert task["model_input_latest"]["images"][1]["kind"] == "logo"
+
+
+def test_task_rejects_logo_outside_selected_brand(settings, store, product_png):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "dish.png")
+    logo = _seed_product(db, settings, store, product_png, "other-logo.png")
+    db.assets.update_one({"_id": logo.id}, {"$set": {"kind": "logo"}})
+
+    with pytest.raises(HTTPException) as exc:
+        whole_routes.create_task(
+            WholeImageTaskCreate(
+                prompt="test",
+                product_asset_ids=[product.id],
+                brand_id="seejoy",
+                brand_mode="preset",
+                logo_asset_id=logo.id,
+            ),
+            _request(db, settings, store, fake),
+            BackgroundTasks(),
+        )
+    assert exc.value.status_code == 422
+
+
+def test_task_rejects_style_for_a_different_platform(settings, store, product_png):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "dish.png")
+    request = _request(db, settings, store, fake)
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {"platform_id": "instagram"}})
+
+    with pytest.raises(HTTPException) as exc:
+        whole_routes.create_task(
+            WholeImageTaskCreate(
+                prompt="test",
+                product_asset_ids=[product.id],
+                brand_id="seejoy",
+                brand_mode="preset",
+                platform_id="xiaohongshu",
+            ),
+            request,
+            BackgroundTasks(),
+        )
+    assert exc.value.status_code == 422
 
 
 def test_edit_uses_selected_source_and_creates_branch(settings, store):
@@ -529,8 +716,14 @@ def test_edit_sends_original_assets_before_current_source(
     assert refs[1] == store.get_bytes(second.prepared_path)
     assert refs[2] == source_bytes
     prompt = fake.edit_calls[-1]["prompt"]
-    assert "Subject/content reference image(s): 1-2." in prompt
-    assert "Image 3 is the current design reference." in prompt
+    assert "Original content image(s): 1-2." in prompt
+    assert "Image 3 is the generated design reference for style and layout only." in prompt
+    assert "Use these originals as the source of subjects and fine details" in prompt
+    assert "Do not repaint, retouch, or trace the generated image" in prompt
+    assert "do not use it as a pixel source or image-to-image base" in prompt
+    assert "Apply only the requested changes" in prompt
+    assert "keep all other content, text, composition, and style unchanged" in prompt
+    assert prompt.endswith("把日期改成本周末")
 
     snapshot = db.whole_versions.find_one(
         {"task_id": created["id"], "version": 2}
@@ -545,8 +738,11 @@ def test_edit_sends_original_assets_before_current_source(
     assert snapshot["images"][-1]["kind"] == "current_design"
 
 
-def test_edit_keeps_style_reference_people_out_of_subject_role(
-    settings, store, product_png
+@pytest.mark.parametrize("brand_mode", ["preset", "reference"])
+@pytest.mark.parametrize("optimized", [False, True])
+@pytest.mark.parametrize("remove_style", [False, True])
+def test_edit_omits_style_references(
+    settings, store, product_png, brand_mode, optimized, remove_style
 ):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
@@ -554,20 +750,30 @@ def test_edit_keeps_style_reference_people_out_of_subject_role(
     style_reference = _seed_style_reference(
         db, settings, store, product_png, "style-with-person.png"
     )
+    request = _request(db, settings, store, fake)
+    db.brands.update_one(
+        {"_id": "seejoy"},
+        {"$set": {"reference_asset_ids": [style_reference.id]}},
+    )
     created = whole_routes.create_task(
         WholeImageTaskCreate(
             prompt="把素材中的人物融合进海报",
+            prompt_optimized=optimized,
             ratio="1:1",
             product_asset_ids=[product.id],
-            brand_mode="reference",
-            style_reference_asset_ids=[style_reference.id],
+            brand_id="seejoy" if brand_mode == "preset" else None,
+            brand_mode=brand_mode,
+            style_reference_asset_ids=[style_reference.id] if brand_mode == "reference" else [],
         ),
-        _request(db, settings, store, fake),
+        request,
         BackgroundTasks(),
     )
     whole_service.run_generation(db, settings, store, fake, created["id"])
     fake.edit_calls.clear()
     version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    source_asset = db.assets.find_one({"_id": version["output_asset_id"]})
+    if remove_style:
+        db.assets.delete_one({"_id": style_reference.id})
 
     whole_routes.create_edit(
         created["id"],
@@ -581,20 +787,99 @@ def test_edit_keeps_style_reference_people_out_of_subject_role(
         db, settings, store, fake, created["id"], "调整海报配色", version["_id"]
     )
 
-    prompt = fake.edit_calls[-1]["prompt"]
-    assert "Subject/content reference image(s): 1." in prompt
-    assert "Style-only reference image(s): 2." in prompt
-    assert "Image 3 is the current design reference." in prompt
-    assert (
-        "Never reuse people, faces, identities, poses, clothing, or subjects from style references"
-        in prompt
-    )
+    sent = fake.edit_calls[-1]
+    assert sent["reference_names"] == ["person.png", created["id"] + "-v1.png"]
+    assert sent["reference_bytes"] == [
+        store.get_bytes(product.prepared_path),
+        store.get_bytes(source_asset["path"]),
+    ]
+    assert "Original content image(s): 1." in sent["prompt"]
+    assert "Image 2 is the generated design reference for style and layout only." in sent["prompt"]
+    assert sent["prompt"].endswith("调整海报配色")
+    assert "Style-only reference image(s)" not in sent["prompt"]
+    assert "把素材中的人物融合进海报" not in sent["prompt"]
+    task = db.whole_tasks.find_one({"_id": created["id"]})
+    assert task["edit"]["status"] == "idle"
+    snapshot = task["model_input_latest"]
+    assert snapshot["prompt"] == sent["prompt"]
+    assert [image["asset_id"] for image in snapshot["images"]] == [
+        product.id, source_asset["_id"]
+    ]
+    assert whole_routes.get_task(created["id"], request)["model_input"]["images"] == [
+        {**image, "preview_url": f"/api/assets/{image['asset_id']}/file"}
+        for image in snapshot["images"]
+    ]
 
 
-def test_second_edit_includes_successful_prior_instruction(settings, store):
+def test_edit_keeps_original_logo_without_brand_or_platform_context(settings, store, product_png):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
-    task_id, _ = _generate(db, settings, store, fake)
+    product = _seed_product(db, settings, store, product_png, "dish.png")
+    logo = _seed_product(db, settings, store, product_png, "logo.png")
+    db.assets.update_one({"_id": logo.id}, {"$set": {"kind": "logo"}})
+    request = _request(db, settings, store, fake)
+    db.brands.update_one(
+        {"_id": "seejoy"},
+        {
+            "$set": {
+                "platform_id": "instagram",
+                "placement_id": "story",
+                "colors": [{"hex": "#0D4317"}],
+                "logo_asset_ids": [logo.id],
+            }
+        },
+    )
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="品牌海报",
+            product_asset_ids=[product.id],
+            brand_id="seejoy",
+            brand_mode="preset",
+            platform_id="instagram",
+            placement_id="story",
+            logo_asset_id=logo.id,
+        ),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+    fake.edit_calls.clear()
+    version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+
+    whole_routes.create_edit(
+        created["id"],
+        WholeImageEditRequest(instruction="把标题上移", source_version_id=version["_id"]),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(
+        db, settings, store, fake, created["id"], "把标题上移", version["_id"]
+    )
+
+    sent = fake.edit_calls[-1]
+    assert sent["reference_names"] == ["dish.png", "logo.png", created["id"] + "-v1.png"]
+    assert "Image 2 is the original logo." in sent["prompt"]
+    assert "Image 3 is the generated design reference for style and layout only." in sent["prompt"]
+    assert "Preserve its original shape, wording, proportions, and colors" in sent["prompt"]
+    assert sent["prompt"].endswith("把标题上移")
+    for redundant_context in (
+        "SEEJOY", "test brand", "TEST LAYOUT GUIDE", "TEST BACKGROUND GUIDE",
+        "Brand purpose", "#0D4317", "Instagram", "Story", "品牌海报",
+    ):
+        assert redundant_context not in sent["prompt"]
+
+
+def test_second_edit_reuses_originals_with_only_current_instruction_and_selected_reference(
+    settings, store, product_png
+):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    original = _seed_product(db, settings, store, product_png, "original.png")
+    task_id = _create(
+        db, settings, store, fake, product_asset_ids=[original.id]
+    )["id"]
+    whole_service.run_generation(db, settings, store, fake, task_id)
+    fake.edit_calls.clear()
     v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
     request = _request(db, settings, store, fake)
 
@@ -620,9 +905,19 @@ def test_second_edit_includes_successful_prior_instruction(settings, store):
     )
 
     prompt = fake.edit_calls[-1]["prompt"]
-    assert "把日期改成本周末" in prompt
+    assert "把日期改成本周末" not in prompt
     assert "标题增加白色描边" in prompt
-    assert prompt.index("把日期改成本周末") < prompt.index("标题增加白色描边")
+    assert "prior modifications" not in prompt
+    assert "Use these originals as the source of subjects and fine details" in prompt
+    assert "Do not repaint, retouch, or trace the generated image" in prompt
+    source_asset = db.assets.find_one({"_id": v2["output_asset_id"]})
+    original_bytes = store.get_bytes(original.prepared_path)
+    assert fake.edit_calls[0]["reference_bytes"][0] == original_bytes
+    assert fake.edit_calls[-1]["reference_bytes"] == [
+        original_bytes, store.get_bytes(source_asset["path"])
+    ]
+    assert fake.edit_calls[-1]["reference_names"] == ["original.png", source_asset["original_name"]]
+    assert db.whole_tasks.find_one({"_id": task_id})["edit"]["status"] == "idle"
 
 
 def test_failed_edit_keeps_last_good_version(settings, store):
@@ -730,7 +1025,7 @@ def test_task_prompt_accepts_up_to_5000_characters():
 
 
 
-def test_platform_whole_task_snapshots_rules_and_allows_contact_edit(settings, store):
+def test_platform_whole_task_snapshots_rules_and_allows_edit(settings, store):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     request = _request(db, settings, store, fake)
@@ -752,7 +1047,7 @@ def test_platform_whole_task_snapshots_rules_and_allows_contact_edit(settings, s
     pending = whole_routes.create_edit(
         created["id"],
         WholeImageEditRequest(
-            instruction="在底部补上地址和电话",
+            instruction="把底部标题向上移动",
             source_version_id=version["_id"],
         ),
         request,
@@ -762,13 +1057,13 @@ def test_platform_whole_task_snapshots_rules_and_allows_contact_edit(settings, s
     assert pending["edit"]["status"] == "running"
 
 
-def test_platform_generation_prompt_contains_contact_guidance_without_blocking(settings, store):
+def test_platform_generation_prompt_has_no_contact_fields(settings, store):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     request = _request(db, settings, store, fake)
     created = whole_routes.create_task(
         WholeImageTaskCreate(
-            prompt="夏日新品海报，可以展示门店地址和电话",
+            prompt="夏日新品海报",
             platform_id="xiaohongshu",
             placement_id="note",
         ),
@@ -780,7 +1075,8 @@ def test_platform_generation_prompt_contains_contact_guidance_without_blocking(s
 
     assert task["status"] == "succeeded"
     assert "1080×1440" in fake.generation_calls[0]["prompt"]
-    assert "不得出现地址" in fake.generation_calls[0]["prompt"]
+    assert "禁止出现地址、电话号码或二维码" in fake.generation_calls[0]["prompt"]
+    assert "商家地址和联系电话" not in fake.generation_calls[0]["prompt"]
     assert db.whole_versions.count_documents({"task_id": created["id"]}) == 1
 
 

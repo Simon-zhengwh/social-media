@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -36,18 +35,18 @@ class Platform:
     id: str
     name: str
     summary: str
-    contact_policy: str
     default_placement_id: str
     placements: tuple[Placement, ...]
+    content_rules: tuple[str, ...] = ()
 
     def public_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "name": self.name,
             "summary": self.summary,
-            "contact_policy": self.contact_policy,
             "default_placement_id": self.default_placement_id,
             "placements": [item.public_dict() for item in self.placements],
+            "content_rules": list(self.content_rules),
         }
 
 
@@ -64,17 +63,19 @@ PLATFORMS: tuple[Platform, ...] = (
         "xiaohongshu",
         "小红书",
         "图文笔记与封面",
-        "forbidden",
         "note",
         (
             Placement("note", "图文笔记 / 封面", "3:4", 1080, 1440, GENERAL_SAFE_AREA),
+        ),
+        content_rules=(
+            "禁止出现地址、电话号码或二维码（包括文字、图标、贴纸或可扫码图案）；"
+            "用户文案如包含相关内容，必须省略。",
         ),
     ),
     Platform(
         "instagram",
         "Instagram",
         "帖子、Story 与 Reels 共用一套品牌视觉",
-        "optional",
         "portrait",
         (
             Placement("portrait", "竖版帖子", "4:5", 1080, 1350, GENERAL_SAFE_AREA),
@@ -86,7 +87,6 @@ PLATFORMS: tuple[Platform, ...] = (
         "tiktok",
         "TikTok",
         "视频封面；为平台界面预留安全区",
-        "optional",
         "cover",
         (
             Placement("cover", "视频封面", "9:16", 1080, 1920, STORY_SAFE_AREA),
@@ -96,7 +96,6 @@ PLATFORMS: tuple[Platform, ...] = (
         "google-business-profile",
         "Google Business Profile",
         "商家动态与门店展示",
-        "optional",
         "update",
         (
             Placement("update", "商家动态", "4:3", 1440, 1080, GENERAL_SAFE_AREA),
@@ -106,7 +105,6 @@ PLATFORMS: tuple[Platform, ...] = (
         "meta-ads",
         "Meta 广告",
         "Feed、Story 与横版广告位",
-        "optional",
         "feed",
         (
             Placement("feed", "Feed", "4:5", 1080, 1350, GENERAL_SAFE_AREA),
@@ -139,63 +137,36 @@ def resolve_placement(platform_id: str | None, placement_id: str | None) -> tupl
     return platform, placement
 
 
-def _clean_merchant_info(value: dict[str, Any] | None) -> dict[str, str] | None:
-    if not value:
-        return None
-    address = str(value.get("address") or "").strip()
-    phone = str(value.get("phone") or "").strip()
-    if not address and not phone:
-        return None
-    return {"address": address, "phone": phone}
-
-
 def build_task_config(
     platform_id: str | None,
     placement_id: str | None,
-    merchant_info: dict[str, Any] | None = None,
     *,
     ratio: str | None = None,
 ) -> dict[str, Any]:
     platform, placement = resolve_placement(platform_id, placement_id)
     if ratio and ratio != placement.ratio:
         raise PlatformError("显式比例与平台预设不一致")
-    merchant = _clean_merchant_info(merchant_info)
-    if platform.contact_policy == "forbidden":
-        merchant = None
     return {
         "platform": platform.public_dict(),
         "placement": placement.public_dict(),
         "ratio": placement.ratio,
         "canvas": {"width": placement.width, "height": placement.height},
-        "merchant_info": merchant,
     }
 
 
 def prompt_context(
     platform: Platform,
     placement: Placement,
-    merchant_info: dict[str, Any] | None,
 ) -> str:
     safe = placement.safe_area
     lines = [
         "平台发布规则（必须遵守）：",
         f"- 发布平台：{platform.name}；用途：{placement.name}；成图尺寸 {placement.width}×{placement.height}。",
-        f"- 关键文字、Logo 和联系方式需位于安全区内：上 {safe['top']:.0%}、右 {safe['right']:.0%}、下 {safe['bottom']:.0%}、左 {safe['left']:.0%}。背景可铺满画布。",
+        f"- 关键文字和 Logo 需位于安全区内：上 {safe['top']:.0%}、右 {safe['right']:.0%}、下 {safe['bottom']:.0%}、左 {safe['left']:.0%}。背景可铺满画布。",
     ]
-    if platform.contact_policy == "forbidden":
-        lines.append("- 小红书图片中不得出现地址、电话、手机号、微信号、二维码或其他联系方式；不要编造联系信息。")
-    else:
-        merchant = merchant_info or {}
-        address = str(merchant.get("address") or "").strip()
-        phone = str(merchant.get("phone") or "").strip()
-        if address or phone:
-            lines.append("- 商家地址和联系电话为选填项；如画面需要展示，只能使用以下真实信息，不得改写、拆分或编造：")
-            if address:
-                lines.append(f"  - 地址：{address}")
-            if phone:
-                lines.append(f"  - 电话：{phone}")
-        else:
-            lines.append("- 商家地址和联系电话均为选填项；用户未提供时不要编造或添加联系方式。")
+    if platform.content_rules:
+        lines.append("内容限制（必须遵守）：")
+        lines.extend(f"- {rule}" for rule in platform.content_rules)
     return "\n".join(lines)
 
 
@@ -205,7 +176,6 @@ def freeform_context() -> str:
 
 def prompt_from_task(
     platform_snapshot: dict[str, Any] | None,
-    merchant_info: dict[str, Any] | None,
     placement_snapshot: dict[str, Any] | None = None,
 ) -> str:
     if not isinstance(platform_snapshot, dict) or not platform_snapshot.get("id"):
@@ -216,25 +186,4 @@ def prompt_from_task(
         else str(platform_snapshot.get("default_placement_id") or "")
     )
     platform, placement = resolve_placement(platform_snapshot.get("id"), placement_id)
-    return prompt_context(platform, placement, merchant_info)
-
-
-def ensure_merchant_copy_items(
-    copy_items: list[dict[str, Any]],
-    platform_snapshot: dict[str, Any] | None,
-    merchant_info: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    if not isinstance(platform_snapshot, dict) or platform_snapshot.get("contact_policy") == "forbidden":
-        return copy_items
-    merchant = merchant_info or {}
-    items = list(copy_items)
-    existing = "\n".join(str(item.get("text") or "") for item in items if isinstance(item, dict))
-    for key, role, label, copy_id in (
-        ("address", "details", "地址", "copy_merchant_address"),
-        ("phone", "details", "电话", "copy_merchant_phone"),
-    ):
-        value = str(merchant.get(key) or "").strip()
-        text = f"{label}：{value}" if value else ""
-        if text and text not in existing and value not in existing:
-            items.append({"id": copy_id, "role": role, "text": text, "source": "user"})
-    return items
+    return prompt_context(platform, placement)

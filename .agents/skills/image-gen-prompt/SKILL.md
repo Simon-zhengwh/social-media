@@ -1,47 +1,133 @@
 ---
 name: image-gen-prompt
-description: Use when turning a user's visual-design request, subject images, factual images, brand guidance, and style references into one production-ready image-generation prompt. This skill writes prompts only; it does not generate or edit images.
+description: Prepare image-generation or image-editing prompts from a user request and reference images. Writes prompts only; does not generate images.
 ---
 
-# Image generation prompt editor
+# Image generation prompt preparation
 
-Create one clear prompt for a downstream image model. Follow the user's intent and the actual evidence in the supplied images. This skill adapts the input-role, composition, exact-text, and constraint principles of the imagegen prompting guide; it is self-contained for deployment on an agent platform.
+Prompt-writing extract from the official `imagegen` skill. Tool execution, model selection, CLI/API parameters and output-file handling are excluded.
 
-## Interpret the inputs
+Read [references/prompting.md](references/prompting.md) for prompting principles. Consult [references/sample-prompts.md](references/sample-prompts.md) for relevant examples.
 
-Classify every supplied image before writing:
+## Inputs
 
-| Role | Use it for | Do not take from it |
-| --- | --- | --- |
-| Subject or product | Identity, pose, action, object details, packaging, food appearance | Unrelated promotional copy |
-| Factual source | Legible event copy, prices, dates, address, terms, logos | A visual style unless requested |
-| Style reference | Palette, typography feel, composition, lighting, texture, atmosphere | People, products, logos, dates, prices, or slogans |
+Collect the user request, exact text, constraints and input images. Label each image's role: reference image, edit target, or supporting insert/style/compositing input. Assume generation unless the user clearly asks to change an existing image; style or composition references alone do not make a request an edit.
 
-The same image may have more than one role when the user explicitly says so. Use the user's role labels first; otherwise infer roles from the request and image content. If a critical role is genuinely ambiguous, ask one short question. Inspect supplied images with a vision-capable model; filenames and prior captions are insufficient evidence for exact text.
+## Prompt augmentation
 
-Treat the current user request as the source of this design's intent. Treat brand guidance as persistent constraints and style references as examples. When they conflict, follow the user's explicit instructions and flag any unresolved conflict that would change business facts. Never let old text visible in a style example become current campaign copy.
+Reformat user prompts into a structured, production-oriented spec. Make the user's goal clearer and more actionable, but do not blindly add detail.
 
-## Preserve facts
+Treat this as prompt-shaping guidance, not a closed schema. Use only the lines that help, and add a short extra labeled line when it materially improves clarity.
 
-- Transcribe required names, prices, discounts, dates, addresses, reservation instructions, and legal terms from the user's request or legible factual sources. Preserve exact spelling, currency, numbers, and date-to-offer associations.
-- Do not invent missing facts or turn an unreadable detail into a confident claim. Ask for clarification only when a missing or conflicting fact blocks a usable prompt; otherwise omit that detail.
-- Keep distinct events and offers visibly distinct in the prompt. Identify which text belongs to which price, date, or audience.
-- For a person or real product, specify what the image model should preserve. For a style reference, explicitly prohibit copying its business content and unrelated subjects.
+### Specificity policy
 
-## Write the prompt
+Use the user's prompt specificity to decide how much augmentation is appropriate:
 
-Use only the sections that improve this asset; do not force a long template onto a simple request. A useful order is:
+- If the prompt is already specific and detailed, preserve that specificity and only normalize/structure it.
+- If the prompt is generic, you may add tasteful augmentation when it will materially improve the result.
 
-1. Intended asset and canvas or platform requirements.
-2. Primary subject, scene, and the role of each input image by its supplied index.
-3. Style, composition, visual hierarchy, lighting, palette, and material texture.
-4. Exact on-image text in quotation marks, grouped by placement or offer.
-5. Constraints: identity and product details to preserve, unsupported content to avoid, and any brand or platform restrictions.
+Allowed augmentations:
+- composition or framing hints
+- polish level or intended-use hints
+- practical layout guidance
+- reasonable scene concreteness that supports the stated request
 
-If the user's request is detailed, organize it without adding creative requirements. If it is broad, add only practical composition and polish guidance. Give the most important subject, headline, and offer enough visual prominence for the intended display size. Use specific visual language rather than vague praise. Keep the brand guide's relevant rules, but do not paste a long guide back verbatim or repeat the same rule in several sections. Preserve the user's requested output language and quote exact Chinese or other in-image copy verbatim even when the surrounding prompt uses another language.
+Not allowed augmentations:
+- extra characters or objects that are not implied by the request
+- brand names, slogans, palettes, or narrative beats that are not implied
+- arbitrary side-specific placement unless the surrounding layout supports it
 
-## Return and check
+## Use-case taxonomy (exact slugs)
 
-Return the finished prompt alone, ready to send with the original reference images to an image model. Do not call an image-generation tool or claim an image was generated. If the caller requests JSON, return exactly the requested schema with the finished prompt as its value.
+Classify each request into one of these buckets and keep the slug consistent across prompts and references.
 
-Before returning, check that each image has the correct role; every required fact is supported; text, numbers, and offer dates are internally consistent; no content from a style-only reference has leaked into the campaign; and the prompt describes one feasible final asset rather than a collage of competing instructions.
+Generate:
+- photorealistic-natural — candid/editorial lifestyle scenes with real texture and natural lighting.
+- product-mockup — product/packaging shots, catalog imagery, merch concepts.
+- ui-mockup — app/web interface mockups and wireframes; specify the desired fidelity.
+- infographic-diagram — diagrams/infographics with structured layout and text.
+- scientific-educational — classroom explainers, scientific diagrams, and learning visuals with required labels and accuracy constraints.
+- ads-marketing — campaign concepts and ad creatives with audience, brand position, scene, and exact tagline/copy.
+- productivity-visual — slide, chart, workflow, and data-heavy business visuals.
+- logo-brand — logo/mark exploration, vector-friendly.
+- illustration-story — comics, children’s book art, narrative scenes.
+- stylized-concept — style-driven concept art, 3D/stylized renders.
+- historical-scene — period-accurate/world-knowledge scenes.
+
+Edit:
+- text-localization — translate/replace in-image text, preserve layout.
+- identity-preserve — try-on, person-in-scene; lock face/body/pose.
+- precise-object-edit — remove/replace a specific element (including interior swaps).
+- lighting-weather — time-of-day/season/atmosphere changes only.
+- background-extraction — transparent background / clean cutout. Request actual transparency.
+- style-transfer — apply reference style while changing subject/scene.
+- compositing — multi-image insert/merge with matched lighting/perspective.
+- sketch-to-render — drawing/line art to photoreal render.
+
+## Shared prompt schema
+
+Use the following labeled spec as prompt scaffolding:
+
+```text
+Use case: <taxonomy slug>
+Asset type: <where the asset will be used>
+Primary request: <user's main prompt>
+Input images: <Image 1: role; Image 2: role> (optional)
+Scene/backdrop: <environment>
+Subject: <main subject>
+Style/medium: <photo/illustration/3D/etc>
+Composition/framing: <wide/close/top-down; placement>
+Lighting/mood: <lighting + mood>
+Color palette: <palette notes>
+Materials/textures: <surface details>
+Text (verbatim): "<exact text>"
+Constraints: <must keep/must avoid>
+Avoid: <negative constraints>
+```
+
+Augmentation rules:
+- Keep it short.
+- Add only the details needed to improve the prompt materially.
+- For edits, explicitly list invariants (`change only X; keep Y unchanged`).
+- If any critical detail is missing and blocks success, ask a question; otherwise proceed.
+
+## Examples
+
+### Generation example (hero image)
+```text
+Use case: product-mockup
+Asset type: landing page hero
+Primary request: a minimal hero image of a ceramic coffee mug
+Style/medium: clean product photography
+Composition/framing: wide composition with usable negative space for page copy if needed
+Lighting/mood: soft studio lighting
+Constraints: no logos, no text, no watermark
+```
+
+### Edit example (invariants)
+```text
+Use case: precise-object-edit
+Asset type: product photo background replacement
+Primary request: replace only the background with a warm sunset gradient
+Constraints: change only the background; keep the product and its edges unchanged; no text; no watermark
+```
+
+## Prompting best practices
+- Structure prompt as scene/backdrop -> subject -> details -> constraints.
+- Include intended use (ad, UI mock, infographic) to set the mode and polish level.
+- Use camera/composition language for photorealism.
+- Quote exact text and specify typography + placement.
+- For tricky words, spell them letter-by-letter and require verbatim rendering.
+- For multi-image inputs, reference images by index and describe how they should be used.
+- For edits, repeat invariants every iteration to reduce drift.
+- Iterate with single-change follow-ups.
+- If the prompt is generic, add only the extra detail that will materially help.
+- If the prompt is already detailed, normalize it instead of expanding it.
+- For transparent images, explicitly request actual transparency.
+
+More principles shared by both modes: `references/prompting.md`.
+Copy/paste specs shared by both modes: `references/sample-prompts.md`.
+
+## Output
+
+Return the prepared prompt without generating an image. If the caller specifies a response schema, put the prompt in that schema. The labeled fields above are optional scaffolding, not a fixed output contract.

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import { optimizePrompt, type PromptOptimizePayload } from '../api'
 
@@ -6,8 +7,8 @@ type Props = {
   label: string
   availability: string
   placeholder: string
-  hint: string
   prompt: string
+  promptOptimized: boolean
   rows?: number
   busy: boolean
   canOptimize: boolean
@@ -16,40 +17,12 @@ type Props = {
   onPromptChange: (value: string, optimized?: boolean) => void
 }
 
-function SparkleIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path
-        d="M8.2 3.2c.5 2.6 1.7 3.8 4.3 4.3-2.6.5-3.8 1.7-4.3 4.3-.5-2.6-1.7-3.8-4.3-4.3 2.6-.5 3.8-1.7 4.3-4.3Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M15.2 3.2v3.1M13.7 4.8h3"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-      <path
-        d="M4.2 14.8v2.4M3 16h2.4"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
 export default function PromptField({
   label,
   availability,
   placeholder,
-  hint,
   prompt,
+  promptOptimized,
   rows = 5,
   busy,
   canOptimize,
@@ -59,28 +32,44 @@ export default function PromptField({
 }: Props) {
   const [optimizing, setOptimizing] = useState(false)
   const [optimizeError, setOptimizeError] = useState<string | null>(null)
-  const [optimizeNotice, setOptimizeNotice] = useState<string | null>(null)
+  const [draftPrompt, setDraftPrompt] = useState<string | null>(null)
+  const previewDialogRef = useRef<HTMLDialogElement>(null)
+  const previewButtonRef = useRef<HTMLButtonElement>(null)
+  const previewOpen = draftPrompt !== null
   const contextKey = JSON.stringify(optimizeContext)
   const latestContextKey = useRef(contextKey)
   useEffect(() => {
     latestContextKey.current = contextKey
   }, [contextKey])
+  useEffect(() => {
+    if (!previewOpen) {
+      return
+    }
+    const dialog = previewDialogRef.current
+    const previewButton = previewButtonRef.current
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    dialog?.showModal()
+    return () => {
+      dialog?.close()
+      document.body.style.overflow = previousOverflow
+      previewButton?.focus()
+    }
+  }, [previewOpen])
   const disabled = busy || optimizing
-  const iconDisabled = disabled || !canOptimize
+  const optimizeDisabled = disabled || !canOptimize
 
   const handleChange = (value: string) => {
     setOptimizeError(null)
-    setOptimizeNotice(null)
     onPromptChange(value)
   }
 
   const handleOptimize = async () => {
-    if (iconDisabled || optimizing) {
+    if (optimizeDisabled) {
       return
     }
     setOptimizing(true)
     setOptimizeError(null)
-    setOptimizeNotice(null)
     try {
       const result = await optimizePrompt({ ...optimizeContext, prompt })
       if (contextKey !== latestContextKey.current) {
@@ -88,7 +77,6 @@ export default function PromptField({
         return
       }
       onPromptChange(result.prompt, true)
-      setOptimizeNotice('AI 已更新提示词，可再次点击继续优化。')
     } catch (reason: unknown) {
       setOptimizeError(reason instanceof Error ? reason.message : '提示词优化失败，请稍后重试')
     } finally {
@@ -101,41 +89,98 @@ export default function PromptField({
       <span className="prompt-field-label">
         {label} <span>{availability}</span>
       </span>
-      <span className={`prompt-textarea-wrap${optimizing ? ' is-optimizing' : ''}`}>
-        <textarea
-          value={prompt}
-          maxLength={5000}
-          rows={rows}
-          placeholder={placeholder}
-          onChange={(event) => handleChange(event.target.value)}
-          disabled={disabled}
-        />
+      <textarea
+        aria-label={label}
+        value={prompt}
+        maxLength={5000}
+        rows={rows}
+        placeholder={placeholder}
+        onChange={(event) => handleChange(event.target.value)}
+        disabled={disabled}
+      />
+      <div className="prompt-field-actions">
         <button
           type="button"
-          className="prompt-ai-button"
+          className="mp-btn-secondary mp-btn-small"
           onClick={() => void handleOptimize()}
-          disabled={iconDisabled}
-          aria-label={optimizing ? '正在优化提示词' : 'AI 优化提示词'}
+          disabled={optimizeDisabled}
+          aria-label={optimizing ? '正在优化提示词' : undefined}
           title={
             canOptimize
               ? '根据当前风格、参考图和素材图优化提示词'
               : (optimizationBlockedReason ?? '请先完善当前生成条件')
           }
         >
-          {optimizing ? <span className="spinner spinner-dark" aria-hidden="true" /> : <SparkleIcon />}
+          {optimizing ? <span className="spinner spinner-dark" aria-hidden="true" /> : null}
+          {optimizing ? '优化中…' : '提示词优化'}
         </button>
-      </span>
-      <span className="prompt-field-hint">{hint}</span>
-      {optimizeNotice ? (
-        <span className="prompt-optimize-notice" role="status">
-          {optimizeNotice}
-        </span>
-      ) : null}
+        <button
+          ref={previewButtonRef}
+          type="button"
+          className="mp-btn-secondary mp-btn-small"
+          onClick={() => setDraftPrompt(prompt)}
+          disabled={disabled}
+        >
+          预览
+        </button>
+      </div>
+
       {optimizeError ? (
         <span className="prompt-optimize-error" role="alert">
           {optimizeError}
         </span>
       ) : null}
+      {draftPrompt !== null
+        ? createPortal(
+            <dialog
+              ref={previewDialogRef}
+              className="modal prompt-preview-dialog"
+              aria-labelledby="prompt-preview-title"
+              onCancel={() => setDraftPrompt(null)}
+              onClose={() => setDraftPrompt(null)}
+            >
+              <div className="modal-head">
+                <div>
+                  <h2 id="prompt-preview-title">提示词预览</h2>
+                  <p>可直接编辑，保存后用于后续生成。</p>
+                </div>
+                <button type="button" className="modal-close" onClick={() => setDraftPrompt(null)}>
+                  关闭
+                </button>
+              </div>
+              <textarea
+                className="prompt-preview-textarea"
+                aria-label="提示词内容"
+                value={draftPrompt}
+                maxLength={5000}
+                onChange={(event) => setDraftPrompt(event.target.value)}
+                disabled={disabled}
+                autoFocus
+              />
+              <div className="prompt-preview-footer">
+                <span>{draftPrompt.length} / 5000</span>
+                <div className="prompt-preview-actions">
+                  <button type="button" className="mp-btn-secondary" onClick={() => setDraftPrompt(null)}>
+                    取消
+                  </button>
+                  <button
+                    type="button"
+                    className="mp-btn-primary"
+                    disabled={disabled}
+                    onClick={() => {
+                      setOptimizeError(null)
+                      onPromptChange(draftPrompt, promptOptimized)
+                      setDraftPrompt(null)
+                    }}
+                  >
+                    保存
+                  </button>
+                </div>
+              </div>
+            </dialog>,
+            document.body,
+          )
+        : null}
     </div>
   )
 }

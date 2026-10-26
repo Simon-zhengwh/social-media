@@ -45,8 +45,8 @@ const NAV_ITEMS: Array<{
 }> = [
   {
     key: 'whole',
-    label: '自由设计',
-    hint: '模型直出整图 · 不拆图层',
+    label: '海报设计',
+    hint: '生成与改图',
     icon: WholeImageIcon,
   },
   {
@@ -81,7 +81,7 @@ export default function Sidebar({ view, onChange }: Props) {
           <circle cx="20" cy="20" r="4.2" fill="currentColor" />
         </svg>
         <span className="sidebar-brand-copy">
-          <strong>朵颐视觉工作台</strong>
+          <strong>社媒工作台</strong>
           <span>SICHUAN GOURMET</span>
         </span>
       </div>
@@ -111,12 +111,7 @@ export default function Sidebar({ view, onChange }: Props) {
         })}
       </nav>
 
-      <div className="sidebar-foot">
-        <span className="sidebar-chip">整图直出</span>
-        <span>模型直接生成完整设计</span>
-        <span className="sidebar-sep" aria-hidden="true" />
-        <span>core-ai GPT-Image-2.5</span>
-      </div>
+
     </aside>
   )
 }

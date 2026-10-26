@@ -219,25 +219,21 @@ export default function App() {
           <div className="topbar-title">
             <span className="topbar-kicker">
               {view === 'whole'
-                ? 'WHOLE IMAGE STUDIO'
+                ? 'POSTER STUDIO'
                 : view === 'brands'
                   ? 'BRAND LIBRARY'
                   : 'ASSET LIBRARY'}
             </span>
             <strong>
-              {view === 'whole' ? '自由设计' : view === 'brands' ? '品牌风格' : '资产管理'}
+              {view === 'whole' ? '海报设计' : view === 'brands' ? '品牌风格' : '资产管理'}
             </strong>
           </div>
-          <div className="topbar-meta">
-            <span className="status-dot status-dot-live" aria-hidden="true" />
-            <span>
-              {view === 'whole'
-                ? 'core-ai · 整图生成与编辑'
-                : view === 'brands'
-                  ? 'MongoDB · 品牌配置与参考图'
-                  : 'COS · 图片素材与参考图'}
-            </span>
-          </div>
+          {view !== 'brands' ? (
+            <div className="topbar-meta">
+              <span className="status-dot status-dot-live" aria-hidden="true" />
+              <span>{view === 'whole' ? 'core-ai · 整图生成与编辑' : 'COS · 图片素材与参考图'}</span>
+            </div>
+          ) : null}
         </header>
 
         {view === 'whole' ? (
@@ -251,11 +247,13 @@ export default function App() {
             assets={assets}
             assetsLoading={assetsLoading}
             onLoadAssets={() => void loadAssets()}
+            onRefreshBrands={loadBrands}
             onGoAssets={() => handleViewChange('assets')}
           />
         ) : view === 'brands' ? (
           <BrandStudio
             brands={brands}
+            platforms={platforms}
             brandsLoading={brandsLoading}
             brandsError={brandsError}
             onRefreshBrands={loadBrands}
@@ -280,14 +278,8 @@ export default function App() {
               <span className="footer-sep" aria-hidden="true" />
               <span>每次修改都会保存为独立版本</span>
             </>
-          ) : view === 'brands' ? (
-            <>
-              <span>品牌配置保存在 MongoDB · 新任务立即生效</span>
-              <span className="footer-sep" aria-hidden="true" />
-              <span>旧任务继续使用创建时的品牌快照</span>
-            </>
-          ) : (
-            <span>素材保存在腾讯云 COS · 自由设计时从资产库选择</span>
+          ) : view === 'brands' ? null : (
+            <span>素材保存在腾讯云 COS · 海报设计时从资产库选择</span>
           )}
         </footer>
       </div>

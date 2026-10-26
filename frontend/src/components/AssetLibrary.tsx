@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { Asset, AssetKind } from '../types'
+import { ZoomableImage } from './ImageLightbox'
 
 type Props = {
   assets: Asset[]
@@ -94,7 +95,7 @@ export default function AssetLibrary({
             <strong className="tnum">{productCount}</strong> 图片素材
           </span>
           <span>
-            <strong className="tnum">{referenceCount}</strong> 参考素材
+            <strong className="tnum">{referenceCount}</strong> 素材图
           </span>
         </div>
       </div>
@@ -153,7 +154,12 @@ export default function AssetLibrary({
             return (
               <article className="asset-card" key={asset.id}>
                 <div className={`asset-thumb asset-thumb-${asset.kind}`}>
-                  <img src={asset.url} alt={asset.original_name} />
+                  <ZoomableImage
+                    className="asset-thumb-preview"
+                    src={asset.url}
+                    alt={asset.original_name}
+                    title={asset.original_name}
+                  />
                 </div>
                 <div className="asset-card-head">
                   <span className={`asset-kind asset-kind-${asset.kind}`}>

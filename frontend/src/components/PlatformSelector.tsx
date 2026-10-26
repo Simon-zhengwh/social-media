@@ -1,4 +1,4 @@
-import type { MerchantInfo, PlatformPreset, Ratio } from '../types'
+import type { PlatformPreset, Ratio } from '../types'
 
 const FREE_RATIOS: Array<{ value: Ratio; label: string }> = [
   { value: '1:1', label: '方形' },
@@ -14,14 +14,12 @@ type Props = {
   selectedPlatformId: string
   selectedPlacementId: string
   selectedRatio: Ratio
-  merchantInfo: MerchantInfo
   loading: boolean
   error: string | null
   busy: boolean
   onPlatformChange: (platformId: string) => void
   onPlacementChange: (placementId: string) => void
   onRatioChange: (ratio: Ratio) => void
-  onMerchantChange: (merchant: MerchantInfo) => void
 }
 
 export default function PlatformSelector({
@@ -29,14 +27,12 @@ export default function PlatformSelector({
   selectedPlatformId,
   selectedPlacementId,
   selectedRatio,
-  merchantInfo,
   loading,
   error,
   busy,
   onPlatformChange,
   onPlacementChange,
   onRatioChange,
-  onMerchantChange,
 }: Props) {
   const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId) ?? null
   const selectedPlacement =
@@ -48,7 +44,6 @@ export default function PlatformSelector({
         <span className="prompt-field-label">
           发布平台 <span>选填</span>
         </span>
-        <span className="brand-field-hint">不选则由 AI 自由发挥</span>
       </div>
 
       {error ? (
@@ -78,11 +73,7 @@ export default function PlatformSelector({
                 </option>
               ))}
             </select>
-            <small>
-              {selectedPlatform
-                ? selectedPlatform.summary
-                : '不套用特定平台规则，由 Agent 根据主题和素材自主决定构图与视觉方向。'}
-            </small>
+
           </label>
 
           {!selectedPlatform ? (
@@ -104,65 +95,30 @@ export default function PlatformSelector({
                   </button>
                 ))}
               </div>
-              <p className="platform-contact-note">
+              <p className="platform-ratio-note">
                 未选择平台时使用此比例；选择平台后由发布用途决定。
               </p>
             </div>
           ) : null}
 
           {selectedPlatform ? (
-            <div className="placement-field">
-              <span className="platform-sub-label">发布用途</span>
-              <div className="placement-options" role="radiogroup" aria-label="发布用途">
+            <label className="platform-select-field placement-select-field">
+              <span>发布用途</span>
+              <select
+                value={selectedPlacement?.id ?? ''}
+                onChange={(event) => onPlacementChange(event.target.value)}
+                disabled={busy}
+                aria-label="选择发布用途"
+              >
                 {selectedPlatform.placements.map((placement) => (
-                  <button
-                    key={placement.id}
-                    type="button"
-                    role="radio"
-                    aria-checked={selectedPlacement?.id === placement.id}
-                    className={`placement-option${selectedPlacement?.id === placement.id ? ' is-active' : ''}`}
-                    onClick={() => onPlacementChange(placement.id)}
-                    disabled={busy}
-                  >
-                    <strong>{placement.name}</strong>
-                    <span>{placement.ratio}</span>
-                  </button>
+                  <option key={placement.id} value={placement.id}>
+                    {placement.name} · {placement.ratio}
+                  </option>
                 ))}
-              </div>
-            </div>
+              </select>
+            </label>
           ) : null}
 
-          {selectedPlatform && selectedPlatform.contact_policy !== 'forbidden' ? (
-            <div className="merchant-fields">
-              <label>
-                <span>商家地址 <em>选填</em></span>
-                <input
-                  value={merchantInfo.address}
-                  maxLength={240}
-                  placeholder="例如：上海市徐汇区某路 88 号"
-                  onChange={(event) =>
-                    onMerchantChange({ ...merchantInfo, address: event.target.value })
-                  }
-                  disabled={busy}
-                />
-              </label>
-              <label>
-                <span>联系电话 <em>选填</em></span>
-                <input
-                  value={merchantInfo.phone}
-                  maxLength={80}
-                  placeholder="例如：021-1234 5678"
-                  onChange={(event) =>
-                    onMerchantChange({ ...merchantInfo, phone: event.target.value })
-                  }
-                  disabled={busy}
-                />
-              </label>
-              <p className="platform-contact-note">
-                填写后会作为成图内容展示，请核对真实信息；不填写也可直接生成。
-              </p>
-            </div>
-          ) : null}
         </>
       )}
     </div>

@@ -1,10 +1,12 @@
 import type { Asset, BrandMode, BrandStyle } from '../types'
+import { ZoomableImage } from './ImageLightbox'
 
 type Props = {
   brands: BrandStyle[]
   selectedBrandId: string
   brandsLoading: boolean
   brandsError: string | null
+  platformRequired: boolean
   mode: BrandMode
   references: Asset[]
   referencesUploading: boolean
@@ -15,10 +17,10 @@ type Props = {
   onRemoveReference: (assetId: string) => void
 }
 
-const MODE_OPTIONS: Array<{ value: BrandMode; label: string; hint: string }> = [
-  { value: 'preset', label: '预设风格', hint: '使用品牌规范' },
-  { value: 'reference', label: '参考图', hint: '上传风格参考' },
-  { value: 'none', label: '无', hint: '不限制风格' },
+const MODE_OPTIONS: Array<{ value: BrandMode; label: string }> = [
+  { value: 'preset', label: '预设风格' },
+  { value: 'reference', label: '参考图' },
+  { value: 'none', label: '无' },
 ]
 
 export default function BrandModeSelector({
@@ -26,6 +28,7 @@ export default function BrandModeSelector({
   selectedBrandId,
   brandsLoading,
   brandsError,
+  platformRequired,
   mode,
   references,
   referencesUploading,
@@ -41,7 +44,6 @@ export default function BrandModeSelector({
         <span className="prompt-field-label">
           品牌风格 <span>可选</span>
         </span>
-        <span className="brand-field-hint">选择预设、参考图或不限制风格</span>
       </div>
 
       <div className="brand-mode-options" role="radiogroup" aria-label="品牌风格模式">
@@ -56,7 +58,6 @@ export default function BrandModeSelector({
             disabled={busy}
           >
             <strong>{option.label}</strong>
-            <span>{option.hint}</span>
           </button>
         ))}
       </div>
@@ -74,36 +75,60 @@ export default function BrandModeSelector({
           </div>
         ) : brands.length === 0 ? (
           <div className="brand-empty">
-            <strong>没有可用的预设风格</strong>
-            <span>可切换到“参考图”或“无”。</span>
+            <strong>{platformRequired ? '先选择发布平台和用途' : '当前平台和用途暂无匹配风格'}</strong>
+            <span>选择发布条件后会自动带出对应品牌风格。</span>
           </div>
         ) : (
           <div className="brand-options" role="radiogroup" aria-label="预设品牌风格">
             {brands.map((brand) => {
               const selected = brand.id === selectedBrandId
+              const displayName = brand.name.split(' · ')[0].trim() || brand.name
               return (
-                <button
+                <div
                   key={brand.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  className={`brand-option${selected ? ' is-active' : ''}`}
-                  onClick={() => onBrandChange(brand.id)}
-                  disabled={busy}
+                  className={`brand-option${selected ? ' is-active' : ''}${busy ? ' is-disabled' : ''}`}
                 >
                   <span className="brand-cover">
                     {brand.cover_url ? (
-                      <img src={brand.cover_url} alt={`${brand.name} 风格参考`} />
+                      <ZoomableImage
+                        className="brand-cover-image"
+                        src={brand.cover_url}
+                        alt={`${brand.name} 风格参考`}
+                        title={brand.name}
+                      />
                     ) : (
                       <span className="brand-cover-placeholder">{brand.short_name.slice(0, 2)}</span>
                     )}
                     {selected ? <span className="brand-selected-mark">当前</span> : null}
                   </span>
-                  <span className="brand-option-copy">
-                    <strong>{brand.name}</strong>
-                    <span>{brand.summary || '品牌专属视觉规范'}</span>
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    className="brand-option-select"
+                    onClick={() => onBrandChange(brand.id)}
+                    disabled={busy}
+                  >
+                    <span className="brand-option-copy">
+                      <span className="brand-option-title">
+                        <strong>{displayName}</strong>
+                      </span>
+                      <span>{brand.summary || '品牌专属视觉规范'}</span>
+                      {brand.colors.length ? (
+                        <span className="brand-option-palette" aria-label="品牌主色调">
+                          {brand.colors.slice(0, 6).map((color) => (
+                            <i
+                              key={color.hex}
+                              style={{ backgroundColor: color.hex }}
+                              title={color.hex}
+                            />
+                          ))}
+                        </span>
+                      ) : null}
+                    </span>
+
+                  </button>
+                </div>
               )
             })}
           </div>
@@ -119,9 +144,15 @@ export default function BrandModeSelector({
           <div className="style-reference-grid">
             {references.map((asset) => (
               <div className="style-reference-item" key={asset.id}>
-                <img src={asset.url} alt={asset.original_name} />
+                <ZoomableImage
+                  className="style-reference-preview"
+                  src={asset.url}
+                  alt={asset.original_name}
+                  title={asset.original_name}
+                />
                 <button
                   type="button"
+                  className="style-reference-remove"
                   onClick={() => onRemoveReference(asset.id)}
                   aria-label={`移除 ${asset.original_name}`}
                   disabled={busy || referencesUploading}

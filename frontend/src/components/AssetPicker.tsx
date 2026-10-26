@@ -22,7 +22,7 @@ export default function AssetPicker({
   loading,
   multi = false,
   selectedIds = [],
-  max = 4,
+  max = 6,
   onClose,
   onSelect,
   onConfirm,
@@ -47,12 +47,10 @@ export default function AssetPicker({
     return null
   }
 
-  const matching = assets.filter(
-    (asset) => asset.kind === kind || (kind === 'product' && asset.kind === 'logo'),
-  )
-  const title = kind === 'product' ? '选择参考素材' : '选择素材'
+  const matching = assets.filter((asset) => asset.kind === kind)
+  const title = kind === 'product' ? '选择素材图' : '选择素材'
   const emptyCopy =
-    kind === 'product' ? '资产管理中还没有可用素材' : '资产管理中还没有素材'
+    kind === 'product' ? '资产管理中还没有可用素材图' : '资产管理中还没有素材'
 
   const toggle = (assetId: string) => {
     setSelected((previous) => {
