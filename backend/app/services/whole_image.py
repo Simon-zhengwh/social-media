@@ -13,7 +13,7 @@ from pymongo import ReturnDocument
 from pymongo.database import Database
 
 from app.config import Settings
-from app.services import platform_presets, storage
+from app.services import brand_rules, platform_presets, storage
 from app.services.canvas import canvas_size, gateway_image_size
 from app.services.core_ai import CoreAIClient, CoreAIError
 from app.services.image_ref import ImageRef, cleanup_image_refs, image_ref_from_asset
@@ -434,13 +434,16 @@ def run_generation(
         )
         brand_context = ""
         if not optimized and brand.get("name"):
+            guides = (
+                brand_rules.compile_style_fields(brand["style_fields"])
+                if brand.get("style_fields") else
+                "\n".join(dict.fromkeys(str(brand.get(key) or '').strip() for key in ("layout_guide", "background_guide")))
+            )
             brand_context = (
                 f"\n\nBrand context: {brand.get('name')}. "
                 f"{str(brand.get('summary') or '').strip()}\n"
                 f"{_brand_style_context(brand)}\n"
-                f"Brand layout guide:\n{str(brand.get('layout_guide') or '').strip()}\n"
-                f"Brand photography and background guide:\n"
-                f"{str(brand.get('background_guide') or '').strip()}"
+                f"Brand generation guide:\n{guides}"
                 + (
                     "\nUse attached brand reference images for brand colors, typography, "
                     "composition, and decorative style. Keep product details faithful "
@@ -459,10 +462,12 @@ def run_generation(
                 f"aspect ratio {input_data.get('ratio')}.\n\n{platform_context}"
             )
         platform_block = f"\n\n{platform_context}" if platform_context else ""
+        common_context = brand_rules.rules_context(claimed.get("brand_rules"))
+        common_block = f"\n\n{common_context}" if common_context else ""
         prompt = (
             f"{OPTIMIZED_GENERATION_SYSTEM_PROMPT if optimized else GENERATION_SYSTEM_PROMPT}"
             f"{reference_role_block}"
-            f"{brand_context}{platform_block}\n\nUser request:\n"
+            f"{common_block}{brand_context}{platform_block}\n\nUser request:\n"
             f"{str(input_data.get('prompt') or '').strip()}"
         ).strip()
         canvas = claimed.get("canvas") or {}

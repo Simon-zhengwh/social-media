@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   ApiError,
+  createBrand,
+  getBrandRules,
+  updateBrandRules,
+  previewBrand,
   deleteBrand,
   deleteBrandLogo,
   deleteBrandReference,
@@ -14,6 +18,8 @@ import type {
   BrandColor,
   BrandDetail,
   BrandStyle,
+  BrandStyleFields,
+  BrandRules,
   PlatformPreset,
 } from '../types'
 import { ZoomableImage } from './ImageLightbox'
@@ -27,6 +33,8 @@ type Props = {
 }
 
 type BrandDraft = {
+  schema_version: number
+  style_fields: BrandStyleFields | null
   name: string
   short_name: string
   summary: string
@@ -42,15 +50,33 @@ type BrandDraft = {
   cover_asset_id: string | null
 }
 
-function toDraft(detail: BrandDetail): BrandDraft {
-  const layoutGuide = detail.layout_guide.trim()
-  const backgroundGuide = detail.background_guide.trim()
-  const generationGuide =
-    !backgroundGuide || backgroundGuide === layoutGuide
-      ? layoutGuide
-      : `${layoutGuide}\n\n${backgroundGuide}`.trim()
+const emptyStyle = (): BrandStyleFields => ({
+  palette_notes: '', typography: '', subject_style: '', background: '',
+  layout: '重点清晰、层级明确，正文不遮挡关键主体', decoration: '', identity: '', restrictions: '',
+})
 
+const styleFields: { key: keyof BrandStyleFields; label: string; hint: string; example: string; required?: boolean }[] = [
+  { key: 'palette_notes', label: '配色说明', hint: '说明颜色的主次、用途和允许的变化；与色值至少填一项。', example: '深绿为主色，奶油白作背景，红色强调优惠；允许同色系变化。' },
+  { key: 'typography', label: '字体风格', hint: '分别描述标题、正文和数字的字体气质。', example: '标题用粗笔刷字，正文用清晰无衬线字，价格数字醒目。', required: true },
+  { key: 'subject_style', label: '主体表现', hint: '描述商品、人物等主体的表现方式。', example: '真实菜品摄影拼贴，保持食物细节和自然色泽。', required: true },
+  { key: 'background', label: '背景与质感', hint: '描述背景颜色、材质和氛围。', example: '奶油白背景，带轻微纸张纹理。', required: true },
+  { key: 'layout', label: '排版偏好', hint: '说明视觉重点、文字层级和疏密偏好，可调整默认建议。', example: '菜品为主，标题放大，优惠条件放在次级区域。' },
+  { key: 'decoration', label: '装饰元素', hint: '选填；不需要装饰时可明确填写“无”。', example: '少量手写箭头、撕纸边缘和促销色块。' },
+  { key: 'identity', label: '固定识别元素', hint: '选填；填写品牌固定角色或其他视觉标记。', example: '白布幽灵角色，佩戴深色墨镜。' },
+  { key: 'restrictions', label: '专属禁忌与补充', hint: '选填；补充该风格特有的限制。', example: '不使用霓虹效果，不添加未定稿角色。' },
+]
+
+const ruleFields: { key: Exclude<keyof BrandRules, 'version'>; label: string; hint: string }[] = [
+  { key: 'copy_accuracy', label: '文案准确', hint: '保证价格、日期、条件和承诺准确。' },
+  { key: 'asset_usage', label: '素材使用', hint: '区分内容素材与风格参考的用途。' },
+  { key: 'logo_usage', label: 'Logo 使用', hint: '保持品牌标识的图形、字形、比例和原色。' },
+  { key: 'readability', label: '可读性', hint: '避免遮挡关键主体或裁切必要信息。' },
+]
+
+function toDraft(detail: BrandDetail): BrandDraft {
   return {
+    schema_version: detail.schema_version ?? 1,
+    style_fields: detail.style_fields ? { ...detail.style_fields } : null,
     name: detail.name,
     short_name: detail.short_name,
     summary: detail.summary,
@@ -58,8 +84,8 @@ function toDraft(detail: BrandDetail): BrandDraft {
     placement_id: detail.placement_id,
     colors: detail.colors.map((color) => ({ ...color })),
     logo_asset_ids: [...detail.logo_asset_ids],
-    layout_guide: generationGuide,
-    background_guide: generationGuide,
+    layout_guide: detail.layout_guide,
+    background_guide: detail.background_guide,
     logo_keywords: [...detail.logo_keywords],
     note: detail.note,
     is_default: detail.is_default,
@@ -90,6 +116,16 @@ export default function BrandStudio({
   onRefreshBrands,
 }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [showRules, setShowRules] = useState(false)
+  const [rules, setRules] = useState<BrandRules | null>(null)
+  const [rulesLoading, setRulesLoading] = useState(false)
+  const [rulesSaving, setRulesSaving] = useState(false)
+  const [rulesError, setRulesError] = useState<string | null>(null)
+  const [rulesNotice, setRulesNotice] = useState<string | null>(null)
+  const [preview, setPreview] = useState<string | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  const previewRevision = useRef(0)
   const [detail, setDetail] = useState<BrandDetail | null>(null)
   const [draft, setDraft] = useState<BrandDraft | null>(null)
   const [loading, setLoading] = useState(false)
@@ -125,7 +161,15 @@ export default function BrandStudio({
   const logosFull = (detail?.logo_images.length ?? 0) >= 5
   const referencesFull = (detail?.reference_images.length ?? 0) >= 5
 
+  const invalidatePreview = () => {
+    previewRevision.current += 1
+    setPreview(null)
+    setPreviewing(false)
+  }
+
   const openBrand = async (brandId: string) => {
+    setCreating(false)
+    invalidatePreview()
     setBrandDeleteId(null)
     setSelectedId(brandId)
     setLoading(true)
@@ -144,6 +188,7 @@ export default function BrandStudio({
   }
 
   const applyDetail = (data: BrandDetail, resetDraft = true) => {
+    invalidatePreview()
     setDetail(data)
     setDraft((previous) =>
       resetDraft || !previous
@@ -158,29 +203,43 @@ export default function BrandStudio({
   }
 
   const updateDraft = (patch: Partial<BrandDraft>) => {
+    invalidatePreview()
     setDraft((previous) => (previous ? { ...previous, ...patch } : previous))
   }
 
   const payloadFromDraft = (source: BrandDraft) => ({
     ...source,
     name: source.name.trim(),
-    short_name: source.name.trim(),
+    short_name: source.name.trim().slice(0, 40),
     summary: source.summary.trim(),
     platform: '',
     note: source.note,
-    layout_guide: source.layout_guide.trim(),
-    background_guide: source.background_guide.trim(),
+    layout_guide: source.style_fields ? '' : source.layout_guide.trim(),
+    background_guide: source.style_fields ? '' : source.background_guide.trim(),
   })
 
   const saveBrand = async () => {
-    if (!selectedId || !draft) return
+    if (!draft) return
+    invalidatePreview()
+    if (!draft.name.trim() || !draft.summary.trim() || !draft.platform_id || !draft.placement_id) {
+      setError('请填写风格名称、风格定位、适用平台和发布用途')
+      return
+    }
+    if (draft.style_fields && (!draft.style_fields.typography.trim() || !draft.style_fields.subject_style.trim() || !draft.style_fields.background.trim() || (!draft.colors.length && !draft.style_fields.palette_notes.trim()))) {
+      setError('请填写字体风格、主体表现、背景与质感，并至少填写配色说明或一个色值')
+      return
+    }
     setSaving(true)
     setError(null)
     setNotice(null)
     try {
-      const data = await updateBrand(selectedId, payloadFromDraft(draft))
+      const data = selectedId
+        ? await updateBrand(selectedId, payloadFromDraft(draft))
+        : await createBrand(payloadFromDraft(draft))
+      setSelectedId(data.id)
+      setCreating(false)
       applyDetail(data)
-      setNotice('品牌配置已保存')
+      setNotice(selectedId ? '品牌配置已保存' : '风格已创建，现在可以上传 Logo 和参考图')
     } catch (reason: unknown) {
       setError(errorText(reason))
     } finally {
@@ -194,6 +253,7 @@ export default function BrandStudio({
     setNotice(null)
     try {
       await deleteBrand(brand.id)
+      invalidatePreview()
       setBrandDeleteId(null)
       setSelectedId(null)
       setDetail(null)
@@ -215,7 +275,7 @@ export default function BrandStudio({
     setNotice(null)
     try {
       const data = await uploadBrandLogos(selectedId, accepted)
-      applyDetail(data)
+      applyDetail(data, false)
       setNotice(`已上传 ${data.logo_images.length - (detail?.logo_images.length ?? 0)} 张 Logo`)
     } catch (reason: unknown) {
       setError(errorText(reason))
@@ -230,7 +290,7 @@ export default function BrandStudio({
     setConfirmDelete(null)
     setError(null)
     try {
-      applyDetail(await deleteBrandLogo(selectedId, assetId))
+      applyDetail(await deleteBrandLogo(selectedId, assetId), false)
       setNotice('Logo 已从品牌配置中移除')
     } catch (reason: unknown) {
       setError(errorText(reason))
@@ -318,7 +378,70 @@ export default function BrandStudio({
     setEditingColor(target)
   }
 
-  if (!selectedId) {
+  const loadRules = async () => {
+    setRulesLoading(true)
+    setRulesError(null)
+    setRulesNotice(null)
+    try {
+      setRules(await getBrandRules())
+    } catch (reason) {
+      setRulesError(errorText(reason))
+    } finally {
+      setRulesLoading(false)
+    }
+  }
+
+  const saveRules = async () => {
+    if (!rules) return
+    if (ruleFields.some(({ key }) => !rules[key].trim())) {
+      setRulesError('请填写四项通用规范')
+      return
+    }
+    setRulesSaving(true)
+    setRulesError(null)
+    setRulesNotice(null)
+    try {
+      setRules(await updateBrandRules(rules))
+      setRulesNotice('通用规范已保存，将应用于之后新建的生成任务')
+      invalidatePreview()
+    } catch (reason) {
+      setRulesError(reason instanceof ApiError && (reason.code === 'http_409' || reason.code === 'version_conflict')
+        ? '通用规范已被其他页面更新。请先保留本次文字，再点击“重新载入”获取最新版本。'
+        : errorText(reason))
+    } finally {
+      setRulesSaving(false)
+    }
+  }
+
+  if (showRules) {
+    return (
+      <section className="asset-page brand-page brand-detail-page">
+        <div className="brand-detail-shell">
+          <button type="button" className="brand-back" onClick={() => setShowRules(false)}>← 返回品牌列表</button>
+          <div className="brand-section-head"><div><span className="eyebrow">COMMON RULES</span><h1>通用规范</h1></div><span>版本 {rules?.version ?? '—'}</span></div>
+          <p className="panel-lead">所有风格、参考图风格和无品牌模式都会应用。保存后对新任务生效，已有任务保留原规范。</p>
+          {rulesError ? <div className="asset-notice asset-notice-error" role="alert">{rulesError}</div> : null}
+          {rulesNotice ? <div className="asset-notice" role="status">{rulesNotice}</div> : null}
+          {rulesLoading ? <p>正在读取通用规范…</p> : rules ? (
+            <div className="brand-form-grid">
+              {ruleFields.map(({ key, label, hint }) => (
+                <label className="brand-field brand-field-wide" key={key}>
+                  <span>{label} · 必填</span><small>{hint}</small>
+                  <textarea rows={4} maxLength={4000} value={rules[key]} onChange={(event) => setRules({ ...rules, [key]: event.target.value })} />
+                </label>
+              ))}
+            </div>
+          ) : null}
+          <div className="brand-detail-footer-actions">
+            <button type="button" className="mp-btn-ghost" disabled={rulesLoading || rulesSaving} onClick={() => void loadRules()}>重新载入</button>
+            <button type="button" className="mp-btn-primary" disabled={!rules || rulesLoading || rulesSaving} onClick={() => void saveRules()}>{rulesSaving ? '保存中…' : '保存通用规范'}</button>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
+  if (!selectedId && !creating) {
     return (
       <section className="asset-page brand-page">
         <div className="asset-head">
@@ -329,6 +452,16 @@ export default function BrandStudio({
           </div>
           <div className="asset-stats">
             <span><strong className="tnum">{brands.length}</strong> 套风格</span>
+            <button type="button" className="mp-btn-ghost" onClick={() => { setShowRules(true); void loadRules() }}>通用规范</button>
+            <button type="button" className="mp-btn-primary" onClick={() => {
+              setCreating(true)
+              setDetail(null)
+              setError(null)
+              setNotice(null)
+              invalidatePreview()
+              setEditingColor(null)
+              setDraft({ schema_version: 2, style_fields: emptyStyle(), name: '', short_name: '', summary: '', platform_id: '', placement_id: '', colors: [], logo_asset_ids: [], layout_guide: '', background_guide: '', logo_keywords: [], note: '', is_default: false, cover_asset_id: null })
+            }}>＋ 新建风格</button>
           </div>
         </div>
         {brandsError ? <div className="asset-notice asset-notice-error">{brandsError}</div> : null}
@@ -345,7 +478,7 @@ export default function BrandStudio({
             ))}
           </div>
         ) : brands.length === 0 ? (
-          <div className="asset-empty"><strong>还没有品牌配置</strong><span>请先导入品牌 skill。</span></div>
+          <div className="asset-empty"><strong>还没有品牌配置</strong><span>点击“新建风格”，按表单填写视觉要求。</span></div>
         ) : (
           <div className="brand-card-grid">
             {brands.map((brand) => (
@@ -400,12 +533,12 @@ export default function BrandStudio({
     <section className="asset-page brand-page brand-detail-page">
       <div className="brand-detail-shell">
         <div className="brand-detail-head">
-          <button type="button" className="brand-back" onClick={() => { setSelectedId(null); setDetail(null); setDraft(null) }}>
+          <button type="button" className="brand-back" onClick={() => { invalidatePreview(); setSelectedId(null); setCreating(false); setDetail(null); setDraft(null); setError(null); setNotice(null) }}>
             ← 返回品牌列表
           </button>
           <div className="brand-detail-title">
             <div>
-              <h1>{draft?.name || detail?.name || '品牌详情'}</h1>
+              <h1>{draft?.name || detail?.name || '新建风格'}</h1>
             </div>
 
           </div>
@@ -426,12 +559,13 @@ export default function BrandStudio({
 
               <div className="brand-form-grid brand-basics-grid">
                 <label className="brand-field brand-field-wide">
-                  <span>品牌名称</span>
-                  <input value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} />
+                  <span>风格名称 · 必填</span>
+                  <small>用名称区分商家及其视觉风格。</small>
+                  <input placeholder="例如：喜聚 · 暖调复古" required maxLength={80} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} />
                 </label>
 
                 <label className="brand-field">
-                  <span>适用平台</span>
+                  <span>适用平台 · 必填</span>
                   <select value={draft.platform_id} onChange={(event) => {
                     const next = platforms.find((item) => item.id === event.target.value)
                     updateDraft({ platform_id: event.target.value, placement_id: next?.default_placement_id ?? '' })
@@ -441,14 +575,15 @@ export default function BrandStudio({
                   </select>
                 </label>
                 <label className="brand-field">
-                  <span>发布用途</span>
+                  <span>发布用途 · 必填</span>
                   <select value={draft.placement_id} disabled={!selectedPlatform} onChange={(event) => updateDraft({ placement_id: event.target.value })}>
                     {selectedPlatform ? selectedPlatform.placements.map((placement) => <option key={placement.id} value={placement.id}>{placement.name}</option>) : <option value="">请选择用途</option>}
                   </select>
                 </label>
                 <label className="brand-field brand-field-wide">
-                  <span>品牌简介</span>
-                  <textarea rows={2} value={draft.summary} onChange={(event) => updateDraft({ summary: event.target.value })} />
+                  <span>风格定位 · 必填</span>
+                  <small>用几个关键词概括整体气质。</small>
+                  <textarea rows={2} required maxLength={500} placeholder="例如：温暖、复古、轻手作感" value={draft.summary} onChange={(event) => updateDraft({ summary: event.target.value })} />
                 </label>
               </div>
 
@@ -469,15 +604,15 @@ export default function BrandStudio({
                     ))}
                     {!logosFull ? (
                       <label className="brand-asset-add">
-                        <input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={uploadingLogo} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void uploadLogos(files); event.target.value = '' }} />
-                        <span>＋</span><small>{uploadingLogo ? '上传中' : 'Logo'}</small>
+                        <input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={uploadingLogo || !selectedId} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void uploadLogos(files); event.target.value = '' }} />
+                        <span>＋</span><small>{!selectedId ? '保存后上传' : uploadingLogo ? '上传中' : 'Logo'}</small>
                       </label>
                     ) : null}
                   </div>
                 </div>
 
                 <div className="brand-asset-group">
-                  <div className="brand-subhead"><strong>主色调</strong><span>选填 · {draft.colors.length}/6</span></div>
+                  <div className="brand-subhead"><strong>主色调</strong><span>与配色说明至少填一项 · {draft.colors.length}/6</span></div>
                   <div className="brand-color-strip">
                     {draft.colors.map((color, index) => (
                       <button type="button" className={`brand-color-swatch${editingColor === index ? ' is-active' : ''}`} key={`${color.hex}-${index}`} style={{ background: color.hex }} title={color.hex} aria-label={color.hex} onClick={() => { setEditingColor(index); setColorInput(color.hex) }} />
@@ -505,20 +640,52 @@ export default function BrandStudio({
 
             <section className="brand-form-section">
               <div className="brand-section-head">
-                <div><span className="eyebrow">GUIDES</span><h2>生成规范</h2></div>
+                <div><span className="eyebrow">STYLE TEMPLATE</span><h2>风格填写模板</h2></div>
               </div>
-              <label className="brand-field">
-                <textarea
-                  className="brand-guide-input"
-                  rows={10}
-                  aria-label="生成规范"
-                  value={draft.layout_guide}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    updateDraft({ layout_guide: value, background_guide: value })
-                  }}
-                />
-              </label>
+              <p className="brand-template-hint">只需填写这套风格独有的要求。文案准确、素材使用、Logo 和可读性由通用规范统一提供。示例仅供参考，不会自动保存。</p>
+              {draft.style_fields ? (
+                <div className="brand-form-grid">
+                  {styleFields.map(({ key, label, hint, example, required }) => (
+                    <label className="brand-field" key={key}>
+                      <span>{label} · {required ? '必填' : key === 'palette_notes' ? '配色二选一' : '选填'}</span>
+                      <small>{hint}</small>
+                      <textarea rows={3} required={required} maxLength={key === 'restrictions' ? 6000 : 4000} placeholder={`例如：${example}`} value={draft.style_fields![key]} onChange={(event) => updateDraft({ style_fields: { ...draft.style_fields!, [key]: event.target.value } })} />
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <>
+                  <p className="brand-template-hint">这套风格尚未转换为填写模板，原规范仍有效。转换后请整理并填齐必填项；原文将保留供查阅。</p>
+                  <button type="button" className="mp-btn-ghost" onClick={() => updateDraft({ schema_version: 2, style_fields: emptyStyle() })}>转换为填写模板</button>
+                  <label className="brand-field"><span>原布局规范</span><textarea rows={7} value={draft.layout_guide} onChange={(event) => updateDraft({ layout_guide: event.target.value })} /></label>
+                  <label className="brand-field"><span>原背景规范</span><textarea rows={5} value={draft.background_guide} onChange={(event) => updateDraft({ background_guide: event.target.value })} /></label>
+                </>
+              )}
+              {detail && (detail.legacy_guides || (!detail.style_fields && draft.style_fields)) ? (
+                <details className="brand-guides-fold">
+                  <summary>原始规范 · 只读留存</summary>
+                  <pre>{(detail.legacy_guides ?? detail).layout_guide}</pre>
+                  <pre>{(detail.legacy_guides ?? detail).background_guide}</pre>
+                </details>
+              ) : null}
+              <details className="brand-guides-fold">
+                <summary>规范预览 · 通用规范、当前风格与平台规则</summary>
+                <p className="brand-template-hint">按当前未保存的表单生成预览。修改表单后请重新预览。</p>
+                <button type="button" className="mp-btn-ghost" disabled={previewing} onClick={async () => {
+                  const revision = ++previewRevision.current
+                  setPreviewing(true)
+                  setError(null)
+                  try {
+                    const result = await previewBrand(payloadFromDraft(draft))
+                    if (revision === previewRevision.current) setPreview(result.prompt)
+                  } catch (reason) {
+                    if (revision === previewRevision.current) setError(errorText(reason))
+                  } finally {
+                    if (revision === previewRevision.current) setPreviewing(false)
+                  }
+                }}>{previewing ? '读取中…' : '生成规范预览'}</button>
+                {preview ? <pre>{preview}</pre> : null}
+              </details>
             </section>
 
             <section className="brand-form-section">
@@ -544,8 +711,8 @@ export default function BrandStudio({
                 ))}
                 {!referencesFull ? (
                   <label className={`brand-reference-upload${uploadingReference ? ' is-disabled' : ''}`}>
-                    <input type="file" accept="image/png,image/jpeg,image/webp" disabled={uploadingReference} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadReference(file); event.target.value = '' }} />
-                    <span className="upload-plus" aria-hidden="true" /><strong>{uploadingReference ? '上传中…' : '上传参考图'}</strong><span>PNG / JPG / WebP</span>
+                    <input type="file" accept="image/png,image/jpeg,image/webp" disabled={uploadingReference || !selectedId} onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadReference(file); event.target.value = '' }} />
+                    <span className="upload-plus" aria-hidden="true" /><strong>{!selectedId ? '保存风格后上传' : uploadingReference ? '上传中…' : '上传参考图'}</strong><span>PNG / JPG / WebP</span>
                   </label>
                 ) : null}
               </div>
@@ -586,13 +753,13 @@ export default function BrandStudio({
                 >
                   删除品牌
                 </button>
-                <button type="button" className="mp-btn-primary" onClick={() => void saveBrand()} disabled={saving}>{saving ? '保存中…' : '保存品牌配置'}</button>
+                <button type="button" className="mp-btn-primary" onClick={() => void saveBrand()} disabled={saving}>{saving ? '保存中…' : creating ? '创建风格' : '保存品牌配置'}</button>
               </div>
             </div>
           </div>
         )}
 
-        {brandDeleteId === selectedId ? (
+        {brandDeleteId && brandDeleteId === selectedId ? (
           <div
             className="brand-delete-modal-backdrop"
             onMouseDown={(event) => {

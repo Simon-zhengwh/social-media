@@ -64,7 +64,29 @@ export type BrandReferenceImage = {
   is_cover: boolean
 }
 
+export type BrandStyleFields = {
+  palette_notes: string
+  typography: string
+  subject_style: string
+  background: string
+  layout: string
+  decoration: string
+  identity: string
+  restrictions: string
+}
+
+export type BrandRules = {
+  version: number
+  copy_accuracy: string
+  asset_usage: string
+  logo_usage: string
+  readability: string
+}
+
 export type BrandDetail = BrandStyle & {
+  schema_version: number
+  style_fields: BrandStyleFields | null
+  legacy_guides: { layout_guide: string; background_guide: string } | null
   cover_asset_id: string | null
   layout_guide: string
   background_guide: string

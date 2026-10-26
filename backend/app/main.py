@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db import create_client, get_database
-from app.routes import assets, brands, platforms, prompts, samples, whole_image
+from app.routes import assets, brands, brand_rules, platforms, prompts, samples, whole_image
 from app.services.core_ai import CoreAIClient
 from app.services import storage
 from app.services.object_store import create_object_store
@@ -50,6 +50,7 @@ app.add_middleware(
 )
 app.include_router(assets.router)
 app.include_router(brands.router)
+app.include_router(brand_rules.router)
 app.include_router(platforms.router)
 app.include_router(samples.router)
 app.include_router(prompts.router)

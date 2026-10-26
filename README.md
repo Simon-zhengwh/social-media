@@ -11,6 +11,8 @@
 - 品牌规范保存在 MongoDB `brands` 集合；`.agents/skills/<brand>/` 仅用于首次导入和人工文档，运行时不读取。
 - 每套品牌风格必须绑定一个发布平台及平台预设的发布用途；可从现有风格复制出独立平台版本。
 - 品牌风格页面支持紧凑基本信息编辑、生成规范折叠编辑、参考图管理，以及最多 5 张 Logo 和最多 6 个主色调管理。颜色统一使用 `#RRGGBB` HEX。
+- 品牌风格支持按固定表单新建和编辑：配色说明、字体、主体表现、背景、排版、装饰、固定识别元素与专属要求；规范预览由后端统一组装。
+- 「通用规范」可在品牌风格页编辑，覆盖文案准确、素材使用、Logo 和可读性。更新应用于新任务；任务保存当时的规范正文和版本，历史任务不变。
 - 资产管理支持上传图片、载入 `seejoy素材/素材/` 示例素材、查看已保存素材和删除素材。
 - 每次生成支持 1–6 张候选，默认 3 张；候选可在结果区切换，选中的版本继续编辑。
 - 发布平台为选填项：选择平台后可指定用途，比例、尺寸和安全区规则由平台预设统一提供；不选择时可手动指定画幅比例。
@@ -48,6 +50,9 @@
 | `DELETE /api/assets/{id}` | 删除素材；被整图任务引用时需显式 `force=true` |
 | `GET /api/brands` / `GET /api/brands/{id}` | 品牌列表与详情 |
 | `PUT /api/brands/{id}` | 更新品牌配置 |
+| `POST /api/brands` | 新建结构化品牌风格 |
+| `POST /api/brands/preview` | 预览未保存的风格、通用规范及平台规则 |
+| `GET /api/brand-rules` / `PUT /api/brand-rules` | 查看和更新通用规范，更新需携带当前版本 |
 | `POST /api/brands/{id}/duplicate` | 复制为另一个平台/用途的独立品牌风格 |
 | `POST /api/brands/{id}/references` | 上传品牌参考图，最多 5 张 |
 | `DELETE /api/brands/{id}/references/{asset_id}` | 移除品牌参考图 |
@@ -144,6 +149,17 @@ Set-Location backend
 Set-Location backend
 .\.venv\Scripts\python.exe scripts\sync_materials.py
 ```
+
+将现有喜聚、朵颐规范整理为表单字段（保留素材关联和历史任务）：
+
+```powershell
+Set-Location backend
+# 默认只预览；执行前自动备份，重复执行跳过已迁移的风格。
+.\.venv\Scripts\python.exe scripts\initialize_brand_templates.py
+.\.venv\Scripts\python.exe scripts\initialize_brand_templates.py --apply
+```
+
+备份写入 `storage/backups/brand-templates/<时间>/brand-templates.ejson`。原规范在风格详情中只读留存。已有结构化风格不会被 skill 的 `--force` 导入覆盖。
 
 ## 提示词优化基准
 

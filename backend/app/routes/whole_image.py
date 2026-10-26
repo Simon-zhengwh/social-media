@@ -7,7 +7,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.schemas import WholeImageEditRequest, WholeImageTaskCreate
-from app.services import brand_style, platform_presets, whole_image
+from app.services import brand_rules, brand_style, platform_presets, whole_image
 from app.services.canvas import canvas_size
 
 router = APIRouter(prefix="/api/whole-image", tags=["whole-image"])
@@ -276,6 +276,7 @@ def create_task(
         "platform": (platform_config or {}).get("platform"),
         "placement": (platform_config or {}).get("placement"),
         "brand": brand_snapshot,
+        "brand_rules": brand_rules.get_rules(db),
         "canvas": {"width": width, "height": height},
         "provider": {
             "name": "core-ai",

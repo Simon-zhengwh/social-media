@@ -141,6 +141,37 @@ def _optimize(db, settings, store, client, **overrides):
     )
 
 
+@pytest.mark.parametrize("brand_mode", ["none", "preset", "reference"])
+def test_optimizer_common_rules_all_modes_and_structured_guide(settings, store, optimizer_db, brand_mode):
+    from app.services import brand_rules
+
+    db, products, reference_id = optimizer_db
+    db.brand_rules.insert_one({"_id": "default", **brand_rules.DEFAULT_RULES, "copy_accuracy": "COMMON_COPY_RULE"})
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {
+        "schema_version": 2,
+        "style_fields": {"palette_notes": "绿色", "typography": "V2_FONT_RULE", "subject_style": "实拍", "background": "纸感"},
+        "layout_guide": "LEGACY_MUST_NOT_APPEAR", "background_guide": "OLD_BACKGROUND",
+    }})
+    client = FakeCoreAI()
+    _optimize(db, settings, store, client, brand_mode=brand_mode, brand_id="seejoy" if brand_mode == "preset" else None,
+              product_asset_ids=products, style_reference_asset_ids=[reference_id] if brand_mode == "reference" else [])
+    text = client.calls[0]["input"]
+    assert "COMMON_COPY_RULE" in text
+    assert "LEGACY_MUST_NOT_APPEAR" not in text
+    if brand_mode == "preset":
+        assert text.count("V2_FONT_RULE") == 1
+
+
+def test_optimizer_inherits_brand_platform_when_not_explicit(settings, store, optimizer_db):
+    db, products, _ = optimizer_db
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {"platform_id": "xiaohongshu", "placement_id": "note"}})
+    client = FakeCoreAI()
+    _optimize(db, settings, store, client, product_asset_ids=products)
+    text = client.calls[0]["input"]
+    assert "小红书" in text
+    assert "电话号码" in text
+
+
 def test_optimizer_passes_all_six_products_and_rejects_seven(settings, store):
     import json
 

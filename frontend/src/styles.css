@@ -3545,6 +3545,44 @@
   font-size: 11px;
 }
 
+.brand-field > small,
+.brand-template-hint {
+  color: var(--color-neutral-500);
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.brand-template-hint {
+  margin: 0 0 16px;
+}
+
+.brand-guides-fold {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 10px;
+}
+
+.brand-guides-fold > summary {
+  cursor: pointer;
+  color: var(--color-primary-900);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.brand-guides-fold[open] > summary {
+  margin-bottom: 14px;
+}
+
+.brand-guides-fold pre {
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
 .brand-reference-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));

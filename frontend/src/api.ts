@@ -4,6 +4,8 @@ import type {
   BrandDetail,
   BrandMode,
   BrandColor,
+  BrandStyleFields,
+  BrandRules,
   BrandStyle,
   ImageModel,
   PlatformPreset,
@@ -79,6 +81,8 @@ export async function getBrand(brandId: string): Promise<BrandDetail> {
 }
 
 export type UpdateBrandPayload = {
+  schema_version?: number
+  style_fields?: BrandStyleFields | null
   name: string
   short_name: string
   summary: string
@@ -93,6 +97,28 @@ export type UpdateBrandPayload = {
   logo_keywords: string[]
   is_default: boolean
   cover_asset_id?: string | null
+}
+
+export async function createBrand(payload: UpdateBrandPayload): Promise<BrandDetail> {
+  return parseResponse<BrandDetail>(await fetch('/api/brands', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  }))
+}
+
+export async function previewBrand(payload: UpdateBrandPayload): Promise<{ prompt: string }> {
+  return parseResponse<{ prompt: string }>(await fetch('/api/brands/preview', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  }))
+}
+
+export async function getBrandRules(): Promise<BrandRules> {
+  return parseResponse<BrandRules>(await fetch('/api/brand-rules'))
+}
+
+export async function updateBrandRules(payload: BrandRules): Promise<BrandRules> {
+  return parseResponse<BrandRules>(await fetch('/api/brand-rules', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  }))
 }
 
 export async function updateBrand(

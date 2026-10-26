@@ -1,7 +1,7 @@
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ImageModel = Literal[
     "gpt-image-2.5-sunburst",
@@ -32,6 +32,35 @@ class DuplicateBrandRequest(BaseModel):
         return str(value or "").strip()
 
 
+class StyleFields(BaseModel):
+    palette_notes: str = Field(default="", max_length=4000)
+    typography: str = Field(min_length=1, max_length=4000)
+    subject_style: str = Field(min_length=1, max_length=4000)
+    background: str = Field(min_length=1, max_length=4000)
+    layout: str = Field(default="重点清晰、层级明确，正文不遮挡关键主体", max_length=4000)
+    decoration: str = Field(default="", max_length=4000)
+    identity: str = Field(default="", max_length=4000)
+    restrictions: str = Field(default="", max_length=6000)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def strip_style_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
+class BrandRulesUpdate(BaseModel):
+    version: int = Field(ge=1)
+    copy_accuracy: str = Field(min_length=1, max_length=4000)
+    asset_usage: str = Field(min_length=1, max_length=4000)
+    logo_usage: str = Field(min_length=1, max_length=4000)
+    readability: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("copy_accuracy", "asset_usage", "logo_usage", "readability", mode="before")
+    @classmethod
+    def strip_rules_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
 class BrandUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     short_name: str = Field(default="", max_length=40)
@@ -43,11 +72,25 @@ class BrandUpdate(BaseModel):
     # Legacy fields remain accepted while existing records and clients migrate.
     platform: str = Field(default="", max_length=40)
     note: str = Field(default="", max_length=500)
-    layout_guide: str = Field(min_length=1, max_length=20000)
-    background_guide: str = Field(min_length=1, max_length=20000)
+    layout_guide: str = Field(default="", max_length=20000)
+    background_guide: str = Field(default="", max_length=20000)
+    schema_version: Literal[1, 2] = 1
+    style_fields: StyleFields | None = None
     logo_keywords: list[str] = Field(default_factory=list, max_length=20)
     is_default: bool = False
     cover_asset_id: str | None = Field(default=None, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_guides(self):
+        if self.schema_version == 2 or self.style_fields is not None:
+            if self.style_fields is None or not self.summary:
+                raise ValueError("请填写风格定位和风格字段")
+            if not self.colors and not self.style_fields.palette_notes:
+                raise ValueError("请填写色值或配色说明")
+            self.schema_version = 2
+        elif not self.layout_guide or not self.background_guide:
+            raise ValueError("品牌排版指南和背景指南不能为空")
+        return self
 
     @field_validator(
         "name",

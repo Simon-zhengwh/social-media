@@ -125,6 +125,53 @@ def _generate(db, settings, store, client, prompt="夏日冰美式海报"):
     return created["id"], task
 
 
+@pytest.mark.parametrize("optimized", [False, True])
+def test_common_rules_snapshot_is_immutable_for_generation(settings, store, optimized):
+    from app.services import brand_rules
+
+    db = mongomock.MongoClient().db
+    client = FakeCoreAI()
+    original = dict(brand_rules.DEFAULT_RULES, copy_accuracy="SNAPSHOT_RULE")
+    db.brand_rules.insert_one({"_id": "default", **original})
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(prompt="测试", brand_mode="none", prompt_optimized=optimized),
+        _request(db, settings, store, client), BackgroundTasks(),
+    )
+    db.brand_rules.update_one({"_id": "default"}, {"$set": {"copy_accuracy": "NEW_RULE"}})
+    whole_service.run_generation(db, settings, store, client, created["id"])
+    task = db.whole_tasks.find_one({"_id": created["id"]})
+    assert task["brand_rules"] == original
+    assert "SNAPSHOT_RULE" in client.generation_calls[0]["prompt"]
+    assert "NEW_RULE" not in client.generation_calls[0]["prompt"]
+
+
+def test_structured_brand_generation_uses_fields_once(settings, store):
+    db = mongomock.MongoClient().db
+    client = FakeCoreAI()
+    req = _request(db, settings, store, client)
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {
+        "schema_version": 2,
+        "style_fields": {"palette_notes": "绿", "typography": "UNIQUE_FONT", "subject_style": "实拍", "background": "纸感"},
+        "layout_guide": "LEGACY_CONTENT", "background_guide": "OLD_BACKGROUND",
+    }})
+    created = whole_routes.create_task(WholeImageTaskCreate(prompt="测试", brand_id="seejoy"), req, BackgroundTasks())
+    whole_service.run_generation(db, settings, store, client, created["id"])
+    prompt = client.generation_calls[0]["prompt"]
+    assert prompt.count("UNIQUE_FONT") == 1
+    assert "LEGACY_CONTENT" not in prompt
+
+
+def test_historical_generation_does_not_fetch_new_common_rules(settings, store):
+    db = mongomock.MongoClient().db
+    client = FakeCoreAI()
+    created = _create(db, settings, store, client)
+    db.whole_tasks.update_one({"_id": created["id"]}, {"$unset": {"brand_rules": ""}})
+    from app.services import brand_rules
+    db.brand_rules.insert_one({"_id": "default", **brand_rules.DEFAULT_RULES, "copy_accuracy": "NOT_FOR_OLD_TASK"})
+    whole_service.run_generation(db, settings, store, client, created["id"])
+    assert "NOT_FOR_OLD_TASK" not in client.generation_calls[0]["prompt"]
+
+
 def _seed_product(db, settings, store, data, name):
     prepared = storage.prepare_upload(settings, store, data, name, "product")
     db.assets.insert_one(

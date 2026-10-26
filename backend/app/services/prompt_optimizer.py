@@ -5,7 +5,7 @@ from typing import Any
 
 from app.config import Settings
 from app.schemas import PromptOptimizeRequest
-from app.services import brand_style, platform_presets
+from app.services import brand_rules, brand_style, platform_presets
 from app.services.core_ai import CoreAIError
 from app.services.object_store import CosObjectStore
 
@@ -132,7 +132,13 @@ def optimize_prompt(
     if not settings.cos_enabled or not isinstance(store, CosObjectStore):
         raise PromptOptimizerError("cos_required", "提示词优化需要先配置腾讯云 COS", 503)
 
-    platform_text = _platform_context(request)
+    platform_request = request
+    if brand is not None and brand.platform_id and not request.platform_id:
+        platform_request = request.model_copy(update={
+            "platform_id": brand.platform_id,
+            "placement_id": request.placement_id or brand.placement_id,
+        })
+    platform_text = _platform_context(platform_request)
     brand_text = ""
     if brand is not None:
         if brand.background_guide.strip() == brand.layout_guide.strip():
@@ -160,7 +166,7 @@ def optimize_prompt(
         revision_text = f"本次修改要求：\n{revision_guidance.strip()}"
     input_parts = [
         "目标工作流：海报设计（整图直接生成）。提示词必须描述已完成排版的最终海报。",
-        prompt_context, brand_text, platform_text, revision_text,
+        prompt_context, brand_rules.rules_context(brand_rules.get_rules(db)), brand_text, platform_text, revision_text,
         "图片清单中 content_images 是内容素材，style_images 是风格参考，logo_images 是必须保留的商家标识；保留各图 label 与角色。"
         "风格参考只参考配色、构图、字体气质和氛围。"
         "Logo 必须描述真实标识内容、比例和原色，不复制风格参考中的其他标识。"

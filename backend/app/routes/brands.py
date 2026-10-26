@@ -10,7 +10,7 @@ from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFil
 from PIL import Image, ImageOps
 
 from app.schemas import BrandUpdate, DuplicateBrandRequest
-from app.services import brand_style, storage
+from app.services import brand_rules, brand_style, platform_presets, storage
 
 router = APIRouter(prefix="/api/brands", tags=["brands"])
 
@@ -72,6 +72,9 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         "name": brand.name,
         "short_name": brand.short_name,
         "summary": brand.summary,
+        "schema_version": brand.schema_version,
+        "style_fields": brand.style_fields,
+        "legacy_guides": brand.legacy_guides,
         "platform": brand.platform,
         "platform_id": brand.platform_id,
         "placement_id": brand.placement_id,
@@ -116,6 +119,31 @@ def list_brands(request: Request) -> list[dict[str, Any]]:
         ]
         items.append(item)
     return items
+
+
+@router.post("/preview")
+def preview_brand(payload: BrandUpdate, request: Request) -> dict[str, str]:
+    try:
+        return {"prompt": brand_rules.compile_brand_preview(request.app.state.db, payload.model_dump())}
+    except platform_presets.PlatformError as exc:
+        raise HTTPException(422, exc.message) from exc
+
+
+@router.post("", status_code=201)
+def create_brand(payload: BrandUpdate, request: Request) -> dict[str, Any]:
+    db = request.app.state.db
+    brand_id = f"brand-{uuid.uuid4().hex}"
+    # Reuse update validation; remove the provisional record if validation fails.
+    if payload.cover_asset_id:
+        raise HTTPException(422, "请先保存风格，再上传参考图设置封面")
+    now = datetime.now(timezone.utc)
+    document = {"_id": brand_id, "created_at": now, "reference_asset_ids": []}
+    db.brands.insert_one(document)
+    try:
+        return update_brand(brand_id, payload, request)
+    except Exception:
+        db.brands.delete_one({"_id": brand_id})
+        raise
 
 
 @router.get("/{brand_id}")
@@ -171,6 +199,17 @@ def update_brand(
         else brand_style._normalize_colors(document.get("colors"))
     )
 
+    style_fields = payload.style_fields.model_dump() if payload.style_fields is not None else document.get("style_fields")
+    if document.get("schema_version") == 2 and payload.style_fields is None:
+        raise HTTPException(422, "请使用结构化字段编辑此风格")
+    layout_guide = brand_rules.compile_style_fields(style_fields) if style_fields else payload.layout_guide.strip()
+    background_guide = layout_guide if style_fields else payload.background_guide.strip()
+    template_updates: dict[str, Any] = {}
+    if style_fields is not None:
+        template_updates.update(schema_version=2, style_fields=style_fields)
+        if document.get("schema_version") != 2 and not document.get("legacy_guides") and document.get("layout_guide"):
+            template_updates["legacy_guides"] = {"layout_guide": document.get("layout_guide", ""), "background_guide": document.get("background_guide", "")}
+
     if payload.is_default:
         db.brands.update_many(
             {"_id": {"$ne": brand_id}},
@@ -181,6 +220,7 @@ def update_brand(
         {"_id": brand_id},
         {
             "$set": {
+                **template_updates,
                 "name": payload.name.strip(),
                 "short_name": payload.short_name.strip() or payload.name.strip(),
                 "summary": payload.summary.strip(),
@@ -191,8 +231,8 @@ def update_brand(
                 "note": payload.note.strip(),
                 "colors": list(colors),
                 "logo_asset_ids": logo_ids,
-                "layout_guide": payload.layout_guide.strip(),
-                "background_guide": payload.background_guide.strip(),
+                "layout_guide": layout_guide,
+                "background_guide": background_guide,
                 "logo_keywords": payload.logo_keywords,
                 "is_default": payload.is_default,
                 "cover_asset_id": cover_asset_id,
