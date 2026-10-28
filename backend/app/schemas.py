@@ -166,9 +166,24 @@ class WholeImageTaskCreate(BaseModel):
         return text or None
 
 
+class PosterEditRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=5000)
+    asset_ids: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def normalize_poster_prompt(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("asset_ids")
+    @classmethod
+    def normalize_poster_asset_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))[:5]
+
 class WholeImageEditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=1000)
     source_version_id: str = Field(min_length=1, max_length=128)
+    source_output_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("instruction", "source_version_id", mode="before")
     @classmethod
@@ -176,6 +191,16 @@ class WholeImageEditRequest(BaseModel):
         if value is None:
             return ""
         return str(value).strip()
+
+    @field_validator("source_output_id", mode="before")
+    @classmethod
+    def normalize_whole_output_id(cls, value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+
+class PosterEditBatchRequest(PosterEditRequest):
+    candidate_count: int = Field(default=3, ge=1, le=6)
 
 
 class PromptOptimizeRequest(BaseModel):

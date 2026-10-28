@@ -8,6 +8,8 @@ import type {
   BrandStyle,
   ImageModel,
   PlatformPreset,
+  PosterEditBatch,
+  PosterEditTask,
   Ratio,
   WholeImageTaskGroupFilter,
   WholeImageTaskGroupPage,
@@ -278,6 +280,7 @@ export async function createWholeImageEdit(
   taskId: string,
   instruction: string,
   sourceVersionId: string,
+  sourceOutputId?: string | null,
 ): Promise<WholeImageTask> {
   const response = await fetch(
     `/api/whole-image/tasks/${encodeURIComponent(taskId)}/edits`,
@@ -287,8 +290,21 @@ export async function createWholeImageEdit(
       body: JSON.stringify({
         instruction,
         source_version_id: sourceVersionId,
+        source_output_id: sourceOutputId ?? null,
       }),
     },
+  )
+  return parseResponse<WholeImageTask>(response)
+}
+
+export async function selectWholeImageOutput(
+  taskId: string,
+  versionId: string,
+  outputId: string,
+): Promise<WholeImageTask> {
+  const response = await fetch(
+    `/api/whole-image/tasks/${encodeURIComponent(taskId)}/versions/${encodeURIComponent(versionId)}/outputs/${encodeURIComponent(outputId)}/select`,
+    { method: 'POST' },
   )
   return parseResponse<WholeImageTask>(response)
 }
@@ -311,6 +327,61 @@ export async function selectWholeImageVersion(
     { method: 'POST' },
   )
   return parseResponse<WholeImageTask>(response)
+}
+
+export async function createPosterEdit(
+  prompt: string,
+  assetIds: string[],
+): Promise<PosterEditTask> {
+  const response = await fetch('/api/poster-edits', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, asset_ids: assetIds }),
+  })
+  return parseResponse<PosterEditTask>(response)
+}
+
+export async function getPosterEdit(taskId: string): Promise<PosterEditTask> {
+  const response = await fetch(`/api/poster-edits/${encodeURIComponent(taskId)}`)
+  return parseResponse<PosterEditTask>(response)
+}
+
+export async function createPosterEditBatch(
+  prompt: string,
+  assetIds: string[],
+  candidateCount: number,
+): Promise<PosterEditBatch> {
+  const response = await fetch('/api/poster-edits/batches', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      prompt,
+      asset_ids: assetIds,
+      candidate_count: candidateCount,
+    }),
+  })
+  return parseResponse<PosterEditBatch>(response)
+}
+
+export async function getPosterEditBatch(batchId: string): Promise<PosterEditBatch> {
+  const response = await fetch(`/api/poster-edits/batches/${encodeURIComponent(batchId)}`)
+  return parseResponse<PosterEditBatch>(response)
+}
+
+export async function listTaskCenterGroups(options: {
+  status?: WholeImageTaskGroupFilter
+  kind?: 'all' | 'generate' | 'edit'
+  limit?: number
+  cursor?: string | null
+} = {}): Promise<WholeImageTaskGroupPage> {
+  const params = new URLSearchParams({
+    status: options.status ?? 'all',
+    kind: options.kind ?? 'all',
+    limit: String(options.limit ?? 24),
+  })
+  if (options.cursor) params.set('cursor', options.cursor)
+  const response = await fetch(`/api/task-center?${params.toString()}`)
+  return parseResponse<WholeImageTaskGroupPage>(response)
 }
 
 export type PromptOptimizePayload = {

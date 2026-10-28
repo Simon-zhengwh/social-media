@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import base64
 import io
+import hashlib
 import ipaddress
 import json
+import re
 import socket
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -19,6 +23,34 @@ from app.services.image_ref import ImageRef
 MAX_REFERENCE_BYTES = 1_500_000
 MAX_TOTAL_REFERENCE_BYTES = 8_000_000
 
+
+@dataclass(frozen=True)
+class AgentArtifact:
+    file_name: str
+    content_type: str
+    download_url: str
+    title: str = ""
+    description: str = ""
+    size: int | None = None
+
+
+@dataclass(frozen=True)
+class AgentRunResult:
+    run_id: str
+    status: str
+    output: str
+    artifacts: list[AgentArtifact] = field(default_factory=list)
+    token_usage: dict[str, Any] = field(default_factory=dict)
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+@dataclass(frozen=True)
+class DownloadedAgentImage:
+    data: bytes
+    source_url: str
+    file_name: str
+    content_type: str
 
 class CoreAIError(Exception):
     def __init__(self, code: str, message: str, status_code: int = 502) -> None:
@@ -48,6 +80,11 @@ class CoreAIClient:
             headers=headers,
             transport=transport,
         )
+        self._upload_client = httpx.Client(
+            timeout=httpx.Timeout(connect=15.0, read=60.0, write=180.0, pool=10.0),
+            follow_redirects=True,
+            transport=transport,
+        )
         self._download_client = httpx.Client(
             timeout=httpx.Timeout(connect=15.0, read=120.0, write=15.0, pool=10.0),
             follow_redirects=True,
@@ -57,6 +94,7 @@ class CoreAIClient:
     def close(self) -> None:
         self._client.close()
         self._download_client.close()
+        self._upload_client.close()
 
     def _post_json(
         self,
@@ -146,9 +184,50 @@ class CoreAIClient:
         return payload
 
     def run_agent(self, agent_id: str, input_text: str, *, timeout_seconds: int) -> str:
-        """Trigger a published Core AI agent and wait for its terminal run status."""
+        """Trigger a published Core AI agent and wait for its text result."""
+        result = self.run_agent_detail(agent_id, input_text, timeout_seconds=timeout_seconds)
+        output = result.output.strip()
+        if output:
+            return output
+        raise CoreAIError("prompt_optimizer_empty", "Agent 没有返回文本结果")
+
+    def run_agent_detail(
+        self,
+        agent_id: str,
+        input_text: str,
+        *,
+        timeout_seconds: int,
+        poll_interval: float = 2.0,
+        on_run_id: Callable[[str], None] | None = None,
+    ) -> AgentRunResult:
+        """Trigger a published Core AI agent and return its full terminal run detail."""
+        run_id = self.trigger_agent(
+            agent_id,
+            input_text,
+            timeout_seconds=timeout_seconds,
+        )
+        if on_run_id is not None:
+            on_run_id(run_id)
+        return self.wait_agent_detail(
+            run_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval=poll_interval,
+        )
+
+    def trigger_agent(
+        self,
+        agent_id: str,
+        input_text: str,
+        *,
+        timeout_seconds: int,
+    ) -> str:
+        """Start an agent run and return its run_id without waiting for completion."""
         if not self.settings.core_ai_api_key:
             raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
+        if not agent_id.strip():
+            raise CoreAIError("invalid_agent", "Agent ID 不能为空", 422)
+        if timeout_seconds <= 0:
+            raise CoreAIError("invalid_timeout", "Agent 超时时间必须大于 0", 422)
         base = self.settings.core_ai_server_base_url.rstrip("/")
         try:
             response = self._client.post(
@@ -157,30 +236,168 @@ class CoreAIClient:
                 timeout=min(timeout_seconds, 30),
             )
             run = self._json_or_error(response)
-            run_id = run.get("run_id")
-            if not isinstance(run_id, str) or not run_id:
+            candidate = run.get("run_id")
+            if not isinstance(candidate, str) or not candidate:
                 raise CoreAIError("invalid_agent_run", "Agent 未返回有效 run_id")
-            deadline = time.monotonic() + timeout_seconds
-            while time.monotonic() < deadline:
+            return candidate
+        except httpx.TimeoutException as exc:
+            raise CoreAIError("agent_timeout", "图片 Agent 请求超时，结果未知", 504) from exc
+        except httpx.HTTPError as exc:
+            raise CoreAIError("agent_unavailable", f"无法连接图片 Agent：{exc}") from exc
+
+    def wait_agent_detail(
+        self,
+        run_id: str,
+        *,
+        timeout_seconds: int,
+        poll_interval: float = 2.0,
+    ) -> AgentRunResult:
+        """Wait for an existing agent run so a service restart can resume polling."""
+        if not self.settings.core_ai_api_key:
+            raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
+        if not run_id.strip():
+            raise CoreAIError("invalid_agent_run", "Agent run_id 不能为空", 422)
+        if timeout_seconds <= 0:
+            raise CoreAIError("invalid_timeout", "Agent 超时时间必须大于 0", 422)
+        base = self.settings.core_ai_server_base_url.rstrip("/")
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
                 response = self._client.get(f"{base}/api/runs/{run_id}", timeout=30)
                 detail = self._json_or_error(response)
-                status = detail.get("status")
-                if status == "COMPLETED":
-                    output = detail.get("output")
-                    if isinstance(output, str) and output.strip():
-                        return output
-                    raise CoreAIError("prompt_optimizer_empty", "Agent 没有返回提示词")
-                if status in {"FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}:
-                    message = str(detail.get("error") or "Agent 运行失败")
-                    raise CoreAIError("agent_run_failed", f"提示词 Agent 运行失败：{message}")
-                if status not in {"PENDING", "RUNNING"}:
-                    raise CoreAIError("invalid_agent_run", "Agent 返回了未知运行状态")
-                time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-        except httpx.TimeoutException as exc:
-            raise CoreAIError("agent_timeout", "提示词 Agent 请求超时，请查看运行记录", 504) from exc
+            except (httpx.TimeoutException, httpx.NetworkError):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+                continue
+            status = str(detail.get("status") or "")
+            if status == "COMPLETED":
+                output = detail.get("output")
+                return AgentRunResult(
+                    run_id=run_id,
+                    status=status,
+                    output=output if isinstance(output, str) else "",
+                    artifacts=self._agent_artifacts(detail.get("artifacts")),
+                    token_usage=detail.get("token_usage") if isinstance(detail.get("token_usage"), dict) else {},
+                    started_at=detail.get("started_at") if isinstance(detail.get("started_at"), str) else None,
+                    completed_at=detail.get("completed_at") if isinstance(detail.get("completed_at"), str) else None,
+                )
+            if status in {"FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}:
+                message = str(detail.get("error") or "Agent 运行失败")
+                raise CoreAIError("agent_run_failed", f"图片 Agent 运行失败：{message}")
+            if status not in {"PENDING", "RUNNING"}:
+                raise CoreAIError("invalid_agent_run", "Agent 返回了未知运行状态")
+            time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+        raise CoreAIError("agent_timeout", f"图片 Agent 等待超时（run_id: {run_id}）", 504)
+
+    def _agent_artifacts(self, raw: Any) -> list[AgentArtifact]:
+        artifacts: list[AgentArtifact] = []
+        if not isinstance(raw, list):
+            return artifacts
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("download_url")
+            content_type = str(item.get("content_type") or "")
+            if not isinstance(url, str) or not url.startswith("https://"):
+                continue
+            if content_type and not content_type.startswith("image/"):
+                continue
+            artifacts.append(
+                AgentArtifact(
+                    file_name=str(item.get("file_name") or "agent-image.png"),
+                    content_type=content_type or "image/png",
+                    download_url=url,
+                    title=str(item.get("title") or ""),
+                    description=str(item.get("description") or ""),
+                    size=int(item["size"]) if isinstance(item.get("size"), int) else None,
+                )
+            )
+        return artifacts
+
+    def download_agent_images(self, result: AgentRunResult) -> list[DownloadedAgentImage]:
+        urls: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for artifact in result.artifacts:
+            if artifact.download_url in seen:
+                continue
+            seen.add(artifact.download_url)
+            urls.append((artifact.download_url, artifact.file_name, artifact.content_type))
+        if not urls:
+            for index, url in enumerate(self._markdown_image_links(result.output), start=1):
+                if url in seen:
+                    continue
+                seen.add(url)
+                urls.append((url, f"agent-image-{index}.png", "image/png"))
+        if not urls:
+            raise CoreAIError("agent_image_missing", "Agent 已完成，但没有返回图片")
+        images: list[DownloadedAgentImage] = []
+        seen_digests: set[str] = set()
+        last_error: CoreAIError | None = None
+        for url, file_name, content_type in urls:
+            try:
+                data = self.download_image(url)
+                digest = hashlib.sha256(data).hexdigest()
+                if digest in seen_digests:
+                    continue
+                seen_digests.add(digest)
+                images.append(
+                    DownloadedAgentImage(
+                        data=data,
+                        source_url=url,
+                        file_name=file_name,
+                        content_type=content_type,
+                    )
+                )
+            except CoreAIError as exc:
+                last_error = exc
+        if not images:
+            raise last_error or CoreAIError("download_failed", "Agent 图片下载失败")
+        return images
+
+    def _markdown_image_links(self, output: str) -> list[str]:
+        links = re.findall(r"!\[[^\]]*\]\(<?([^\s)>]+)>?(?:\s+\"[^\"]*\")?\)", output)
+        return list(dict.fromkeys(link for link in links if link.startswith("https://")))
+
+    def upload_image_blob(self, data: bytes, *, content_type: str = "image/png") -> str:
+        """Upload an image through Core AI's public blob credential flow and return its URL."""
+        if not self.settings.core_ai_api_key:
+            raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
+        if not data:
+            raise CoreAIError("empty_upload", "待上传图片为空", 422)
+        base = self.settings.core_ai_server_base_url.rstrip("/")
+        response = self._client.get(
+            f"{base}/api/blob/upload-credential",
+            params={"content_type": content_type, "category": "multimodal"},
+            timeout=30,
+        )
+        credential = self._json_or_error(response)
+        upload_url = credential.get("upload_url")
+        blob_url = credential.get("blob_url")
+        if not isinstance(upload_url, str) or not upload_url.startswith("https://"):
+            raise CoreAIError("invalid_upload_credential", "Core AI 未返回有效的图片上传地址")
+        if not isinstance(blob_url, str) or not blob_url.startswith("https://"):
+            raise CoreAIError("invalid_upload_credential", "Core AI 未返回有效的公网图片地址")
+        try:
+            upload = self._upload_client.put(
+                upload_url,
+                content=data,
+                headers={
+                    "Content-Type": content_type,
+                    "x-ms-blob-type": "BlockBlob",
+                    "x-ms-blob-content-type": content_type,
+                },
+                timeout=180,
+            )
         except httpx.HTTPError as exc:
-            raise CoreAIError("agent_unavailable", f"无法连接提示词 Agent：{exc}") from exc
-        raise CoreAIError("agent_timeout", f"提示词 Agent 等待超时（run_id: {run_id}）", 504)
+            raise CoreAIError("image_upload_failed", f"图片上传 Core AI 失败：{exc}") from exc
+        if upload.status_code >= 400:
+            raise CoreAIError(
+                "image_upload_failed",
+                f"图片上传 Core AI 失败（HTTP {upload.status_code}）",
+            )
+        self._validate_public_url(blob_url)
+        return blob_url
 
     def generate_image(
         self,

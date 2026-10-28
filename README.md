@@ -6,7 +6,8 @@
 
 ## 主要能力
 
-- 左侧菜单包含「海报设计」「资产管理」「品牌风格」。
+- 左侧菜单包含「海报设计」「任务中心」「修改海报」「资产管理」「品牌风格」。
+- 「修改海报」是轻量 Agent 工作流：上传或选择 1–5 张参考图，输入修改要求，并一次并行生成 1–6 个候选；每个候选包含透明 PNG 和最终图。
 - 海报设计支持选择预设品牌、参考图风格或无品牌模式。
 - 品牌规范保存在 MongoDB `brands` 集合；`.agents/skills/<brand>/` 仅用于首次导入和人工文档，运行时不读取。
 - 每套品牌风格必须绑定一个发布平台及平台预设的发布用途；可从现有风格复制出独立平台版本。
@@ -23,11 +24,15 @@
 - 优化 Agent 使用 `.agents/skills/image-gen-prompt/`：从官方 `imagegen` skill 抽取提示词编写原则、可选字段和示例，按任务需要组织提示词。
 - 图片默认保存在项目内 `local_media/objects/`；提示词优化按需把本地图片上传到自建图床，使用永久 443 公网直链供外部模型读取。
 - 接口返回 `{"prompt":"..."}`，保留非空和长度校验；不要求固定七段、独立事实数组或案例专用的设计规则。优化后的提示词直接交给生图模型。
-- 生成和改图调用 core-ai `/images/generations` 与 `/images/edits`；自然语言改图以选定版本作为源图，不调用旧的图层规划或文字渲染链路。
-- 多轮改图仅发送本轮修改要求、原始内容素材（含选定 Logo）和选中版本的生成图，附简短图片顺序说明；不重复发送品牌规范、风格参考图、平台规则、初始生成提示词或历史修改指令。
-- 改图提示词要求生成图仅作为风格与排版参考，禁止以其为底图反复重绘或复制主体细节；主体与 Logo 细节取自原始素材，只做本轮指定的修改，其余内容保持一致。这是模型提示词约束，不保证像素级无损。
+- 生成调用 core-ai `/images/generations`；自然语言改图并行调用 `/images/edits` 和图片 Agent，两个结果并存以便对比。
+- 图片 Agent 不使用 attachments：social-media 先把当前图上传到 Core AI blob 或使用 COS 签名 URL，再把 URL 拼进 Agent `input`，通过 `trigger + get` 获取产物。
+- 接口改图继续发送本轮修改要求、原始内容素材（含选定 Logo）和选中版本的生成图；Agent 改图只接收当前选中图 URL 和本轮修改要求。
+- Agent 改图只传递本轮用户修改要求和按顺序排列的图片 URL，不再额外拼接画布尺寸、保留内容或输出格式等固定模板；具体执行由 `image-gen-skill` 自主完成。
 - 任务、版本、候选和模型输入快照保存在 MongoDB；图片以本地对象存储为主，保存到项目内 `local_media/objects/`。
+- 「修改海报」在 Agent 触发后立即保存 `run_id`；服务重启时会继续轮询已有 run，不会重新发起或丢失已完成的 Agent 结果。
 - 侧边栏「任务中心」按候选批次聚合展示生成记录，可筛选状态、下载成品、页内重试失败项，并点击任务回到工作台继续编辑。
+- 一次改图保存为一个版本，包含接口结果、Agent 透明层和 Agent 最终图；存在多个可选结果时必须手动选择后才能继续修改。
+- 改图输出会归一化回源图的精确像素尺寸和比例；直接 Agent 修改以第一张参考图的尺寸作为输出画布。
 - 刷新页面可通过 `?whole=<task_id>` 恢复整图任务和当前版本。
 - 任务中心使用 `?view=tasks`；打开任务后会切换到 `?view=whole&whole=<task_id>`（整图页省略 `view` 参数）。
 
@@ -44,6 +49,11 @@
 | `POST /api/whole-image/tasks/{id}/versions/{version_id}/select` | 选择继续编辑的版本 |
 | `GET /api/whole-image/tasks/{id}/download?version_id=...` | 下载指定版本 |
 | `GET /api/whole-image/batches/{batch_id}` | 获取候选批次 |
+| `POST /api/whole-image/tasks/{id}/versions/{version_id}/outputs/{output_id}/select` | 选择下一轮编辑源图 |
+| `POST /api/poster-edits/batches` | 创建 1–6 个并行 Agent 修改候选 |
+| `GET /api/poster-edits/batches/{batch_id}` | 获取修改候选批次 |
+| `POST /api/poster-edits` | 创建单个 Agent 修改任务（兼容接口） |
+| `GET /api/poster-edits/{id}` | 获取直接 Agent 修改结果 |
 
 公共接口：
 
@@ -117,6 +127,8 @@ CORE_AI_SERVER_BASE_URL=https://core-ai-server.connexup-uat.net
 CORE_AI_API_KEY=replace_me
 CORE_AI_PROMPT_AGENT_ID=9a7eb9c3-0d57-4841-83b2-ea9191ff8dd8
 CORE_AI_PROMPT_AGENT_TIMEOUT_SECONDS=900
+CORE_AI_IMAGE_AGENT_ID=86c3a160-54fa-4344-9bc1-6ac56c1e080c
+CORE_AI_IMAGE_AGENT_TIMEOUT_SECONDS=900
 CORE_AI_IMAGE_MODEL=gpt-image-2.5-sunburst
 CORE_AI_DESIGN_MODEL=gpt-6.1-sol
 CORE_AI_IMAGE_QUALITY=high
@@ -198,6 +210,21 @@ Set-Location backend
 报告写入对应 run 目录的 `index.html`。
 
 ## 测试
+
+### 平台图片 Agent 独立验证
+
+`image-gen-skill/` 是上传到 Core AI 平台的工具版 skill，使用内置 `generate_image`；外部调用脚本仅调用已发布 Agent，不直接调用图片网关。默认 Agent 为 `86c3a160-54fa-4344-9bc1-6ac56c1e080c`，读取 `backend/.env` 中的 `CORE_AI_SERVER_BASE_URL` 和 `CORE_AI_API_KEY`，进程环境变量优先。
+
+在项目根目录运行（将图片路径替换为实际文件）：
+
+```powershell
+& 'backend/.venv/Scripts/python.exe' -X utf8 'backend/scripts/call_image_gen_agent.py' --image 'D:/work/poster.png' --image 'D:/work/background.png' --prompt '将图一的背景替换为图二' --dry-run
+& 'backend/.venv/Scripts/python.exe' -X utf8 'backend/scripts/call_image_gen_agent.py' --image 'D:/work/poster.png' --image 'D:/work/background.png' --prompt '将图一的背景替换为图二'
+```
+
+图片顺序就是 `--image` 顺序。真实调用会消耗平台额度，结果默认保存到 `output/image-gen-skill/script-时间戳/`，包含 `report.json`、`response.md` 和图片。超时后先查看报告里的 run ID，用 `--run-id <ID> --out-dir <新的目录>` 继续查询，避免重复生成。已有输出目录不会被覆盖。图片返回成功与文字、背景、装饰的视觉验收分别判断。
+
+### 项目检查
 
 ```powershell
 Set-Location backend

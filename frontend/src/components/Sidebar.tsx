@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 
-export type AppView = 'whole' | 'tasks' | 'assets' | 'brands'
+export type AppView = 'whole' | 'tasks' | 'poster_edit' | 'assets' | 'brands'
 
 type Props = {
   view: AppView
@@ -17,12 +17,12 @@ function WholeImageIcon() {
   )
 }
 
-function BrandsIcon() {
+function PosterEditIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M3.4 6.3h13.2v9.5H3.4z" />
-      <path d="M6.2 6.3V4.5h7.6v1.8" />
-      <path d="M6.2 10.1h7.6M6.2 12.9h4.8" />
+      <path d="M4.2 3.4h8.1l3.5 3.4v9.8H4.2z" />
+      <path d="M12.2 3.6v3.5h3.3M7 11.1h5.8M7 13.5h3.8" />
+      <path d="M6.2 7.2h3.1" />
     </svg>
   )
 }
@@ -34,6 +34,16 @@ function TasksIcon() {
       <rect x="3.2" y="8.9" width="13.6" height="4.2" rx="1.4" />
       <path d="M3.2 15.1h8.6" />
       <path d="M13.1 15.1h3.7" />
+    </svg>
+  )
+}
+
+function BrandsIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M3.4 6.3h13.2v9.5H3.4z" />
+      <path d="M6.2 6.3V4.5h7.6v1.8" />
+      <path d="M6.2 10.1h7.6M6.2 12.9h4.8" />
     </svg>
   )
 }
@@ -65,6 +75,12 @@ const NAV_ITEMS: Array<{
     label: '任务中心',
     hint: '生成记录与候选',
     icon: TasksIcon,
+  },
+  {
+    key: 'poster_edit',
+    label: '修改海报',
+    hint: '参考图修改',
+    icon: PosterEditIcon,
   },
   {
     key: 'assets',

@@ -1,6 +1,22 @@
 # Prompting best practices
 
-Prompt-writing extract from the official imagegen prompting guide; execution controls are omitted.
+Adapted from bundled imagegen; prompting guidance is retained. Execute through the platform generate_image tool. See [tool interface](tool-interface.md) for execution controls.
+
+For every edit, apply these principles within the mandatory two-stage workflow in [SKILL.md](../SKILL.md): first prepare and validate a meaningful transparent PNG layer, then generate the final image using that actual layer plus the original base and required references. Editing recipes below describe intent and invariants, not permission to skip either stage. Repeat the applicable exact text and constraints in both prompts; pure new generation does not require these stages.
+
+## Contents
+- [Structure](#structure)
+- [Specificity policy](#specificity-policy)
+- [Allowed and disallowed augmentation](#allowed-and-disallowed-augmentation)
+- [Composition and layout](#composition-and-layout)
+- [Constraints and invariants](#constraints-and-invariants)
+- [Text in images](#text-in-images)
+- [Input images and references](#input-images-and-references)
+- [Iterate deliberately](#iterate-deliberately)
+- [Transparent images](#transparent-images)
+- [Tool execution controls](#tool-execution-controls)
+- [Use-case tips](#use-case-tips)
+- [Where to find copy/paste recipes](#where-to-find-copypaste-recipes)
 
 ## Structure
 - Use a consistent order: scene/backdrop -> subject -> key details -> constraints -> output intent.
@@ -40,6 +56,7 @@ Do not add:
 - Put literal text in quotes or ALL CAPS and specify typography (font style, size, color, placement).
 - Spell uncommon words letter-by-letter if accuracy matters.
 - For in-image copy, require verbatim rendering and no extra characters.
+- For small text and dense layouts, explicitly request readable typography. Omit the quality parameter unless a quality preference was requested; use only values supported by the selected model.
 
 ## Input images and references
 - Do not assume that every provided image is an edit target.
@@ -54,14 +71,18 @@ Do not add:
 - Prefer one targeted follow-up at a time over rewriting the whole prompt.
 
 ## Transparent images
-- Request a genuinely transparent background.
+- Ask the generate_image tool for a genuinely transparent background and preserve its alpha.
+
+## Tool execution controls
+
+See [tool interface](tool-interface.md). Request native transparency through the tool and verify returned alpha. Do not substitute local removal.
 
 ## Use-case tips
 Generate:
 - photorealistic-natural: Prompt as if a real photo is captured in the moment; use photography language (lens, lighting, framing); call for real texture; avoid over-stylized polish unless requested.
 - product-mockup: Describe the product/packaging and materials; ensure clean silhouette and label clarity; if in-image text is needed, require verbatim rendering and specify typography.
 - ui-mockup: Describe the target fidelity first (shippable mockup or low-fi wireframe), then focus on layout, hierarchy, and practical UI elements; avoid concept-art language.
-- infographic-diagram: Define the audience and layout flow; label parts explicitly; require verbatim text.
+- infographic-diagram: Define the audience and layout flow; label parts explicitly; require verbatim text; prefer higher quality through the tool for dense labels.
 - logo-brand: Keep it simple and scalable; ask for a strong silhouette and balanced negative space; avoid decorative flourishes unless requested.
 - ads-marketing: Write like a creative brief; include brand positioning, audience, desired vibe, scene, and exact tagline if text must appear.
 - productivity-visual: Name the exact artifact (slide, chart, workflow diagram), define the canvas and hierarchy, provide real labels/data, and ask for readable typography and polished spacing.
@@ -81,4 +102,4 @@ Edit:
 - sketch-to-render: Preserve layout, proportions, and perspective; choose materials and lighting that support the supplied sketch without adding new elements.
 
 ## Where to find copy/paste recipes
-For copy/paste prompt specs (examples only), see [sample-prompts.md](sample-prompts.md). This file focuses on principles, specificity, and iteration patterns.
+For copy/paste prompt specs (examples only), see `references/sample-prompts.md`. This file focuses on principles, specificity, and iteration patterns.

@@ -119,14 +119,8 @@ export type WholeImageMessage = {
   status?: 'done' | 'failed'
 }
 
-export type WholeImageEditState = {
-  status: 'idle' | 'running' | 'failed'
-  instruction?: string | null
-  source_version_id?: string | null
-  error?: string | null
-}
-
 export type WholeImageModelInput = {
+  channel?: 'gateway' | 'agent'
   endpoint: string
   model: string
   prompt: string
@@ -135,11 +129,16 @@ export type WholeImageModelInput = {
     quality?: string
     n?: number
     output_format?: string
+    agent_id?: string
+    timeout_seconds?: number
+    image_url?: string
   }
   images: Array<{
     asset_id: string
     name: string
     role: string
+    kind?: string
+    url?: string | null
     preview_url: string | null
   }>
 }
@@ -150,6 +149,40 @@ export type WholeImageTaskStatus =
   | 'succeeded'
   | 'failed'
   | 'interrupted'
+
+export type WholeImageOutput = {
+  id: string
+  channel: 'gateway' | 'agent'
+  role: string
+  label: string
+  asset_id: string
+  width: number
+  height: number
+  selectable: boolean
+  preview_url: string | null
+  download_url: string | null
+  model_input: WholeImageModelInput | null
+}
+
+export type WholeImageBranch = {
+  status: 'idle' | 'preparing' | 'running' | 'completed' | 'failed'
+  started_at?: string | null
+  completed_at?: string | null
+  run_id?: string | null
+  error?: string | null
+  model_input: WholeImageModelInput | null
+  outputs: WholeImageOutput[]
+}
+
+export type WholeImageEditState = {
+  status: 'idle' | 'running' | 'awaiting_selection' | 'failed'
+  instruction?: string | null
+  source_version_id?: string | null
+  source_output_id?: string | null
+  outcome?: 'success' | 'partial' | 'failed' | null
+  error?: string | null
+  branches?: Partial<Record<'gateway' | 'agent', WholeImageBranch>>
+}
 
 export type WholeImageTask = {
   id: string
@@ -183,6 +216,10 @@ export type WholeImageTask = {
   canvas: { width: number; height: number }
   provider: WholeImageProvider
   model_input?: WholeImageModelInput | null
+  model_inputs?: Array<WholeImageModelInput | null>
+  outputs: WholeImageOutput[]
+  current_output_id: string | null
+  requires_output_selection: boolean
   selected_version_id: string | null
   current_version_id: string | null
   current_version: number
@@ -206,6 +243,8 @@ export type WholeImageVersion = {
   output_asset_id: string | null
   preview_url: string | null
   download_url: string | null
+  outputs: WholeImageOutput[]
+  model_input?: WholeImageModelInput | null
   created_at: string
 }
 
@@ -230,6 +269,7 @@ export type WholeImageTaskGroupCandidate = {
 
 export type WholeImageTaskGroup = {
   id: string
+  kind: 'generate' | 'edit'
   status: WholeImageTaskGroupStatus
   prompt: string
   brand_name: string | null
@@ -254,4 +294,55 @@ export type WholeImageTaskGroupPage = {
   items: WholeImageTaskGroup[]
   next_cursor: string | null
   total: number
+}
+
+// ---------- Direct poster editing ----------
+
+export type PosterEditReference = {
+  asset_id: string
+  name: string
+  preview_url: string
+  width: number
+  height: number
+}
+
+export type PosterEditOutput = {
+  id: string
+  role: string
+  label: string
+  asset_id: string
+  width: number
+  height: number
+  selectable: boolean
+  preview_url: string | null
+  download_url: string | null
+  model_input: string | null
+}
+
+export type PosterEditTask = {
+  id: string
+  batch_id: string
+  candidate_index: number
+  candidate_count: number
+  status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'interrupted'
+  stage: string
+  progress: number
+  prompt: string
+  references: PosterEditReference[]
+  outputs: PosterEditOutput[]
+  agent_id: string
+  agent_input: string | null
+  run_id: string | null
+  error: { code: string; message: string } | null
+  created_at: string
+  updated_at: string
+}
+
+
+export type PosterEditBatch = {
+  id: string
+  candidate_count: number
+  tasks: PosterEditTask[]
+  created_at: string
+  updated_at: string
 }

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from app.routes import whole_image as whole_routes
 from app.schemas import WholeImageEditRequest, WholeImageTaskCreate
 from app.services import storage, whole_image as whole_service
-from app.services.core_ai import CoreAIError
+from app.services.core_ai import AgentRunResult, CoreAIError, DownloadedAgentImage
 
 
 class FakeCoreAI:
@@ -23,7 +23,9 @@ class FakeCoreAI:
     def __init__(self) -> None:
         self.generation_calls: list[dict] = []
         self.edit_calls: list[dict] = []
+        self.agent_calls: list[dict] = []
         self.fail_edit = False
+        self.fail_agent = True
         self._color_index = 0
 
     def _image(self, color: tuple[int, int, int]) -> bytes:
@@ -56,6 +58,44 @@ class FakeCoreAI:
             raise CoreAIError("edit_failed", "模拟编辑失败")
         self._color_index += 1
         return self._image((180, 80, 40))
+
+    def upload_image_blob(self, data: bytes, *, content_type: str = "image/png") -> str:
+        if self.fail_agent:
+            raise CoreAIError("agent_disabled", "测试默认关闭 Agent 分支")
+        self.agent_calls.append({"upload_bytes": data, "content_type": content_type})
+        return "https://example.com/current-poster.png"
+
+    def run_agent_detail(self, agent_id: str, input_text: str, *, timeout_seconds: int, poll_interval: float = 2.0) -> AgentRunResult:
+        self.agent_calls.append(
+            {"agent_id": agent_id, "input": input_text, "timeout_seconds": timeout_seconds}
+        )
+        return AgentRunResult(
+            run_id="run-agent-1",
+            status="COMPLETED",
+            output="透明层和最终图已生成",
+        )
+
+    def download_agent_images(self, result: AgentRunResult):
+        transparent = io.BytesIO()
+        image = Image.new("RGBA", (640, 640), (0, 0, 0, 0))
+        for x in range(120, 520):
+            for y in range(120, 220):
+                image.putpixel((x, y), (180, 80, 40, 255))
+        image.save(transparent, format="PNG")
+        return [
+            DownloadedAgentImage(
+                data=transparent.getvalue(),
+                source_url="https://example.com/agent-layer.png",
+                file_name="agent-layer.png",
+                content_type="image/png",
+            ),
+            DownloadedAgentImage(
+                data=self._image((120, 40, 180)),
+                source_url="https://example.com/agent-result.png",
+                file_name="agent-result.png",
+                content_type="image/png",
+            ),
+        ]
 
     def chat_json(self, messages, *, model=None, timeout_seconds=None):
         return {"status": "pass", "violations": []}
@@ -714,7 +754,7 @@ def test_edit_uses_selected_source_and_creates_branch(settings, store):
     assert versions[1]["parent_version_id"] == v1["_id"]
 
     selected = whole_routes.select_task_version(task_id, v1["_id"], request)
-    assert selected["model_input"]["prompt"] == fake.edit_calls[-1]["prompt"]
+    assert selected["model_input"]["prompt"] == v1["model_input"]["prompt"]
 
 
 def test_edit_sends_original_assets_before_current_source(
@@ -1152,3 +1192,172 @@ def test_edit_history_is_isolated_to_selected_branch(settings, store):
     prompt = fake.edit_calls[-1]["prompt"]
     assert "分支B：把标题改大" in prompt
     assert "分支A：把背景改成橙色" not in prompt
+
+
+def test_dual_edit_stores_three_outputs_and_requires_manual_selection(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    task_id, _ = _generate(db, settings, store, fake)
+    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    request = _request(db, settings, store, fake)
+
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(instruction="把背景换成橙色", source_version_id=v1["_id"]),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(
+        db, settings, store, fake, task_id, "把背景换成橙色", v1["_id"]
+    )
+
+    task = db.whole_tasks.find_one({"_id": task_id})
+    v2 = db.whole_versions.find_one({"task_id": task_id, "version": 2})
+    assert task["edit"]["status"] == "awaiting_selection"
+    assert task["edit"]["outcome"] == "success"
+    assert task["current_output_id"] is None
+    assert [output["role"] for output in v2["outputs"]] == [
+        "gateway_result",
+        "agent_transparent",
+        "agent_result",
+    ]
+    assert sum(1 for output in v2["outputs"] if output["selectable"]) == 2
+    assert fake.agent_calls[-2]["upload_bytes"]
+    assert fake.agent_calls[-1]["agent_id"] == settings.core_ai_image_agent_id
+    assert fake.agent_calls[-1]["timeout_seconds"] == 900
+    assert fake.agent_calls[-1]["input"] == (
+        "把背景换成橙色\n\nhttps://example.com/current-poster.png"
+    )
+
+    out = whole_routes.get_task(task_id, request)
+    assert out["requires_output_selection"] is True
+    assert out["current_output_id"] is None
+    assert len(out["outputs"]) == 3
+
+    transparent = next(output for output in out["outputs"] if output["role"] == "agent_transparent")
+    with pytest.raises(HTTPException) as transparent_exc:
+        whole_routes.select_task_output(task_id, v2["_id"], transparent["id"], request)
+    assert transparent_exc.value.status_code == 422
+
+    agent_final = next(output for output in out["outputs"] if output["role"] == "agent_result")
+    selected = whole_routes.select_task_output(
+        task_id,
+        v2["_id"],
+        agent_final["id"],
+        request,
+    )
+    assert selected["current_output_id"] == agent_final["id"]
+    assert selected["edit"]["status"] == "idle"
+    assert selected["preview_url"] == agent_final["preview_url"]
+
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(
+            instruction="把标题再放大一点",
+            source_version_id=v2["_id"],
+            source_output_id=agent_final["id"],
+        ),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(
+        db,
+        settings,
+        store,
+        fake,
+        task_id,
+        "把标题再放大一点",
+        v2["_id"],
+        agent_final["id"],
+    )
+    assert db.whole_versions.count_documents({"task_id": task_id}) == 3
+
+
+def test_edit_output_asset_is_normalized_to_source_dimensions(settings, store):
+    db = mongomock.MongoClient().db
+    source = io.BytesIO()
+    Image.new("RGB", (320, 240), (10, 20, 30)).save(source, format="PNG")
+
+    saved = whole_service._save_output_asset(
+        db,
+        settings,
+        store,
+        task_id="wtask-size",
+        version=2,
+        data=source.getvalue(),
+        role="gateway",
+        target_size=(1080, 1440),
+    )
+
+    asset = db.assets.find_one({"_id": saved["asset_id"]})
+    assert saved["width"] == 1080
+    assert saved["height"] == 1440
+    with Image.open(io.BytesIO(store.get_bytes(asset["path"]))) as image:
+        assert image.size == (1080, 1440)
+
+
+def test_preset_brand_with_missing_logo_asset_still_creates_task(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    db.brands.insert_one(
+        {
+            "_id": "stale-brand",
+            "name": "Stale Brand",
+            "short_name": "Stale",
+            "summary": "test",
+            "is_default": True,
+            "layout_guide": "layout",
+            "background_guide": "background",
+            "logo_keywords": [],
+            "logo_asset_ids": ["asset_deleted_logo"],
+            "cover_asset_id": None,
+            "reference_asset_ids": [],
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+    )
+
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="无 Logo 海报",
+            brand_id="stale-brand",
+            brand_mode="preset",
+        ),
+        _request(db, settings, store, fake),
+        BackgroundTasks(),
+    )
+
+    assert created["status"] == "queued"
+    assert created["input"]["logo_asset_id"] is None
+    stored = db.whole_tasks.find_one({"_id": created["id"]})
+    assert stored["brand"]["logo_asset_ids"] == []
+
+
+def test_preset_brand_accepts_existing_reference_with_legacy_null_kind(settings, store, product_png):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "dish.png")
+    style = _seed_product(db, settings, store, product_png, "reference-1.jpg")
+    db.assets.update_one({"_id": style.id}, {"$set": {"kind": None}})
+    _seed_default_brand(db)
+    db.brands.update_one(
+        {"_id": "seejoy"},
+        {"$set": {"reference_asset_ids": [style.id]}},
+    )
+
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="使用品牌参考图生成海报",
+            product_asset_ids=[product.id],
+            brand_id="seejoy",
+            brand_mode="preset",
+        ),
+        _request(db, settings, store, fake),
+        BackgroundTasks(),
+    )
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    task = db.whole_tasks.find_one({"_id": created["id"]})
+    assert task["status"] == "succeeded"
+    assert fake.edit_calls[-1]["reference_names"] == ["dish.png", "reference-1.jpg"]

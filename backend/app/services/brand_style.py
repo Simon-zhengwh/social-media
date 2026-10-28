@@ -548,7 +548,8 @@ def snapshot_brand(
     for asset_id in dict.fromkeys(logo_asset_ids):
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:
-            raise BrandError("brand_logo_missing", f"品牌 Logo 不存在：{asset_id}")
+            logger.warning("brand logo asset missing, skipped: %s", asset_id)
+            continue
         validated_logo_ids.append(asset_id)
     logo_asset_ids = validated_logo_ids[:MAX_BRAND_LOGOS]
 

@@ -13,6 +13,7 @@ import {
   getWholeImageTask,
   listWholeImageTaskBatch,
   listWholeImageVersions,
+  selectWholeImageOutput,
   selectWholeImageVersion,
   uploadAsset,
 } from '../api'
@@ -140,6 +141,7 @@ export default function WholeImageStudio({
   const [studioTab, setStudioTab] = useState<StudioTab>('chat')
   const [creating, setCreating] = useState(() => Boolean(readWholeTaskId()))
   const [versionsLoading, setVersionsLoading] = useState(false)
+  const [selectingOutput, setSelectingOutput] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const pollRef = useRef<number | null>(null)
   const inFlight = useRef(false)
@@ -363,8 +365,8 @@ export default function WholeImageStudio({
   const active = Boolean(task && (task.status === 'queued' || task.status === 'running'))
   const studioReady = Boolean(task?.status === 'succeeded' && task.current_version_id)
   const showStudioInspector = Boolean(studioReady || task?.model_input)
-  const busy = creating || active || editRunning || logoUploading || logoDeleting
-  const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id)
+  const busy = creating || active || editRunning || logoUploading || logoDeleting || selectingOutput
+  const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id && task.current_output_id)
 
   const handleGenerate = async (
     promptOverride = prompt,
@@ -440,7 +442,12 @@ export default function WholeImageStudio({
     submitLock.current = true
     setError(null)
     try {
-      const next = await createWholeImageEdit(task.id, instruction, sourceVersionId)
+      const next = await createWholeImageEdit(
+        task.id,
+        instruction,
+        sourceVersionId,
+        sourceVersionId === task.current_version_id ? task.current_output_id : null,
+      )
       setTask(next)
       setStudioTab('chat')
     } catch (reason: unknown) {
@@ -476,6 +483,21 @@ export default function WholeImageStudio({
       lastVersionRef.current = next.current_version_id
     } catch (reason: unknown) {
       setError(errorMessage(reason))
+    }
+  }
+
+  const handleSelectOutput = async (versionId: string, outputId: string) => {
+    if (!task || selectingOutput) return
+    setSelectingOutput(true)
+    setError(null)
+    try {
+      const next = await selectWholeImageOutput(task.id, versionId, outputId)
+      setTask(next)
+      lastVersionRef.current = next.current_version_id
+    } catch (reason: unknown) {
+      setError(errorMessage(reason))
+    } finally {
+      setSelectingOutput(false)
     }
   }
 
@@ -660,6 +682,8 @@ export default function WholeImageStudio({
         onRetry={() => void handleRetry()}
         candidates={visibleCandidates}
         onSelectCandidate={handleSelectCandidate}
+        onSelectOutput={(versionId, outputId) => void handleSelectOutput(versionId, outputId)}
+        selectingOutput={selectingOutput}
       />
 
       {showStudioInspector ? (
@@ -700,7 +724,11 @@ export default function WholeImageStudio({
               />
             ) : null}
             {studioTab === 'model_input' ? (
-              <WholeModelInputPanel modelInput={task?.model_input ?? null} />
+              <WholeModelInputPanel
+                modelInput={task?.model_input ?? null}
+                outputs={task?.outputs ?? []}
+                branches={task?.edit.branches}
+              />
             ) : null}
           </div>
         </aside>

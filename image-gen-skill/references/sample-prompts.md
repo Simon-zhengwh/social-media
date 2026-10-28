@@ -1,6 +1,8 @@
-# Sample prompts (copy/paste)
+# Sample prompts
 
-Extracted from the official imagegen examples. These are complete recipes, not defaults for every request. Keep user requirements, follow the specificity policy, and do not import unrelated story elements. Labeled lines are prompt scaffolding, not a closed schema.
+Copied prompt recipes from bundled imagegen. These are examples, not a mandatory schema. Use the platform generate_image tool; see [tool interface](tool-interface.md). These recipes do not require a fixed prompt schema.
+
+Every editing recipe MUST be expanded into the two sequential stages in [SKILL.md](../SKILL.md): prepare the relevant changed or retained content as a real-alpha PNG, validate it, then pass that returned layer together with the original base and needed references to generate the final image. A single-call edit recipe is prompt guidance only, not a complete execution plan. Deliver both outputs. New generation without editing an existing base is exempt.
 
 ## Generate
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -10,10 +11,11 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db import create_client, get_database
-from app.routes import assets, brands, brand_rules, platforms, prompts, whole_image
+from app.routes import assets, brands, brand_rules, platforms, poster_edit, prompts, task_center, whole_image
 from app.services.core_ai import CoreAIClient
 from app.services import storage
 from app.services.object_store import create_object_store
+from app.services import poster_edit as poster_edit_service
 from app.services import whole_image as whole_image_service
 from app.services.storage import StorageError
 
@@ -34,10 +36,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         db.command("ping")
         whole_image_service.mark_interrupted(db)
+        resumable_poster_tasks = poster_edit_service.mark_interrupted(db)
         db.whole_tasks.create_index([("created_at", -1)])
         db.whole_tasks.create_index(
             [("input.candidate_batch_id", 1), ("input.candidate_index", 1)]
         )
+        if resumable_poster_tasks:
+            threading.Thread(
+                target=poster_edit_service.resume_tasks,
+                args=(db, settings, app.state.store, app.state.core_ai),
+                name="resume-poster-edits",
+                daemon=True,
+            ).start()
     except Exception:  # noqa: BLE001 - health endpoint reports the failure
         logger.warning("MongoDB is not available at startup")
     yield
@@ -57,6 +67,8 @@ app.include_router(brands.router)
 app.include_router(brand_rules.router)
 app.include_router(platforms.router)
 app.include_router(prompts.router)
+app.include_router(poster_edit.router)
+app.include_router(task_center.router)
 app.include_router(whole_image.router)
 
 

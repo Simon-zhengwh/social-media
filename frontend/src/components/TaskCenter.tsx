@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ApiError, listWholeImageTaskGroups } from '../api'
+import { ApiError, listTaskCenterGroups } from '../api'
 import type {
   WholeImageTaskGroup,
   WholeImageTaskGroupFilter,
@@ -14,9 +14,16 @@ const FILTERS: Array<{ key: WholeImageTaskGroupFilter; label: string }> = [
   { key: 'failed', label: '失败' },
 ]
 
+const KINDS = [
+  { key: 'all', label: '全部类型' },
+  { key: 'generate', label: '海报设计' },
+  { key: 'edit', label: '修改海报' },
+] as const
+
 type Props = {
   onOpenTask: (taskId: string) => void
-  onCreate: () => void
+  onOpenPosterBatch: (batchId: string) => void
+  onCreate: (kind: 'generate' | 'edit') => void
 }
 
 function errorMessage(error: unknown): string {
@@ -56,10 +63,19 @@ function statusLabel(group: WholeImageTaskGroup): string {
 function TaskCard({
   group,
   onOpenTask,
+  onOpenPosterBatch,
 }: {
   group: WholeImageTaskGroup
   onOpenTask: (taskId: string) => void
+  onOpenPosterBatch: (batchId: string) => void
 }) {
+  const open = () => {
+    if (group.kind === 'edit') {
+      onOpenPosterBatch(group.id)
+    } else {
+      onOpenTask(group.representative_task_id)
+    }
+  }
   const ratio =
     group.canvas.width > 0 && group.canvas.height > 0
       ? `${group.canvas.width} : ${group.canvas.height}`
@@ -72,8 +88,8 @@ function TaskCard({
           <button
             type="button"
             className="task-cover-button"
-            onClick={() => onOpenTask(group.representative_task_id)}
-            aria-label="在工作台打开任务"
+            onClick={open}
+            aria-label={group.kind === 'edit' ? '打开修改批次' : '在工作台打开任务'}
           >
             <img src={group.preview_url} alt={group.prompt || '生成的海报'} />
           </button>
@@ -81,7 +97,7 @@ function TaskCard({
           <button
             type="button"
             className="task-cover-placeholder"
-            onClick={() => onOpenTask(group.representative_task_id)}
+            onClick={open}
           >
             <span className="task-cover-mark" aria-hidden="true" />
             <strong>{group.status === 'failed' ? '生成失败' : '正在生成'}</strong>
@@ -96,7 +112,7 @@ function TaskCard({
           {statusLabel(group)}
         </span>
         <span className="task-candidate-count tnum">
-          {group.candidate_count} 张
+          {group.candidate_count} {group.kind === 'edit' ? '个候选' : '张'}
         </span>
         {group.status === 'active' ? (
           <span className="task-progress" aria-hidden="true">
@@ -114,7 +130,8 @@ function TaskCard({
           {group.prompt || '未填写设计需求'}
         </strong>
         <div className="task-tags">
-          {group.brand_name ? <span>{group.brand_name}</span> : <span>无品牌模式</span>}
+          <span>{group.kind === 'edit' ? '修改海报' : '海报设计'}</span>
+          {group.brand_name ? <span>{group.brand_name}</span> : null}
           {group.platform_name ? (
             <span>
               {group.platform_name}
@@ -133,12 +150,14 @@ function TaskCard({
   )
 }
 
-export default function TaskCenter({ onOpenTask, onCreate }: Props) {
+export default function TaskCenter({ onOpenTask, onOpenPosterBatch, onCreate }: Props) {
   const [filter, setFilter] = useState<WholeImageTaskGroupFilter>('all')
+  const [kind, setKind] = useState<'all' | 'generate' | 'edit'>('all')
   const [groups, setGroups] = useState<WholeImageTaskGroup[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const handleFilterChange = (next: WholeImageTaskGroupFilter) => {
@@ -152,9 +171,18 @@ export default function TaskCenter({ onOpenTask, onCreate }: Props) {
     setNextCursor(null)
   }
 
+  const handleKindChange = (next: 'all' | 'generate' | 'edit') => {
+    if (next === kind) return
+    setKind(next)
+    setLoading(true)
+    setError(null)
+    setGroups([])
+    setNextCursor(null)
+  }
+
   useEffect(() => {
     let cancelled = false
-    listWholeImageTaskGroups({ status: filter, limit: PAGE_SIZE })
+    listTaskCenterGroups({ status: filter, kind, limit: PAGE_SIZE })
       .then((page) => {
         if (cancelled) {
           return
@@ -175,7 +203,7 @@ export default function TaskCenter({ onOpenTask, onCreate }: Props) {
     return () => {
       cancelled = true
     }
-  }, [filter])
+  }, [filter, kind])
 
   const hasActive = groups.some((group) => group.status === 'active')
   useEffect(() => {
@@ -185,8 +213,9 @@ export default function TaskCenter({ onOpenTask, onCreate }: Props) {
     let cancelled = false
     const tick = async () => {
       try {
-        const page = await listWholeImageTaskGroups({
+        const page = await listTaskCenterGroups({
           status: filter,
+          kind,
           limit: Math.max(PAGE_SIZE, groups.length),
         })
         if (!cancelled) {
@@ -202,7 +231,7 @@ export default function TaskCenter({ onOpenTask, onCreate }: Props) {
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [filter, groups.length, hasActive, loading, loadingMore])
+  }, [filter, kind, groups.length, hasActive, loading, loadingMore])
 
   const handleLoadMore = async () => {
     if (!nextCursor || loadingMore) {
@@ -211,8 +240,9 @@ export default function TaskCenter({ onOpenTask, onCreate }: Props) {
     setLoadingMore(true)
     setError(null)
     try {
-      const page = await listWholeImageTaskGroups({
+      const page = await listTaskCenterGroups({
         status: filter,
+        kind,
         limit: PAGE_SIZE,
         cursor: nextCursor,
       })
@@ -225,30 +255,96 @@ export default function TaskCenter({ onOpenTask, onCreate }: Props) {
     }
   }
 
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    setError(null)
+    try {
+      const page = await listTaskCenterGroups({
+        status: filter,
+        kind,
+        limit: Math.max(PAGE_SIZE, groups.length),
+      })
+      setGroups(page.items)
+      setNextCursor(page.next_cursor)
+    } catch (reason: unknown) {
+      setError(errorMessage(reason))
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   const filterLabel = FILTERS.find((item) => item.key === filter)?.label ?? '全部'
+  const createKind = kind === 'edit' ? 'edit' : 'generate'
+  const createName = createKind === 'edit' ? '修改海报' : '海报设计'
+  const createLabel = createKind === 'edit' ? '去修改海报' : '去海报设计'
 
   return (
     <section className="asset-page task-center-page">
-      <div className="asset-toolbar task-toolbar">
-        <div className="task-filters" role="tablist" aria-label="任务状态筛选">
-          {FILTERS.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              aria-selected={filter === item.key}
-              className={`task-filter${filter === item.key ? ' is-active' : ''}`}
-              onClick={() => handleFilterChange(item.key)}
-            >
-              {item.label}
-            </button>
-          ))}
+      <div className="asset-head">
+        <div>
+          <span className="eyebrow">TASK CENTER</span>
+          <h1>任务中心</h1>
+          <p className="panel-lead">
+            按候选批次查看生成记录，点击封面回到工作台继续改图。
+          </p>
         </div>
-        <div className="task-toolbar-actions">
-          <button type="button" className="mp-btn-primary" onClick={onCreate}>
-            ＋ 新建设计
+        <div className="asset-head-actions task-stats">
+          <button
+            type="button"
+            className="mp-btn-primary"
+            onClick={() => onCreate('generate')}
+          >
+            ＋ 新建海报设计
+          </button>
+          <button
+            type="button"
+            className="mp-btn-secondary"
+            onClick={() => onCreate('edit')}
+          >
+            ＋ 新建修改
           </button>
         </div>
+      </div>
+
+      <div className="asset-toolbar task-toolbar">
+        <div className="task-toolbar-groups">
+          <div className="task-filters" role="tablist" aria-label="任务状态筛选">
+            {FILTERS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                aria-selected={filter === item.key}
+                className={`task-filter${filter === item.key ? ' is-active' : ''}`}
+                onClick={() => handleFilterChange(item.key)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <div className="task-filters task-kind-filters" role="tablist" aria-label="任务类型筛选">
+            {KINDS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                aria-selected={kind === item.key}
+                className={`task-filter${kind === item.key ? ' is-active' : ''}`}
+                onClick={() => handleKindChange(item.key)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="mp-btn-ghost mp-btn-small"
+          onClick={() => void handleRefresh()}
+          disabled={refreshing || loading}
+        >
+          {refreshing ? '刷新中…' : '刷新'}
+        </button>
       </div>
 
       {error ? <div className="asset-notice asset-notice-error">{error}</div> : null}
@@ -268,11 +364,15 @@ export default function TaskCenter({ onOpenTask, onCreate }: Props) {
           <strong>{filter === 'all' ? '还没有生成任务' : `没有${filterLabel}的任务`}</strong>
           <span>
             {filter === 'all'
-              ? '创建一次海报设计后，任务和候选会自动出现在这里。'
-              : '切换到其他状态，或创建一次新的海报设计。'}
+              ? `创建一次${createName}后，任务和候选会自动出现在这里。`
+              : `切换到其他状态，或创建一次新的${createName}。`}
           </span>
-          <button type="button" className="mp-btn-primary mp-btn-small" onClick={onCreate}>
-            去海报设计
+          <button
+            type="button"
+            className="mp-btn-primary mp-btn-small"
+            onClick={() => onCreate(createKind)}
+          >
+            {createLabel}
           </button>
         </div>
       ) : (
@@ -283,6 +383,7 @@ export default function TaskCenter({ onOpenTask, onCreate }: Props) {
                 key={group.id}
                 group={group}
                 onOpenTask={onOpenTask}
+                onOpenPosterBatch={onOpenPosterBatch}
               />
             ))}
           </div>

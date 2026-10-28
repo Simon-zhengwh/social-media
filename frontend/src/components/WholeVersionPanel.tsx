@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { WholeImageVersion } from '../types'
+import { parseServerDate } from '../time'
 
 type Props = {
   versions: WholeImageVersion[]
@@ -9,7 +10,7 @@ type Props = {
 }
 
 function formatTime(value: string) {
-  const date = new Date(value)
+  const date = parseServerDate(value)
   if (Number.isNaN(date.getTime())) {
     return ''
   }
@@ -62,6 +63,9 @@ export default function WholeVersionPanel({
                   ) : (
                     <span>无预览</span>
                   )}
+                  {version.outputs.length > 1 ? (
+                    <span className="version-output-count">{version.outputs.length} 张</span>
+                  ) : null}
                 </button>
                 <div className="version-copy">
                   <div className="version-title">
@@ -109,7 +113,16 @@ export default function WholeVersionPanel({
                 关闭
               </button>
             </div>
-            {preview.preview_url ? (
+            {preview.outputs.length > 1 ? (
+              <div className="version-output-grid">
+                {preview.outputs.map((output) => (
+                  <figure key={output.id} className={output.role === 'agent_transparent' ? 'is-transparent' : ''}>
+                    <img src={output.preview_url ?? ''} alt={output.label} />
+                    <figcaption>{output.label}</figcaption>
+                  </figure>
+                ))}
+              </div>
+            ) : preview.preview_url ? (
               <img src={preview.preview_url} alt={`v${preview.version} 完整预览`} />
             ) : null}
           </div>

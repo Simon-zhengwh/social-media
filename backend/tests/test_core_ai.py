@@ -279,6 +279,63 @@ def test_run_agent_triggers_and_reads_completed_output(settings):
     assert paths == ["/api/runs/agent/agent-1/trigger", "/api/runs/run-1"]
 
 
+def test_run_agent_persists_run_id_before_polling(settings):
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(202, json={"run_id": "run-early", "status": "RUNNING"})
+        return httpx.Response(200, json={"status": "COMPLETED", "output": "done"})
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        result = client.run_agent_detail(
+            "agent-1",
+            "设计海报",
+            timeout_seconds=10,
+            poll_interval=0,
+            on_run_id=seen.append,
+        )
+    finally:
+        client.close()
+    assert result.run_id == "run-early"
+    assert seen == ["run-early"]
+
+
+def test_wait_agent_detail_resumes_existing_run_without_trigger(settings):
+    paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={
+                "id": "run-existing",
+                "status": "COMPLETED",
+                "output": "done",
+                "artifacts": [
+                    {
+                        "file_name": "result.png",
+                        "content_type": "image/png",
+                        "download_url": "https://files.example.com/result.png",
+                    }
+                ],
+            },
+        )
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        result = client.wait_agent_detail(
+            "run-existing",
+            timeout_seconds=10,
+            poll_interval=0,
+        )
+    finally:
+        client.close()
+    assert result.run_id == "run-existing"
+    assert paths == ["/api/runs/run-existing"]
+
+
 def test_run_agent_surfaces_failed_run(settings):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
@@ -293,3 +350,82 @@ def test_run_agent_surfaces_failed_run(settings):
         assert "image unavailable" in exc.value.message
     finally:
         client.close()
+
+
+def test_upload_image_blob_uses_credential_and_put(settings, monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "GET":
+            assert request.url.path == "/api/blob/upload-credential"
+            assert request.url.params["content_type"] == "image/png"
+            return httpx.Response(
+                200,
+                json={
+                    "upload_url": "https://storage.example.com/upload?sig=1",
+                    "blob_url": "https://cdn.example.com/image.png",
+                    "container": "static",
+                    "blob_name": "ai/uploads/image.png",
+                },
+            )
+        assert request.method == "PUT"
+        assert request.headers["x-ms-blob-type"] == "BlockBlob"
+        assert request.content == image_bytes()
+        return httpx.Response(201)
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    try:
+        assert client.upload_image_blob(image_bytes()) == "https://cdn.example.com/image.png"
+    finally:
+        client.close()
+    assert calls == [
+        ("GET", "/api/blob/upload-credential"),
+        ("PUT", "/upload"),
+    ]
+
+
+def test_run_agent_detail_returns_artifacts(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            assert request.url.path == "/api/runs/agent/agent-1/trigger"
+            assert json.loads(request.content) == {
+                "input": "图一 URL: https://example.com/poster.png"
+            }
+            return httpx.Response(202, json={"run_id": "run-1", "status": "RUNNING"})
+        return httpx.Response(
+            200,
+            json={
+                "id": "run-1",
+                "status": "COMPLETED",
+                "output": "done",
+                "artifacts": [
+                    {
+                        "file_name": "layer.png",
+                        "content_type": "image/png",
+                        "download_url": "https://files.example.com/layer.png",
+                        "title": "Generated image",
+                    },
+                    {
+                        "file_name": "final.png",
+                        "content_type": "image/png",
+                        "download_url": "https://files.example.com/final.png",
+                    },
+                ],
+            },
+        )
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    try:
+        result = client.run_agent_detail(
+            "agent-1",
+            "图一 URL: https://example.com/poster.png",
+            timeout_seconds=10,
+            poll_interval=0,
+        )
+    finally:
+        client.close()
+    assert result.run_id == "run-1"
+    assert result.output == "done"
+    assert [item.file_name for item in result.artifacts] == ["layer.png", "final.png"]

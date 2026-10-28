@@ -7,6 +7,7 @@ import mongomock
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 
+from app.routes import task_center as task_center_routes
 from app.routes import whole_image as whole_routes
 
 
@@ -255,3 +256,78 @@ def test_retry_rejects_missing_task():
         whole_routes.retry_task("missing", _retry_request(db), BackgroundTasks())
 
     assert exc_info.value.status_code == 404
+
+
+def _poster_task(task_id: str, batch_id: str, index: int, status: str, created_at: datetime):
+    outputs = []
+    if status == "succeeded":
+        outputs = [
+            {"id": f"out_{task_id}_layer", "role": "agent_transparent", "asset_id": f"asset_{task_id}_layer"},
+            {"id": f"out_{task_id}_final", "role": "agent_result", "asset_id": f"asset_{task_id}_final"},
+        ]
+    return {
+        "_id": task_id,
+        "batch_id": batch_id,
+        "candidate_index": index,
+        "candidate_count": 2,
+        "status": status,
+        "stage": "done" if status == "succeeded" else "failed",
+        "progress": 100 if status == "succeeded" else 0,
+        "input": {"prompt": "修改海报", "asset_ids": ["asset_source"]},
+        "outputs": outputs,
+        "error": {"code": "edit_failed", "message": "候选失败"} if status == "failed" else None,
+        "created_at": created_at,
+        "updated_at": created_at,
+    }
+
+
+def test_unified_task_center_groups_poster_edit_batches_and_filters():
+    db = mongomock.MongoClient().db
+    db.assets.insert_one({"_id": "asset_source", "width": 1086, "height": 1448})
+    db.poster_edit_tasks.insert_many(
+        [
+            _poster_task("pedit_0", "batch_edit", 0, "succeeded", BASE_TIME),
+            _poster_task("pedit_1", "batch_edit", 1, "failed", BASE_TIME + timedelta(seconds=1)),
+        ]
+    )
+
+    result = task_center_routes.list_task_center(
+        _list_request(db), status="all", kind="edit", limit=10, cursor=None
+    )
+    assert result["total"] == 1
+    group = result["items"][0]
+    assert group["kind"] == "edit"
+    assert group["id"] == "batch_edit"
+    assert group["status"] == "ready"
+    assert group["candidate_count"] == 2
+    assert group["succeeded_count"] == 1
+    assert group["failed_count"] == 1
+    assert [item["candidate_index"] for item in group["candidates"]] == [0, 1]
+    assert group["preview_url"] == "/api/assets/asset_pedit_0_final/file"
+
+    assert task_center_routes.list_task_center(
+        _list_request(db), status="all", kind="generate", limit=10, cursor=None
+    )["total"] == 0
+    assert task_center_routes.list_task_center(
+        _list_request(db), status="failed", kind="edit", limit=10, cursor=None
+    )["total"] == 0
+
+
+def test_unified_task_center_cursor_pagination_across_kinds():
+    db = mongomock.MongoClient().db
+    db.assets.insert_one({"_id": "asset_source", "width": 1086, "height": 1448})
+    db.whole_tasks.insert_one(_task("wtask_old", created_at=BASE_TIME))
+    db.poster_edit_tasks.insert_one(
+        _poster_task("pedit_new", "batch_new", 0, "succeeded", BASE_TIME + timedelta(minutes=1))
+    )
+
+    first = task_center_routes.list_task_center(
+        _list_request(db), status="all", kind="all", limit=1, cursor=None
+    )
+    assert [item["id"] for item in first["items"]] == ["batch_new"]
+    assert first["next_cursor"]
+    second = task_center_routes.list_task_center(
+        _list_request(db), status="all", kind="all", limit=1, cursor=first["next_cursor"]
+    )
+    assert [item["id"] for item in second["items"]] == ["wtask_old"]
+    assert second["next_cursor"] is None

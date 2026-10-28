@@ -4,6 +4,7 @@ import hashlib
 import io
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from pymongo import ReturnDocument
 from pymongo.database import Database
 
 from app.config import Settings
-from app.services import brand_rules, platform_presets, storage
+from app.services import agent_image, brand_rules, platform_presets, storage
 from app.services.canvas import canvas_size, gateway_image_size
 from app.services.core_ai import CoreAIClient, CoreAIError
 from app.services.image_ref import ImageRef, cleanup_image_refs, image_ref_from_asset
@@ -92,6 +93,8 @@ def _save_output_asset(
     task_id: str,
     version: int,
     data: bytes,
+    role: str | None = None,
+    target_size: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     try:
         with Image.open(io.BytesIO(data)) as source:
@@ -99,6 +102,13 @@ def _save_output_asset(
             image.load()
             if image.mode not in {"RGB", "RGBA"}:
                 image = image.convert("RGB")
+            if target_size is not None:
+                image = ImageOps.fit(
+                    image,
+                    target_size,
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5),
+                )
             buffer = io.BytesIO()
             image.save(buffer, format="PNG", optimize=True)
             png = buffer.getvalue()
@@ -106,10 +116,11 @@ def _save_output_asset(
     except Exception as exc:  # noqa: BLE001 - provider payload is untrusted
         raise StudioError("invalid_output", "模型返回的图片无法解码", 502) from exc
 
+    suffix = f"_{role}" if role else ""
     relative = storage.object_key(
         settings,
         "outputs",
-        f"{task_id}_v{version}.png",
+        f"{task_id}_v{version}{suffix}.png",
     )
     store.put_bytes(relative, png, "image/png")
     asset_id = f"asset_{uuid.uuid4().hex}"
@@ -117,7 +128,8 @@ def _save_output_asset(
         {
             "_id": asset_id,
             "source": "generated",
-            "original_name": f"{task_id}-v{version}.png",
+            "kind": "output",
+            "original_name": f"{task_id}-v{version}{suffix}.png",
             "path": relative,
             "prepared_path": relative,
             "mime_type": "image/png",
@@ -174,17 +186,15 @@ def _load_reference_images(
     if logo_id:
         logo = db.assets.find_one({"_id": logo_id})
         if logo is None:
-            raise StudioError("logo_missing", "Logo 不存在", 422)
+            raise StudioError("logo_missing", "Logo 不存在或类型不正确", 422)
         try:
             references.append(image_ref_from_asset(db, store, logo_id))
         except Exception as exc:  # noqa: BLE001 - surface a clear user error
             raise StudioError("logo_missing", str(exc), 422) from exc
     if not include_style:
         return references
-    style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
-    if input_data.get("brand_mode") == "preset" and brand:
-        style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
-    for asset_id in dict.fromkeys(style_ids):
+    explicit_style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
+    for asset_id in dict.fromkeys(explicit_style_ids):
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:
             raise StudioError("style_reference_missing", "风格参考图不存在", 422)
@@ -192,6 +202,15 @@ def _load_reference_images(
             references.append(image_ref_from_asset(db, store, str(asset_id)))
         except Exception as exc:  # noqa: BLE001 - surface a clear user error
             raise StudioError("style_reference_missing", str(exc), 422) from exc
+    if input_data.get("brand_mode") == "preset" and brand:
+        for asset_id in list(brand.get("reference_asset_ids") or [])[:5]:
+            asset = db.assets.find_one({"_id": asset_id})
+            if asset is None:
+                raise StudioError("style_reference_missing", "风格参考图不存在", 422)
+            try:
+                references.append(image_ref_from_asset(db, store, str(asset_id)))
+            except Exception as exc:  # noqa: BLE001 - surface a clear user error
+                raise StudioError("style_reference_missing", str(exc), 422) from exc
     return references
 
 
@@ -299,6 +318,33 @@ def _model_input_images(
     return images
 
 
+def _version_outputs(version: dict[str, Any]) -> list[dict[str, Any]]:
+    outputs = version.get("outputs")
+    if isinstance(outputs, list) and outputs:
+        return [item for item in outputs if isinstance(item, dict)]
+    asset_id = version.get("output_asset_id")
+    if not asset_id:
+        return []
+    return [
+        {
+            "id": "gateway_result",
+            "channel": "gateway",
+            "role": "gateway_result",
+            "label": "接口结果",
+            "asset_id": str(asset_id),
+            "width": int(version.get("width") or 0),
+            "height": int(version.get("height") or 0),
+            "selectable": True,
+            "model_input": version.get("model_input"),
+            "created_at": version.get("created_at"),
+        }
+    ]
+
+
+def _first_selectable_output(version: dict[str, Any]) -> dict[str, Any] | None:
+    return next((item for item in _version_outputs(version) if item.get("selectable")), None)
+
+
 def _version_document(
     *,
     task_id: str,
@@ -310,13 +356,29 @@ def _version_document(
     width: int,
     height: int,
     model_input: dict[str, Any],
+    outputs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    normalized_outputs = outputs or [
+        {
+            "id": "gateway_result",
+            "channel": "gateway",
+            "role": "gateway_result",
+            "label": "接口结果",
+            "asset_id": output_asset_id,
+            "width": width,
+            "height": height,
+            "selectable": True,
+            "model_input": model_input,
+            "created_at": utcnow(),
+        }
+    ]
     return {
         "_id": f"wver_{uuid.uuid4().hex}",
         "task_id": task_id,
         "version": version,
         "parent_version_id": parent_version_id,
         "output_asset_id": output_asset_id,
+        "outputs": normalized_outputs,
         "instruction": instruction,
         "operation": operation,
         "width": width,
@@ -333,15 +395,27 @@ def _commit_version(
     task_id: str,
     version_doc: dict[str, Any],
     generation: bool,
+    require_output_selection: bool = False,
+    edit_outcome: str | None = None,
+    message: str | None = None,
 ) -> None:
     version_id = str(version_doc["_id"])
-    asset_id = str(version_doc["output_asset_id"])
+    outputs = list(version_doc.get("outputs") or [])
+    selectable = next((item for item in outputs if item.get("selectable")), None)
+    default_asset_id = (
+        str(selectable.get("asset_id"))
+        if selectable and selectable.get("asset_id")
+        else str(version_doc["output_asset_id"])
+    )
     db.whole_versions.insert_one(version_doc)
     update = {
         "selected_version_id": version_id,
         "current_version_id": version_id,
         "current_version": int(version_doc["version"]),
-        "output_asset_id": asset_id,
+        "current_output_id": None if require_output_selection else (
+            str(selectable.get("id")) if selectable else None
+        ),
+        "output_asset_id": None if require_output_selection else default_asset_id,
         "canvas": {
             "width": int(version_doc["width"]),
             "height": int(version_doc["height"]),
@@ -365,9 +439,10 @@ def _commit_version(
     else:
         update.update(
             {
-                "edit.status": "idle",
+                "edit.status": "awaiting_selection" if require_output_selection else "idle",
                 "edit.error": None,
-                "provider.status": "completed",
+                "edit.outcome": edit_outcome,
+                "provider.status": "completed" if edit_outcome == "success" else edit_outcome,
             }
         )
     try:
@@ -376,13 +451,14 @@ def _commit_version(
             raise StudioError("version_commit_failed", "版本保存失败，请重试", 500)
     except Exception:
         db.whole_versions.delete_one({"_id": version_id})
-        _delete_asset(db, store, asset_id)
+        for output in outputs:
+            _delete_asset(db, store, output.get("asset_id"))
         raise
     _append_message(
         db,
         task_id,
         role="assistant",
-        content=f"已生成 v{version_doc['version']}。",
+        content=message or f"已生成 v{version_doc['version']}。",
         version_id=version_id,
         version=int(version_doc["version"]),
     )
@@ -558,6 +634,224 @@ def run_generation(
         cleanup_image_refs(reference_images)
 
 
+def _set_edit_branch(db: Database, task_id: str, branch: str, values: dict[str, Any]) -> None:
+    db.whole_tasks.update_one(
+        {"_id": task_id},
+        {"$set": {f"edit.branches.{branch}.{key}": value for key, value in values.items()}},
+    )
+
+
+def _gateway_edit_branch(
+    db: Database,
+    settings: Settings,
+    store: ObjectStore,
+    client: CoreAIClient,
+    *,
+    task_id: str,
+    version: int,
+    task_input: dict[str, Any],
+    source_asset: dict[str, Any],
+    size: str,
+    image_model: str,
+    model_input: dict[str, Any],
+    prompt: str,
+    target_size: tuple[int, int],
+) -> list[dict[str, Any]]:
+    original_refs: list[ImageRef] = []
+    source_ref: ImageRef | None = None
+    asset_id: str | None = None
+    try:
+        original_refs = _load_reference_images(db, store, task_input, include_style=False)
+        _set_edit_branch(
+            db,
+            task_id,
+            "gateway",
+            {"status": "running", "model_input": model_input, "updated_at": utcnow()},
+        )
+        source_ref = image_ref_from_asset(db, store, str(source_asset["_id"]))
+        data = client.edit_image(
+            prompt,
+            [*original_refs, source_ref],
+            size=size,
+            model=image_model,
+        )
+        saved = _save_output_asset(
+            db,
+            settings,
+            store,
+            task_id=task_id,
+            version=version,
+            data=data,
+            role="gateway",
+            target_size=target_size,
+        )
+        asset_id = saved["asset_id"]
+        output = {
+            "id": f"gateway_result_{uuid.uuid4().hex}",
+            "channel": "gateway",
+            "role": "gateway_result",
+            "label": "接口结果",
+            "asset_id": asset_id,
+            "width": saved["width"],
+            "height": saved["height"],
+            "selectable": True,
+            "model_input": model_input,
+            "created_at": utcnow(),
+        }
+        _set_edit_branch(
+            db,
+            task_id,
+            "gateway",
+            {
+                "status": "completed",
+                "outputs": [output],
+                "completed_at": utcnow(),
+                "updated_at": utcnow(),
+                "error": None,
+            },
+        )
+        asset_id = None
+        return [output]
+    except Exception as exc:  # noqa: BLE001 - branch failure must not stop the other branch
+        logger.exception("gateway edit branch failed for %s", task_id)
+        _delete_asset(db, store, asset_id)
+        _set_edit_branch(
+            db,
+            task_id,
+            "gateway",
+            {
+                "status": "failed",
+                "error": _error_text(exc),
+                "completed_at": utcnow(),
+                "updated_at": utcnow(),
+            },
+        )
+        return []
+    finally:
+        cleanup_image_refs(original_refs)
+        if source_ref is not None:
+            source_ref.cleanup()
+
+
+def _agent_edit_branch(
+    db: Database,
+    settings: Settings,
+    store: ObjectStore,
+    client: CoreAIClient,
+    *,
+    task_id: str,
+    version: int,
+    source_asset: dict[str, Any],
+    instruction: str,
+    target_size: tuple[int, int],
+) -> list[dict[str, Any]]:
+    try:
+        expires = max(
+            settings.cos_presign_expiry_seconds,
+            settings.core_ai_image_agent_timeout_seconds + 600,
+        )
+        image_url = agent_image.asset_public_url(
+            db,
+            settings,
+            store,
+            client,
+            str(source_asset["_id"]),
+            expires=expires,
+        )
+        agent_input = agent_image.build_agent_edit_input(
+            [("当前海报（需要修改的原图）", image_url)],
+            instruction,
+        )
+        model_input = {
+            "channel": "agent",
+            "endpoint": f"/api/runs/agent/{settings.core_ai_image_agent_id}/trigger",
+            "model": "image-gen-skill",
+            "prompt": agent_input,
+            "parameters": {
+                "agent_id": settings.core_ai_image_agent_id,
+                "timeout_seconds": settings.core_ai_image_agent_timeout_seconds,
+                "image_url": image_url,
+            },
+            "images": [
+                {
+                    "asset_id": str(source_asset["_id"]),
+                    "name": str(source_asset.get("original_name") or "当前海报"),
+                    "kind": "current_design",
+                    "role": "edit_target",
+                    "url": image_url,
+                }
+            ],
+        }
+        _set_edit_branch(
+            db,
+            task_id,
+            "agent",
+            {"status": "running", "model_input": model_input, "updated_at": utcnow()},
+        )
+        result, outputs = agent_image.run_agent_images(
+            client,
+            agent_id=settings.core_ai_image_agent_id,
+            input_text=agent_input,
+            timeout_seconds=settings.core_ai_image_agent_timeout_seconds,
+        )
+        saved_outputs: list[dict[str, Any]] = []
+        for index, output in enumerate(outputs, start=1):
+            saved = agent_image.save_png_asset(
+                db,
+                settings,
+                store,
+                key_prefix=f"{task_id}_v{version}_agent_{index}",
+                original_stem=f"{task_id}-v{version}-agent-{index}",
+                data=output.data,
+                role=output.role,
+                target_size=target_size,
+            )
+            saved_outputs.append(
+                {
+                    "id": f"{output.role}_{uuid.uuid4().hex}",
+                    "channel": "agent",
+                    "role": output.role,
+                    "label": output.label,
+                    "asset_id": saved["asset_id"],
+                    "width": saved["width"],
+                    "height": saved["height"],
+                    "selectable": output.selectable,
+                    "model_input": model_input,
+                    "source_url": output.source_url,
+                    "created_at": utcnow(),
+                }
+            )
+        _set_edit_branch(
+            db,
+            task_id,
+            "agent",
+            {
+                "status": "completed",
+                "outputs": saved_outputs,
+                "run_id": result.run_id,
+                "agent_output": result.output,
+                "completed_at": utcnow(),
+                "updated_at": utcnow(),
+                "error": None,
+            },
+        )
+        return saved_outputs
+    except Exception as exc:  # noqa: BLE001 - keep gateway result available
+        logger.exception("agent edit branch failed for %s", task_id)
+        _set_edit_branch(
+            db,
+            task_id,
+            "agent",
+            {
+                "status": "failed",
+                "error": _error_text(exc),
+                "completed_at": utcnow(),
+                "updated_at": utcnow(),
+            },
+        )
+        return []
+
+
 def run_edit(
     db: Database,
     settings: Settings,
@@ -566,36 +860,44 @@ def run_edit(
     task_id: str,
     instruction: str,
     source_version_id: str,
+    source_output_id: str | None = None,
 ) -> None:
     task = db.whole_tasks.find_one(
         {"_id": task_id, "status": "succeeded", "edit.status": "running"}
     )
     if task is None:
         return
-
-    original_refs: list[ImageRef] = []
-    source_ref: ImageRef | None = None
-    asset_id: str | None = None
     try:
         source = db.whole_versions.find_one(
             {"_id": source_version_id, "task_id": task_id}
         )
         if source is None:
             raise StudioError("version_missing", "来源版本不存在", 404)
-        source_asset = db.assets.find_one({"_id": source.get("output_asset_id")})
+        source_output = None
+        if source_output_id:
+            source_output = next(
+                (item for item in _version_outputs(source) if str(item.get("id")) == source_output_id),
+                None,
+            )
+            if source_output is None:
+                raise StudioError("output_missing", "来源结果不存在", 404)
+            if not source_output.get("selectable"):
+                raise StudioError("output_not_selectable", "透明图层不能作为编辑源图", 422)
+        source_asset_id = (
+            source_output.get("asset_id")
+            if source_output
+            else source.get("output_asset_id")
+        )
+        source_asset = db.assets.find_one({"_id": source_asset_id})
         if source_asset is None:
             raise StudioError("source_image_missing", "来源图片不存在", 404)
-        source_ref = image_ref_from_asset(
-            db, store, str(source_asset["_id"])
-        )
-        width = int(source.get("width") or source_asset.get("width") or 1024)
-        height = int(source.get("height") or source_asset.get("height") or 1024)
+        width = int(source_output.get("width") if source_output else source.get("width") or source_asset.get("width") or 1024)
+        height = int(source_output.get("height") if source_output else source.get("height") or source_asset.get("height") or 1024)
         size = gateway_image_size(width, height)
         task_input = task.get("input") or {}
         image_model = str(task_input.get("image_model") or settings.core_ai_image_model)
-        original_refs = _load_reference_images(db, store, task_input, include_style=False)
-        original_count = len(original_refs)
         product_count = min(len(task_input.get("product_asset_ids") or []), 6)
+        original_count = product_count + (1 if task_input.get("logo_asset_id") else 0)
         image_roles: list[str] = []
         if product_count:
             product_range = "1" if product_count == 1 else f"1-{product_count}"
@@ -620,7 +922,8 @@ def run_edit(
             "keep all other content, text, composition, and style unchanged."
             f"\n\n{instruction.strip()}"
         )
-        model_input = {
+        gateway_input = {
+            "channel": "gateway",
             "endpoint": "/images/edits",
             "model": image_model,
             "prompt": prompt,
@@ -637,50 +940,145 @@ def run_edit(
                 include_style=False,
             ),
         }
+        version = _next_version(db, task_id)
+        started_at = utcnow()
         db.whole_tasks.update_one(
             {"_id": task_id},
             {
                 "$set": {
                     "stage": "editing",
-                    "progress": 55,
-                    "model_input_attempt": model_input,
-                    "updated_at": utcnow(),
+                    "progress": 40,
+                    "model_input_attempt": gateway_input,
+                    "edit": {
+                        "status": "running",
+                        "instruction": instruction,
+                        "source_version_id": source_version_id,
+                        "source_output_id": source_output_id,
+                        "error": None,
+                        "outcome": None,
+                        "branches": {
+                            "gateway": {
+                                "status": "running",
+                                "started_at": started_at,
+                                "model_input": gateway_input,
+                                "outputs": [],
+                                "error": None,
+                            },
+                            "agent": {
+                                "status": "preparing",
+                                "started_at": started_at,
+                                "model_input": None,
+                                "outputs": [],
+                                "run_id": None,
+                                "error": None,
+                            },
+                        },
+                    },
+                    "updated_at": started_at,
                 }
             },
         )
-        data = client.edit_image(prompt, [*original_refs, source_ref], size=size, model=image_model)
-        version = _next_version(db, task_id)
-        saved = _save_output_asset(
-            db,
-            settings,
-            store,
-            task_id=task_id,
-            version=version,
-            data=data,
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    _gateway_edit_branch,
+                    db,
+                    settings,
+                    store,
+                    client,
+                    task_id=task_id,
+                    version=version,
+                    task_input=task_input,
+                    source_asset=source_asset,
+                    size=size,
+                    image_model=image_model,
+                    model_input=gateway_input,
+                    prompt=prompt,
+                    target_size=(width, height),
+                ),
+                executor.submit(
+                    _agent_edit_branch,
+                    db,
+                    settings,
+                    store,
+                    client,
+                    task_id=task_id,
+                    version=version,
+                    source_asset=source_asset,
+                    instruction=instruction,
+                    target_size=(width, height),
+                ),
+            ]
+            all_outputs: list[dict[str, Any]] = []
+            for future in as_completed(futures):
+                all_outputs.extend(future.result())
+        updated = db.whole_tasks.find_one({"_id": task_id}) or {}
+        branches = ((updated.get("edit") or {}).get("branches") or {})
+        gateway_status = (branches.get("gateway") or {}).get("status")
+        agent_status = (branches.get("agent") or {}).get("status")
+        if not all_outputs:
+            errors = [
+                str((branches.get(name) or {}).get("error") or "")
+                for name in ("gateway", "agent")
+            ]
+            message = "；".join(error for error in errors if error) or "两条改图链路都没有返回图片"
+            db.whole_tasks.update_one(
+                {"_id": task_id},
+                {
+                    "$set": {
+                        "stage": "done",
+                        "progress": 100,
+                        "edit.status": "failed",
+                        "edit.error": message,
+                        "edit.outcome": "failed",
+                        "provider.status": "failed",
+                        "updated_at": utcnow(),
+                    }
+                },
+            )
+            _append_message(
+                db,
+                task_id,
+                role="assistant",
+                content=f"这次修改没有完成：{message}",
+                status="failed",
+            )
+            return
+        outcome = (
+            "success"
+            if gateway_status == "completed" and agent_status == "completed"
+            else "partial"
         )
-        asset_id = saved["asset_id"]
+        gateway_count = 1 if gateway_status == "completed" else 0
+        agent_count = sum(1 for item in all_outputs if item.get("channel") == "agent")
+        message = f"已完成 v{version}：接口 {gateway_count} 张，Agent {agent_count} 张。"
+        if outcome == "partial":
+            message += " 有一条链路失败，已保留成功结果。"
         document = _version_document(
             task_id=task_id,
             version=version,
             parent_version_id=source_version_id,
-            output_asset_id=asset_id,
+            output_asset_id=str(all_outputs[0]["asset_id"]),
             instruction=instruction,
             operation="edit",
-            width=saved["width"],
-            height=saved["height"],
-            model_input=model_input,
+            width=width,
+            height=height,
+            model_input=all_outputs[0].get("model_input") or gateway_input,
+            outputs=all_outputs,
         )
+        selectable_count = sum(1 for item in all_outputs if item.get("selectable"))
         _commit_version(
             db,
             store,
             task_id=task_id,
             version_doc=document,
             generation=False,
+            require_output_selection=selectable_count > 1,
+            edit_outcome=outcome,
+            message=message,
         )
-        asset_id = None
-    except Exception as exc:  # noqa: BLE001 - never destroy the last good image
+    except Exception as exc:  # noqa: BLE001 - preserve last good image
         logger.exception("edit failed for %s", task_id)
-        _delete_asset(db, store, asset_id)
         message = _error_text(exc)
         db.whole_tasks.update_one(
             {"_id": task_id},
@@ -690,6 +1088,7 @@ def run_edit(
                     "progress": 100,
                     "edit.status": "failed",
                     "edit.error": message,
+                    "edit.outcome": "failed",
                     "provider.status": "failed",
                     "updated_at": utcnow(),
                 }
@@ -702,17 +1101,16 @@ def run_edit(
             content=f"这次修改没有完成：{message}",
             status="failed",
         )
-    finally:
-        cleanup_image_refs(original_refs)
-        if source_ref is not None:
-            source_ref.cleanup()
 
 
 def select_version(db: Database, task_id: str, version_id: str) -> dict[str, Any]:
     version = db.whole_versions.find_one({"_id": version_id, "task_id": task_id})
     if version is None:
         raise StudioError("version_missing", "历史版本不存在", 404)
-    asset = db.assets.find_one({"_id": version.get("output_asset_id")})
+    output = _first_selectable_output(version)
+    if output is None:
+        raise StudioError("version_image_missing", "该版本没有可编辑结果", 404)
+    asset = db.assets.find_one({"_id": output.get("asset_id")})
     if asset is None:
         raise StudioError("version_image_missing", "该版本图片不存在", 404)
     updated = db.whole_tasks.find_one_and_update(
@@ -726,11 +1124,55 @@ def select_version(db: Database, task_id: str, version_id: str) -> dict[str, Any
                 "selected_version_id": version_id,
                 "current_version_id": version_id,
                 "current_version": int(version.get("version") or 0),
-                "output_asset_id": version.get("output_asset_id"),
+                "current_output_id": str(output.get("id") or ""),
+                "output_asset_id": output.get("asset_id"),
                 "canvas": {
                     "width": int(version.get("width") or asset.get("width") or 0),
                     "height": int(version.get("height") or asset.get("height") or 0),
                 },
+                "edit.status": "idle",
+                "edit.error": None,
+                "updated_at": utcnow(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        raise StudioError("edit_running", "当前有修改正在执行，请稍候", 409)
+    return updated
+
+
+def select_output(db: Database, task_id: str, version_id: str, output_id: str) -> dict[str, Any]:
+    version = db.whole_versions.find_one({"_id": version_id, "task_id": task_id})
+    if version is None:
+        raise StudioError("version_missing", "历史版本不存在", 404)
+    output = next(
+        (item for item in _version_outputs(version) if str(item.get("id")) == output_id),
+        None,
+    )
+    if output is None:
+        raise StudioError("output_missing", "该结果不存在", 404)
+    if not output.get("selectable"):
+        raise StudioError("output_not_selectable", "透明图层不能作为编辑源图", 422)
+    asset = db.assets.find_one({"_id": output.get("asset_id")})
+    if asset is None:
+        raise StudioError("version_image_missing", "该结果图片不存在", 404)
+    updated = db.whole_tasks.find_one_and_update(
+        {"_id": task_id, "status": "succeeded", "edit.status": {"$ne": "running"}},
+        {
+            "$set": {
+                "selected_version_id": version_id,
+                "current_version_id": version_id,
+                "current_version": int(version.get("version") or 0),
+                "current_output_id": output_id,
+                "output_asset_id": output.get("asset_id"),
+                "canvas": {
+                    "width": int(output.get("width") or asset.get("width") or 0),
+                    "height": int(output.get("height") or asset.get("height") or 0),
+                },
+                "model_input_latest": output.get("model_input"),
+                "edit.status": "idle",
+                "edit.error": None,
                 "updated_at": utcnow(),
             }
         },
@@ -761,7 +1203,12 @@ def mark_interrupted(db: Database) -> None:
         {
             "$set": {
                 "edit.status": "failed",
+                "edit.outcome": "failed",
                 "edit.error": "本地服务重启，修改已中断，请重新发起。",
+                "edit.branches.gateway.status": "failed",
+                "edit.branches.gateway.error": "本地服务重启，修改已中断。",
+                "edit.branches.agent.status": "failed",
+                "edit.branches.agent.error": "本地服务重启，修改已中断。",
                 "updated_at": utcnow(),
             }
         },

@@ -1,0 +1,8 @@
+interface:
+  display_name: "Image Gen Skill"
+  short_description: "Generate and edit images through the Core AI generate_image tool"
+  icon_small: "./assets/imagegen-small.svg"
+  icon_large: "./assets/imagegen.png"
+  default_prompt: "Use $image-gen-skill to generate or edit this image through the Core AI generate_image tool."
+policy:
+  allow_implicit_invocation: true

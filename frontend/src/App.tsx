@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import AssetLibrary from './components/AssetLibrary'
 import BrandStudio from './components/BrandStudio'
+import PosterEditStudio from './components/PosterEditStudio'
 import Sidebar, { type AppView } from './components/Sidebar'
 import TaskCenter from './components/TaskCenter'
 import WholeImageStudio from './components/WholeImageStudio'
@@ -22,6 +23,9 @@ function readView(): AppView {
   if (value === 'brands') {
     return 'brands'
   }
+  if (value === 'poster_edit') {
+    return 'poster_edit'
+  }
   if (value === 'tasks') {
     return 'tasks'
   }
@@ -36,6 +40,10 @@ function updateUrl(next: AppView) {
     url.searchParams.set('view', next)
   }
   url.searchParams.delete('task')
+  url.searchParams.delete('whole')
+  url.searchParams.delete('poster_batch')
+  url.searchParams.delete('poster')
+  url.searchParams.delete('candidate')
   window.history.replaceState({}, '', url)
 }
 
@@ -63,6 +71,11 @@ const VIEW_META: Record<
     title: '任务中心',
     meta: null,
   },
+  poster_edit: {
+    kicker: 'POSTER EDIT',
+    title: '修改海报',
+    meta: null,
+  },
   assets: {
     kicker: 'ASSET LIBRARY',
     title: '资产管理',
@@ -87,6 +100,7 @@ export default function App() {
   const [assetsLoading, setAssetsLoading] = useState(true)
   const [assetsError, setAssetsError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [studioRevision, setStudioRevision] = useState(0)
 
   const loadBrands = useCallback(async (showLoading = true) => {
     if (showLoading) {
@@ -187,6 +201,9 @@ export default function App() {
   }, [])
 
   const handleViewChange = (next: AppView) => {
+    if (next === view && (next === 'whole' || next === 'poster_edit')) {
+      setStudioRevision((current) => current + 1)
+    }
     setView(next)
     updateUrl(next)
     if (next === 'assets') {
@@ -231,12 +248,21 @@ export default function App() {
     setView('whole')
   }
 
-  const handleCreateTask = () => {
+  const handleOpenPosterBatch = (batchId: string) => {
     const url = new URL(window.location.href)
-    url.searchParams.delete('view')
+    url.searchParams.set('view', 'poster_edit')
+    url.searchParams.set('poster_batch', batchId)
+    url.searchParams.delete('poster')
     url.searchParams.delete('whole')
     window.history.replaceState({}, '', url)
-    setView('whole')
+    setView('poster_edit')
+  }
+
+  const handleCreateTask = (kind: 'generate' | 'edit') => {
+    const next: AppView = kind === 'edit' ? 'poster_edit' : 'whole'
+    updateUrl(next)
+    setStudioRevision((current) => current + 1)
+    setView(next)
   }
 
   const viewMeta = VIEW_META[view]
@@ -259,9 +285,14 @@ export default function App() {
         </header>
 
         {view === 'tasks' ? (
-          <TaskCenter onOpenTask={handleOpenTask} onCreate={handleCreateTask} />
+          <TaskCenter
+            onOpenTask={handleOpenTask}
+            onOpenPosterBatch={handleOpenPosterBatch}
+            onCreate={handleCreateTask}
+          />
         ) : view === 'whole' ? (
           <WholeImageStudio
+            key={`whole-${studioRevision}`}
             brands={brands}
             brandsLoading={brandsLoading}
             brandsError={brandsError}
@@ -272,6 +303,14 @@ export default function App() {
             assetsLoading={assetsLoading}
             onLoadAssets={() => void loadAssets()}
             onRefreshBrands={loadBrands}
+            onGoAssets={() => handleViewChange('assets')}
+          />
+        ) : view === 'poster_edit' ? (
+          <PosterEditStudio
+            key={`poster-edit-${studioRevision}`}
+            assets={assets}
+            assetsLoading={assetsLoading}
+            onLoadAssets={() => void loadAssets()}
             onGoAssets={() => handleViewChange('assets')}
           />
         ) : view === 'brands' ? (
@@ -296,13 +335,13 @@ export default function App() {
         <footer className="app-footer">
           {view === 'whole' ? (
             <>
-              <span>模型直出完整图片 · 不做图层拆分</span>
+              <span>接口与 Agent 双路改图 · 结果并排对比</span>
               <span className="footer-sep" aria-hidden="true" />
-              <span>每次修改都会保存为独立版本</span>
+              <span>每轮结果需手动选择后才能继续修改</span>
             </>
           ) : view === 'tasks' ? (
-            <span>任务按候选批次归档 · 点击回到工作台继续编辑</span>
-          ) : view === 'brands' ? null : (
+            <span>任务按候选批次归档 · 点击封面回到工作台继续编辑</span>
+          ) : view === 'brands' || view === 'poster_edit' ? null : (
             <span>素材保存在项目内本地目录 · 海报设计时从资产库选择</span>
           )}
         </footer>

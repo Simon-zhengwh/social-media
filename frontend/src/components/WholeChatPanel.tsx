@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { WholeImageEditState, WholeImageMessage } from '../types'
+import { parseServerDate } from '../time'
 
 type Props = {
   messages: WholeImageMessage[]
@@ -17,7 +18,7 @@ const messageTime = new Intl.DateTimeFormat('zh-CN', {
 })
 
 function formatMessageTime(value: string): string {
-  const date = new Date(value)
+  const date = parseServerDate(value)
   return Number.isNaN(date.getTime()) ? '' : messageTime.format(date)
 }
 

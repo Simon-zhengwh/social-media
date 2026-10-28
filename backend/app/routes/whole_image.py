@@ -13,6 +13,8 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from app.schemas import WholeImageEditRequest, WholeImageTaskCreate
 from app.services import brand_rules, brand_style, platform_presets, whole_image
+from app.services.whole_image import _version_outputs as _version_outputs_for_task
+from app.time_utils import utc_iso
 from app.services.canvas import canvas_size
 
 router = APIRouter(prefix="/api/whole-image", tags=["whole-image"])
@@ -27,12 +29,14 @@ def _edit_state(doc: dict[str, Any]) -> dict[str, Any]:
             "status": "idle",
             "instruction": None,
             "source_version_id": None,
+            "source_output_id": None,
             "error": None,
         }
     return {
         "status": edit.get("status") or "idle",
         "instruction": edit.get("instruction"),
         "source_version_id": edit.get("source_version_id"),
+        "source_output_id": edit.get("source_output_id"),
         "error": edit.get("error"),
     }
 
@@ -253,15 +257,19 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
             continue
         asset_id = str(image.get("asset_id") or "")
         asset = db.assets.find_one({"_id": asset_id}) if asset_id else None
-        images.append(
-            {
-                "asset_id": asset_id,
-                "name": str(image.get("name") or "参考图片"),
-                "role": str(image.get("role") or image.get("kind") or "reference"),
-                "preview_url": f"/api/assets/{asset_id}/file" if asset else None,
-            }
-        )
+        item = {
+            "asset_id": asset_id,
+            "name": str(image.get("name") or "参考图片"),
+            "role": str(image.get("role") or image.get("kind") or "reference"),
+            "preview_url": f"/api/assets/{asset_id}/file" if asset else None,
+        }
+        if image.get("kind"):
+            item["kind"] = image.get("kind")
+        if image.get("url"):
+            item["url"] = image.get("url")
+        images.append(item)
     return {
+        "channel": str(snapshot.get("channel") or "gateway"),
         "endpoint": str(snapshot.get("endpoint") or ""),
         "model": str(snapshot.get("model") or ""),
         "prompt": str(snapshot.get("prompt") or ""),
@@ -270,22 +278,114 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
     }
 
 
-def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
-    version_doc = _version_for_task(db, str(doc["_id"]))
-    model_input = doc.get("model_input_attempt") or doc.get("model_input_latest")
-    if model_input is None:
-        latest_version = db.whole_versions.find_one(
-            {"task_id": str(doc["_id"]), "model_input": {"$exists": True}},
-            sort=[("version", -1)],
+def _output_out(
+    db: Any,
+    *,
+    task_id: str,
+    version_id: str | None,
+    version_number: int,
+    output: dict[str, Any],
+) -> dict[str, Any]:
+    asset_id = str(output.get("asset_id") or "")
+    asset = db.assets.find_one({"_id": asset_id}) if asset_id else None
+    output_id = str(output.get("id") or "")
+    return {
+        "id": output_id,
+        "channel": str(output.get("channel") or "gateway"),
+        "role": str(output.get("role") or "gateway_result"),
+        "label": str(output.get("label") or "接口结果"),
+        "asset_id": asset_id,
+        "width": int(output.get("width") or (asset or {}).get("width") or 0),
+        "height": int(output.get("height") or (asset or {}).get("height") or 0),
+        "selectable": bool(output.get("selectable")),
+        "preview_url": (
+            f"/api/assets/{asset_id}/file?v={version_number}" if asset_id and asset else None
+        ),
+        "download_url": (
+            f"/api/whole-image/tasks/{task_id}/download?version_id={version_id}&output_id={output_id}"
+            if asset_id and asset and version_id and output_id
+            else None
+        ),
+        "model_input": _model_input_out(db, output.get("model_input")),
+    }
+
+
+def _version_outputs_out(
+    db: Any,
+    *,
+    task_id: str,
+    version_id: str,
+    version_number: int,
+    outputs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        _output_out(
+            db,
+            task_id=task_id,
+            version_id=version_id,
+            version_number=version_number,
+            output=output,
         )
-        model_input = (latest_version or {}).get("model_input")
-    output_id = (
-        version_doc.get("output_asset_id") if version_doc else doc.get("output_asset_id")
-    )
-    version_number = int(
-        (version_doc or {}).get("version") or doc.get("current_version") or 0
-    )
+        for output in outputs
+    ]
+
+
+def _branch_out(db: Any, task_id: str, branch: Any) -> dict[str, Any] | None:
+    if not isinstance(branch, dict):
+        return None
+    outputs = []
+    for output in branch.get("outputs") or []:
+        if isinstance(output, dict):
+            outputs.append(
+                _output_out(
+                    db,
+                    task_id=task_id,
+                    version_id=None,
+                    version_number=0,
+                    output=output,
+                )
+            )
+    return {
+        "status": str(branch.get("status") or "idle"),
+        "started_at": utc_iso(branch.get("started_at")),
+        "completed_at": utc_iso(branch.get("completed_at")),
+        "run_id": branch.get("run_id"),
+        "error": branch.get("error"),
+        "model_input": _model_input_out(db, branch.get("model_input")),
+        "outputs": outputs,
+    }
+
+
+def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
+    task_id = str(doc["_id"])
+    version_doc = _version_for_task(db, task_id)
     version_id = str(version_doc["_id"]) if version_doc else None
+    version_number = int((version_doc or {}).get("version") or doc.get("current_version") or 0)
+    raw_outputs = _version_outputs_for_task(version_doc) if version_doc else []
+    outputs = (
+        _version_outputs_out(
+            db,
+            task_id=task_id,
+            version_id=version_id,
+            version_number=version_number,
+            outputs=raw_outputs,
+        )
+        if version_id
+        else []
+    )
+    current_output_id = doc.get("current_output_id")
+    selected_output = next(
+        (item for item in outputs if item["id"] == current_output_id),
+        None,
+    )
+    if selected_output is None and (doc.get("edit") or {}).get("status") != "awaiting_selection":
+        selected_output = next((item for item in outputs if item["selectable"]), None)
+    model_input = selected_output.get("model_input") if selected_output else None
+    if model_input is None:
+        snapshot = doc.get("model_input_attempt") or doc.get("model_input_latest")
+        if snapshot is None and version_doc:
+            snapshot = version_doc.get("model_input")
+        model_input = _model_input_out(db, snapshot)
     canvas = doc.get("canvas") or {"width": 0, "height": 0}
     if version_doc:
         canvas = {
@@ -293,16 +393,19 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
             "height": int(version_doc.get("height") or canvas.get("height") or 0),
         }
     provider = doc.get("provider") or {}
-    preview_url = (
-        f"/api/assets/{output_id}/file?v={version_number}" if output_id else None
-    )
-    download_url = (
-        f"/api/whole-image/tasks/{doc['_id']}/download?version_id={version_id}"
-        if output_id and version_id
-        else None
-    )
+    edit = _edit_state(doc)
+    branches = (doc.get("edit") or {}).get("branches") or {}
+    edit["outcome"] = (doc.get("edit") or {}).get("outcome")
+    edit["branches"] = {
+        name: value
+        for name, value in (
+            ("gateway", _branch_out(db, task_id, branches.get("gateway"))),
+            ("agent", _branch_out(db, task_id, branches.get("agent"))),
+        )
+        if value is not None
+    }
     return {
-        "id": doc["_id"],
+        "id": task_id,
         "status": doc["status"],
         "stage": doc["stage"],
         "progress": int(doc.get("progress") or 0),
@@ -319,17 +422,26 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
             "model": provider.get("model"),
             "status": provider.get("status"),
         },
-        "model_input": _model_input_out(db, model_input),
+        "model_input": model_input,
+        "model_inputs": [item.get("model_input") for item in outputs if item.get("model_input")],
+        "outputs": outputs,
+        "current_output_id": selected_output.get("id") if selected_output else None,
+        "requires_output_selection": (doc.get("edit") or {}).get("status") == "awaiting_selection",
         "selected_version_id": version_id,
         "current_version_id": version_id,
         "current_version": version_number,
-        "preview_url": preview_url,
-        "download_url": download_url,
-        "messages": doc.get("messages") or [],
-        "edit": _edit_state(doc),
+        "preview_url": selected_output.get("preview_url") if selected_output else None,
+        "download_url": selected_output.get("download_url") if selected_output else None,
+        "messages": [
+            {**message, "created_at": utc_iso(message.get("created_at"))}
+            if isinstance(message, dict)
+            else message
+            for message in (doc.get("messages") or [])
+        ],
+        "edit": edit,
         "error": doc.get("error"),
-        "created_at": doc["created_at"],
-        "updated_at": doc["updated_at"],
+        "created_at": utc_iso(doc["created_at"]),
+        "updated_at": utc_iso(doc["updated_at"]),
     }
 
 
@@ -337,8 +449,15 @@ def _version_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
     task_id = str(doc["task_id"])
     version_id = str(doc["_id"])
     version = int(doc.get("version") or 0)
-    output_id = doc.get("output_asset_id")
-    asset = db.assets.find_one({"_id": output_id}) if output_id else None
+    raw_outputs = _version_outputs_for_task(doc)
+    outputs = _version_outputs_out(
+        db,
+        task_id=task_id,
+        version_id=version_id,
+        version_number=version,
+        outputs=raw_outputs,
+    )
+    primary = next((item for item in outputs if item["selectable"]), outputs[0] if outputs else None)
     operation = doc.get("operation") or ("generate" if version <= 1 else "edit")
     return {
         "id": version_id,
@@ -346,18 +465,14 @@ def _version_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
         "parent_version_id": doc.get("parent_version_id"),
         "operation": operation,
         "instruction": doc.get("instruction") or "",
-        "width": int(doc.get("width") or (asset or {}).get("width") or 0),
-        "height": int(doc.get("height") or (asset or {}).get("height") or 0),
-        "output_asset_id": output_id,
-        "preview_url": (
-            f"/api/assets/{output_id}/file?v={version}" if output_id else None
-        ),
-        "download_url": (
-            f"/api/whole-image/tasks/{task_id}/download?version_id={version_id}"
-            if output_id
-            else None
-        ),
-        "created_at": doc["created_at"],
+        "width": int(doc.get("width") or (primary or {}).get("width") or 0),
+        "height": int(doc.get("height") or (primary or {}).get("height") or 0),
+        "output_asset_id": primary.get("asset_id") if primary else None,
+        "preview_url": primary.get("preview_url") if primary else None,
+        "download_url": primary.get("download_url") if primary else None,
+        "outputs": outputs,
+        "model_input": _model_input_out(db, doc.get("model_input")),
+        "created_at": utc_iso(doc["created_at"]),
     }
 
 
@@ -627,6 +742,7 @@ def retry_task(
         raise HTTPException(status_code=409, detail="当前任务没有可重试的失败项")
     instruction = str(edit.get("instruction") or "").strip()
     source_version_id = str(edit.get("source_version_id") or "").strip()
+    source_output_id = str(edit.get("source_output_id") or "").strip() or None
     if not instruction or not source_version_id:
         raise HTTPException(status_code=409, detail="失败记录缺少重试所需信息")
 
@@ -658,6 +774,7 @@ def retry_task(
         task_id,
         instruction,
         source_version_id,
+        source_output_id,
     )
     return task_out(db, retried_edit)
 
@@ -691,6 +808,7 @@ def create_edit(
                     "status": "running",
                     "instruction": payload.instruction,
                     "source_version_id": payload.source_version_id,
+                    "source_output_id": payload.source_output_id,
                     "error": None,
                 },
                 "stage": "editing",
@@ -717,6 +835,7 @@ def create_edit(
         task_id,
         payload.instruction,
         payload.source_version_id,
+        payload.source_output_id,
     )
     return task_out(db, _get_task_or_404(db, task_id))
 
@@ -744,25 +863,64 @@ def select_task_version(
     return task_out(db, doc)
 
 
+@router.post("/tasks/{task_id}/versions/{version_id}/outputs/{output_id}/select")
+def select_task_output(
+    task_id: str,
+    version_id: str,
+    output_id: str,
+    request: Request,
+) -> dict[str, Any]:
+    db = request.app.state.db
+    _get_task_or_404(db, task_id)
+    try:
+        doc = whole_image.select_output(db, task_id, version_id, output_id)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return task_out(db, doc)
+
+
 @router.get("/tasks/{task_id}/download")
 def download_task(
     task_id: str,
     request: Request,
     version_id: str | None = None,
+    output_id: str | None = None,
 ) -> Response:
     db = request.app.state.db
     _get_task_or_404(db, task_id)
     selected = _version_for_task(db, task_id, version_id=version_id)
-    output_id = selected.get("output_asset_id") if selected else None
-    if not output_id:
+    selected_output: dict[str, Any] | None = None
+    if selected and output_id:
+        selected_output = next(
+            (item for item in _version_outputs_for_task(selected) if str(item.get("id")) == output_id),
+            None,
+        )
+        if selected_output is None:
+            raise HTTPException(status_code=404, detail="结果图片不存在")
+    output_asset_id = (
+        selected_output.get("asset_id")
+        if selected_output
+        else (selected.get("output_asset_id") if selected else None)
+    )
+    if not output_asset_id and selected:
+        first = next(
+            (item for item in _version_outputs_for_task(selected) if item.get("selectable")),
+            None,
+        )
+        output_asset_id = first.get("asset_id") if first else None
+    if not output_asset_id:
         raise HTTPException(status_code=409, detail="任务尚未生成可下载的成品")
     settings = request.app.state.settings
     store = request.app.state.store
-    asset = db.assets.find_one({"_id": output_id})
+    asset = db.assets.find_one({"_id": output_asset_id})
     if asset is None:
         raise HTTPException(status_code=404, detail="成品不存在")
     number = int((selected or {}).get("version") or 0)
-    filename = f"whole-image-{task_id}-v{number}.png"
+    filename = (
+        f"whole-image-{task_id}-v{number}-{selected_output.get('role') or 'result'}.png"
+        if selected_output
+        else f"whole-image-{task_id}-v{number}.png"
+    )
     relative = asset.get("prepared_path") or asset["path"]
     local_path = store.local_path(relative)
     if local_path is not None:
