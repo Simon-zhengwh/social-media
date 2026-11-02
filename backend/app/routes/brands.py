@@ -52,6 +52,7 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         })
     return {
         "id": brand.id,
+        "merchant_profile": _merchant_profile(db, document.get("merchant_id")),
         "name": brand.name,
         "short_name": brand.short_name,
         "summary": brand.summary,
@@ -73,6 +74,19 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         "logo_asset_ids": [item["asset_id"] for item in logo_images],
         "logo_images": logo_images,
         "reference_images": references,
+    }
+
+
+def _merchant_profile(db: Any, merchant_id: str | None) -> dict[str, Any] | None:
+    profile = db.merchant_profiles.find_one({"_id": merchant_id}) if merchant_id else None
+    if profile is None:
+        return None
+    return {
+        "id": str(profile["_id"]),
+        "name": profile.get("name", ""),
+        "source_label": profile.get("source_label", ""),
+        "source_record_id": profile.get("source_record_id", ""),
+        "sections": profile.get("sections", []),
     }
 
 

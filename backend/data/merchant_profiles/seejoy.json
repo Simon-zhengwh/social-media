@@ -1,0 +1,210 @@
+{
+  "_id": "f0750173-0113-464d-bb90-cbebb9c08ba7",
+  "name": "SEE JOY 喜聚",
+  "source_label": "用户提供的商户资料",
+  "source_record_id": "f0750173-0113-464d-bb90-cbebb9c08ba7",
+  "sections": [
+    {
+      "title": "商户定位（原资料描述）",
+      "text": "位于曼哈顿 Midtown 的时尚、高性价比自助单人火锅与自助餐品牌，结合宽敞、活跃的社交氛围、一人一锅，以及食材、热菜和甜品选择。原资料面向都市上班族、学生及团体聚餐人群。",
+      "source_path": "brand.positioning",
+      "original": "SEE JOY is a trendy, high-value all-you-can-eat individual hot pot and buffet concept in midtown Manhattan. Combining a spacious, vibrant social atmosphere with a hygienic one-pot-per-person setup, it offers an expansive selection of fresh ingredients, hot entrees, and premium desserts. SEE JOY is the ultimate dining destination for urban professionals, students, and large groups seeking variety and a seamless gathering experience."
+    },
+    {
+      "title": "核心卖点（原资料描述）",
+      "text": "一人一锅，每位客人有独立锅和汤底；两层空间，10,000+ 平方英尺、60+ 张桌，靠近 Penn Station；100+ 种食材，包括和牛、牛舌、海鲜、刺身及寿司；提供冷菜、水果和千层蛋糕；位于 Koreatown / Midtown，营业至深夜。",
+      "source_path": "locations.0.core_highlights",
+      "original": [
+        "All-you-can-eat individual hot pot - one personal pot and broth per guest",
+        "10,000+ sq ft and 60+ tables across two floors, steps from Penn Station",
+        "100+ fresh ingredients including wagyu, beef tongue, seafood, sashimi and sushi",
+        "Buffet sides and desserts: cold appetizers, fresh fruit and mille crepe cakes",
+        "Open late in the heart of Koreatown / Midtown"
+      ]
+    },
+    {
+      "title": "目标客群（原资料列举，未排序）",
+      "text": "Midtown 上班族与 Penn Station / Herald Square 周边通勤者；游览 Madison Square Garden 和 Empire State Building 的游客；W 32nd St 韩国城晚间人群；团体聚餐或庆祝人群。",
+      "source_path": "locations.0.competitive_context.target_customers",
+      "original": "Midtown office workers and commuters around Penn Station / Herald Square, tourists visiting Madison Square Garden and the Empire State Building, the evening crowd from Koreatown on W 32nd St, and large groups or celebrations (per brand positioning)."
+    },
+    {
+      "title": "品牌性格（原资料描述）",
+      "text": "活泼、现代、亲切、大方；以共同享用美食为纽带的社交聚点。",
+      "source_path": "brand.personality",
+      "original": "Vibrant, modern, welcoming, and generous. A social hub that brings people together over a shared love for great food."
+    },
+    {
+      "title": "表达语气（原资料描述）",
+      "text": "热情、时尚、轻松。像吃货朋友一样与客人交流，保持有活力、清楚、有邀请感。",
+      "source_path": "brand.voice.description",
+      "original": "Enthusiastic, trendy, and casual. We speak to our guests like a foodie friend - always energetic, clear, and inviting."
+    },
+    {
+      "title": "代表餐品（资料清单）",
+      "text": "单人火锅、鸳鸯锅、和牛、雪花牛肉、牛肉片、牛舌、三文鱼刺身、金枪鱼刺身、寿司卷、虾、蟹腿、北极贝、鱼丸、肉丸、饺子、千层蛋糕。",
+      "source_path": "locations.0.dishes.signature",
+      "original": [
+        "Individual Hot Pot",
+        "Split Pot",
+        "Wagyu Beef",
+        "Marbled Beef",
+        "Sliced Beef",
+        "Beef Tongue",
+        "Salmon Sashimi",
+        "Tuna Sashimi",
+        "Sushi Rolls",
+        "Shrimp",
+        "Crab Legs",
+        "Arctic Surf Clam",
+        "Fish Balls",
+        "Meatballs",
+        "Dumplings",
+        "Mille Crepe Cake"
+      ]
+    },
+    {
+      "title": "畅销餐品",
+      "text": "",
+      "source_path": "locations.0.dishes.top_selling",
+      "original": []
+    },
+    {
+      "title": "当前主推",
+      "text": "",
+      "source_path": "locations.0.dishes.to_push",
+      "original": []
+    },
+    {
+      "title": "门店地址",
+      "text": "119 W 31st St, New York, NY 10001",
+      "source_path": "locations.0.nap.address",
+      "original": "119 W 31st St, New York, NY 10001"
+    },
+    {
+      "title": "联系电话",
+      "text": "(646) 882-7777",
+      "source_path": "locations.0.nap.phone",
+      "original": "(646) 882-7777"
+    }
+  ],
+  "source": {
+    "_id": "f0750173-0113-464d-bb90-cbebb9c08ba7",
+    "brand": {
+      "legal_name": "Formax Group INC",
+      "canonical_name": "SEE JOY 喜聚",
+      "name_variants": [
+        "SEE JOY",
+        "See Joy",
+        "喜聚",
+        "喜聚时令鲜火锅"
+      ],
+      "location_count": 1,
+      "ownership_model": "CORPORATE",
+      "year_established": 2024,
+      "primary_category": "Hot pot restaurant",
+      "secondary_categories": [
+        "Sushi takeaway"
+      ],
+      "cuisine": [
+        "Hot Pot",
+        "Chinese",
+        "Asian",
+        "Buffet"
+      ],
+      "price_tier": "THIRTY_ONE_TO_SIXTY",
+      "positioning": "SEE JOY is a trendy, high-value all-you-can-eat individual hot pot and buffet concept in midtown Manhattan. Combining a spacious, vibrant social atmosphere with a hygienic one-pot-per-person setup, it offers an expansive selection of fresh ingredients, hot entrees, and premium desserts. SEE JOY is the ultimate dining destination for urban professionals, students, and large groups seeking variety and a seamless gathering experience.",
+      "personality": "Vibrant, modern, welcoming, and generous. A social hub that brings people together over a shared love for great food.",
+      "voice": {
+        "description": "Enthusiastic, trendy, and casual. We speak to our guests like a foodie friend - always energetic, clear, and inviting.",
+        "varies_by_location": false,
+        "location_differences": null
+      },
+      "websites": {
+        "home": "https://www.seejoyny.com/",
+        "about": null,
+        "menu": "https://www.seejoyny.com/#sj-ayce",
+        "location": null,
+        "contact": "https://www.seejoyny.com/contact-us/"
+      },
+      "online_ordering_url": null,
+      "social": null,
+      "access": null,
+      "prior_work": null,
+      "notes": "Legal entity: Formax Group INC. Brand established 2024 per owner; this location's Google Business Profile opening date is 2026-09-21 and its first Google reviews appeared 2026-09-21/22 - treat the location as a September 2026 listing/opening. Owner-stated target additional GBP categories (Buffet Restaurant, Chinese Restaurant) are NOT yet set on Google; the current GBP additional category is Sushi takeaway only. The owner's earlier note claiming no official website exists is incorrect - see websites (live Menusifu-hosted site). Still missing and needed later: online ordering URL, social profiles, delivery platform listings, access grants. Name-confusion warning: Easy Joy Dim Sum & AYCE Hot Pot (145 Mulberry St) is an unrelated restaurant with a similar name - do not merge listings or reviews. Canonical NAP phone format follows the Google Business Profile: (646) 882-7777. dishes.signature holds clean item names so it can act as keyword seeds."
+    },
+    "locations": [
+      {
+        "place_id": "ChIJUYXjAsNZwokRk2AfiERJO2k",
+        "gbp_location_id": "14786062287654907218",
+        "name": "SEE JOY 喜聚",
+        "description": null,
+        "core_highlights": [
+          "All-you-can-eat individual hot pot - one personal pot and broth per guest",
+          "10,000+ sq ft and 60+ tables across two floors, steps from Penn Station",
+          "100+ fresh ingredients including wagyu, beef tongue, seafood, sashimi and sushi",
+          "Buffet sides and desserts: cold appetizers, fresh fruit and mille crepe cakes",
+          "Open late in the heart of Koreatown / Midtown"
+        ],
+        "nap": {
+          "address": "119 W 31st St, New York, NY 10001",
+          "suite": null,
+          "phone": "(646) 882-7777"
+        },
+        "neighborhood": {
+          "area": "Midtown West - Koreatown / Greeley Square area",
+          "cross_streets": "Between 6th Ave and 7th Ave, one block south of W 32nd St (Koreatown)",
+          "landmarks": "Madison Square Garden, Penn Station, Herald Square / Macy's, Empire State Building, Koreatown (W 32nd St), Fashion Institute of Technology (FIT)"
+        },
+        "service": {
+          "dine_in": true,
+          "takeout": true,
+          "delivery": null,
+          "curbside": null,
+          "catering": null,
+          "reservation": true,
+          "delivery_platforms": []
+        },
+        "menu_url": null,
+        "dishes": {
+          "signature": [
+            "Individual Hot Pot",
+            "Split Pot",
+            "Wagyu Beef",
+            "Marbled Beef",
+            "Sliced Beef",
+            "Beef Tongue",
+            "Salmon Sashimi",
+            "Tuna Sashimi",
+            "Sushi Rolls",
+            "Shrimp",
+            "Crab Legs",
+            "Arctic Surf Clam",
+            "Fish Balls",
+            "Meatballs",
+            "Dumplings",
+            "Mille Crepe Cake"
+          ],
+          "top_selling": [],
+          "to_push": []
+        },
+        "competitive_context": {
+          "target_customers": "Midtown office workers and commuters around Penn Station / Herald Square, tourists visiting Madison Square Garden and the Empire State Building, the evening crowd from Koreatown on W 32nd St, and large groups or celebrations (per brand positioning).",
+          "competitors": [
+            "[hot pot / direct] ER Hot Pot 贰火锅 - 11 W 36th St",
+            "[hot pot / direct] Xiāng Là Hot Pot - 34 W 32nd St, 2nd floor",
+            "[hot pot / direct] KPOT Korean BBQ & Hot Pot - 310 W 38th St",
+            "[hot pot / direct] Hou Hot Pot 厚火锅 - 307 W 39th St",
+            "[hot pot / direct] The Dolar Shop Hot Pot Manhattan - 55 3rd Ave",
+            "[value lunch / owner] Jian Bing Man - 11 W 32nd St",
+            "[value lunch / owner] Shanghai Mong - 30 W 32nd St",
+            "[value lunch / owner] Food Gallery 32 food hall - 11 W 32nd St"
+          ]
+        }
+      }
+    ],
+    "created_time": {
+      "$date": "2026-09-22T10:29:05.496Z"
+    }
+  }
+}

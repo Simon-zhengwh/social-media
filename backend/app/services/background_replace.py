@@ -16,7 +16,7 @@ from pymongo import ReturnDocument
 from app.config import Settings
 from app.schemas import BackgroundReplacementRequest
 from app.services import agent_image
-from app.services.core_ai import CoreAIClient, CoreAIError
+from app.services.core_ai import AgentRunResult, CoreAIClient, CoreAIError
 from app.services.object_store import ObjectStore
 from app.time_utils import utc_iso
 
@@ -100,30 +100,46 @@ def _build_input(db: Any, settings: Settings, store: ObjectStore, client: CoreAI
     source.update(width=width, height=height)
     task["source"] = source
     _update(db, task["_id"], source=source)
-    lines = ["请遵循绑定的原照替换 skill，基于以下同一张原图一次完成本轮全部替换。",
-             "只替换指定元素，保留文字、Logo、贴纸、装饰及未指定区域，不使用生成式改图。",
-             f"最终图片须保持原图精确尺寸 {source['width']}×{source['height']}，不得缩放整张海报或补边。",
-             f"原图：{url(data['source_asset_id'])}"]
-    for index, item in enumerate(data["replacements"], 1):
-        lines.extend([f"替换项{index}：{item['target']}", f"对应替换图片：{url(item['asset_id'])}"])
-    lines.extend(["请简要说明裁切和未完成事项。只有完成并验收通过时，才将唯一最终成图单独标为：",
-                  "![替换结果](实际最终PNG的HTTPS链接)",
-                  "蒙版、前景层、校验报告等辅助文件请使用其他名称的普通链接，不要标为替换结果。",
-                  "若目标不清或无法完成，请说明原因，不要把蒙版、预览或原图作为最终成图。"])
-    return "\n".join(lines)
+    image_ids = list(dict.fromkeys([data["source_asset_id"], *[item["asset_id"] for item in data["replacements"]]]))
+    clauses = [f"把图1的{item['target']}替换成图{image_ids.index(item['asset_id']) + 1}" for item in data["replacements"]]
+    instruction = "帮我" + "，并且".join(clauses)
+    return instruction + "\n\n" + "\n".join(url(asset_id) for asset_id in image_ids)
+
+
+def _final_image_url(result: AgentRunResult) -> str:
+    auxiliary = re.compile(r"蒙版|遮罩|对比|预览|校验|报告|前景|透明层|原图|参考图|mask|comparison|preview|overlay|manifest|foreground|layer|fitted|crop|intermediate|source|input", re.I)
+    final = re.compile(r"最终|成图|成品|替换结果|修改结果|final|result", re.I)
+    links = re.findall(r'(!?)\[([^\]]*)\]\(<?(https://[^\s)>]+)>?(?:\s+"[^"]*")?\)', result.output)
+    artifacts = {item.download_url: item for item in result.artifacts}
+    finals, images = [], []
+    for image, label, url in links:
+        artifact = artifacts.get(url)
+        description = label + (f" {artifact.file_name} {artifact.title}" if artifact else "")
+        if auxiliary.search(description):
+            continue
+        if final.search(description):
+            finals.append(url)
+        elif image:
+            images.append(url)
+    # The final reply identifies deliverables; artifacts may also contain intermediate masks and previews.
+    candidates = finals or images
+    if not candidates:
+        candidates = [item.download_url for item in result.artifacts
+                      if final.search(f"{item.file_name} {item.title}")
+                      and not auxiliary.search(f"{item.file_name} {item.title}")]
+    urls = list(dict.fromkeys(candidates))
+    if not urls:
+        raise BackgroundReplaceError("agent_image_missing", "未返回明确的最终成图，请查看 Agent 回复并调整替换项", 502)
+    if len(urls) != 1:
+        raise BackgroundReplaceError("agent_image_ambiguous", "Agent 返回多个可能的最终成图，无法确定替换结果，请查看回复", 502)
+    return urls[0]
 
 
 def _save_result(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
                  task: dict[str, Any], result: Any) -> None:
     task_id = task["_id"]
     _update(db, task_id, agent_output=result.output, stage="saving", progress=85)
-    matches = re.findall(r"!\[替换结果\]\(<?(https://[^\s)>]+)>?(?:\s+\"[^\"]*\")?\)", result.output)
-    urls = list(dict.fromkeys(matches))
-    if not urls:
-        raise BackgroundReplaceError("agent_image_missing", "未返回明确的最终成图，请查看 Agent 回复并调整替换项", 502)
-    if len(urls) != 1:
-        raise BackgroundReplaceError("agent_image_ambiguous", "Agent 返回多个最终成图，无法确定替换结果，请查看回复", 502)
-    data = client.download_image(urls[0])
+    data = client.download_image(_final_image_url(result))
     try:
         with Image.open(io.BytesIO(data)) as image:
             image.load()
@@ -174,7 +190,7 @@ def run_task(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClie
                 _save_result(db, settings, store, client, task, result)
                 return
             remaining = (deadline - utcnow()).total_seconds()
-            if refresh or remaining <= 0:
+            if remaining <= 0:
                 raise BackgroundReplaceError("agent_timeout", "已达到本地等待上限，远端可能仍在处理，可稍后查询已有结果", 504)
             time.sleep(min(5, remaining))
     except Exception as exc:

@@ -5,7 +5,6 @@ import {
   createBrand,
   getBrandRules,
   updateBrandRules,
-  previewBrand,
   deleteBrand,
   deleteBrandLogo,
   deleteBrandReference,
@@ -23,6 +22,7 @@ import type {
   PlatformPreset,
 } from '../types'
 import { ZoomableImage } from './ImageLightbox'
+import MerchantProfilePanel from './MerchantProfilePanel'
 
 type Props = {
   brands: BrandStyle[]
@@ -145,9 +145,6 @@ export default function BrandStudio({
   const [rulesSaving, setRulesSaving] = useState(false)
   const [rulesError, setRulesError] = useState<string | null>(null)
   const [rulesNotice, setRulesNotice] = useState<string | null>(null)
-  const [preview, setPreview] = useState<string | null>(null)
-  const [previewing, setPreviewing] = useState(false)
-  const previewRevision = useRef(0)
   const [detail, setDetail] = useState<BrandDetail | null>(null)
   const [draft, setDraft] = useState<BrandDraft | null>(null)
   const [loading, setLoading] = useState(false)
@@ -183,15 +180,8 @@ export default function BrandStudio({
   const logosFull = (detail?.logo_images.length ?? 0) >= 5
   const referencesFull = (detail?.reference_images.length ?? 0) >= 5
 
-  const invalidatePreview = () => {
-    previewRevision.current += 1
-    setPreview(null)
-    setPreviewing(false)
-  }
-
   const openBrand = async (brandId: string) => {
     setCreating(false)
-    invalidatePreview()
     setBrandDeleteId(null)
     setSelectedId(brandId)
     setLoading(true)
@@ -210,7 +200,6 @@ export default function BrandStudio({
   }
 
   const applyDetail = (data: BrandDetail, resetDraft = true) => {
-    invalidatePreview()
     setDetail(data)
     setDraft((previous) =>
       resetDraft || !previous
@@ -225,7 +214,6 @@ export default function BrandStudio({
   }
 
   const updateDraft = (patch: Partial<BrandDraft>) => {
-    invalidatePreview()
     setDraft((previous) => (previous ? { ...previous, ...patch } : previous))
   }
 
@@ -242,7 +230,6 @@ export default function BrandStudio({
 
   const saveBrand = async () => {
     if (!draft) return
-    invalidatePreview()
     if (!draft.name.trim() || !draft.summary.trim() || !draft.platform_id || !draft.placement_id) {
       setError('请填写风格名称、风格定位、适用平台和发布用途')
       return
@@ -275,7 +262,6 @@ export default function BrandStudio({
     setNotice(null)
     try {
       await deleteBrand(brand.id)
-      invalidatePreview()
       setBrandDeleteId(null)
       setSelectedId(null)
       setDetail(null)
@@ -425,7 +411,6 @@ export default function BrandStudio({
     try {
       setRules(await updateBrandRules(rules))
       setRulesNotice('通用规范已保存，将应用于之后新建的生成任务')
-      invalidatePreview()
     } catch (reason) {
       setRulesError(reason instanceof ApiError && (reason.code === 'http_409' || reason.code === 'version_conflict')
         ? '通用规范已被其他页面更新，本次修改未保存。请返回后重新打开再修改。'
@@ -472,7 +457,6 @@ export default function BrandStudio({
               setDetail(null)
               setError(null)
               setNotice(null)
-              invalidatePreview()
               setEditingColor(null)
               setDraft({ schema_version: 2, style_fields: emptyStyle(), name: '', short_name: '', summary: '', platform_id: '', placement_id: '', colors: [], logo_asset_ids: [], layout_guide: '', background_guide: '', logo_keywords: [], note: '', is_default: false, cover_asset_id: null })
             }}>＋ 新建风格</button>
@@ -551,12 +535,12 @@ export default function BrandStudio({
     <section className="asset-page brand-page brand-detail-page">
       <div className="brand-detail-shell">
         <div className="brand-detail-head">
-          <button type="button" className="brand-back" onClick={() => { invalidatePreview(); setSelectedId(null); setCreating(false); setDetail(null); setDraft(null); setError(null); setNotice(null) }}>
+          <button type="button" className="brand-back" onClick={() => { setSelectedId(null); setCreating(false); setDetail(null); setDraft(null); setError(null); setNotice(null) }}>
             ← 返回品牌列表
           </button>
           <div className="brand-detail-title">
             <div>
-              <h1>{draft?.name || detail?.name || '新建风格'}</h1>
+              <h1>{detail?.merchant_profile?.name || draft?.name || detail?.name || '新建风格'}</h1>
             </div>
 
           </div>
@@ -569,19 +553,23 @@ export default function BrandStudio({
         {loading || !draft ? (
           <div className="asset-empty"><strong>正在读取品牌配置</strong><span>请稍候…</span></div>
         ) : (
-          <div className="brand-detail-body">
+          <div className="brand-detail-body brand-merchant-workspace">
+            <MerchantProfilePanel profile={detail?.merchant_profile ?? null} />
+            <div className="brand-platform-column">
             <section className="brand-form-section brand-basics-section">
               <div className="brand-section-head">
-                <div><span className="eyebrow">BASICS</span><h2>基本信息</h2></div>
+                <div><span className="eyebrow">PLATFORM STYLE</span><h2>平台视觉规范</h2></div>
               </div>
 
-              <div className="brand-form-grid brand-basics-grid">
-                <label className="brand-field brand-field-wide">
+              {creating ? (
+                <label className="brand-field brand-new-style-name">
                   <span>风格名称 <span className="asset-required" aria-hidden="true">*</span></span>
-                  <small>用名称区分商家及其视觉风格。</small>
+                  <small>用于在风格列表中识别这套配置。</small>
                   <input placeholder="例如：喜聚 · 暖调复古" required maxLength={80} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} />
                 </label>
+              ) : null}
 
+              <div className="brand-form-grid brand-basics-grid">
                 <label className="brand-field">
                   <span>适用平台 <span className="asset-required" aria-hidden="true">*</span></span>
                   <select required value={draft.platform_id} onChange={(event) => {
@@ -673,37 +661,12 @@ export default function BrandStudio({
                 </div>
               ) : (
                 <>
-                  <p className="brand-template-hint">这套风格尚未转换为填写模板，原规范仍有效。转换后请整理并填齐必填项；原文将保留供查阅。</p>
+                  <p className="brand-template-hint">这套风格尚未转换为填写模板，原规范仍有效。转换后请整理并填齐必填项。</p>
                   <button type="button" className="mp-btn-ghost" onClick={() => updateDraft({ schema_version: 2, style_fields: emptyStyle() })}>转换为填写模板</button>
                   <label className="brand-field"><span>原布局规范</span><textarea rows={7} value={draft.layout_guide} onChange={(event) => updateDraft({ layout_guide: event.target.value })} /></label>
                   <label className="brand-field"><span>原背景规范</span><textarea rows={5} value={draft.background_guide} onChange={(event) => updateDraft({ background_guide: event.target.value })} /></label>
                 </>
               )}
-              {detail && (detail.legacy_guides || (!detail.style_fields && draft.style_fields)) ? (
-                <details className="brand-guides-fold">
-                  <summary>原始规范 · 只读留存</summary>
-                  <pre>{(detail.legacy_guides ?? detail).layout_guide}</pre>
-                  <pre>{(detail.legacy_guides ?? detail).background_guide}</pre>
-                </details>
-              ) : null}
-              <details className="brand-guides-fold">
-                <summary>规范预览 · 通用规范、当前风格与平台规则</summary>
-                <p className="brand-template-hint">按当前未保存的表单生成预览。修改表单后请重新预览。</p>
-                <button type="button" className="mp-btn-ghost" disabled={previewing} onClick={async () => {
-                  const revision = ++previewRevision.current
-                  setPreviewing(true)
-                  setError(null)
-                  try {
-                    const result = await previewBrand(payloadFromDraft(draft))
-                    if (revision === previewRevision.current) setPreview(result.prompt)
-                  } catch (reason) {
-                    if (revision === previewRevision.current) setError(errorText(reason))
-                  } finally {
-                    if (revision === previewRevision.current) setPreviewing(false)
-                  }
-                }}>{previewing ? '读取中…' : '生成规范预览'}</button>
-                {preview ? <pre>{preview}</pre> : null}
-              </details>
             </section>
 
             <section className="brand-form-section">
@@ -773,6 +736,7 @@ export default function BrandStudio({
                 </button>
                 <button type="button" className="mp-btn-primary" onClick={() => void saveBrand()} disabled={saving}>{saving ? '保存中…' : creating ? '创建风格' : '保存品牌配置'}</button>
               </div>
+            </div>
             </div>
           </div>
         )}

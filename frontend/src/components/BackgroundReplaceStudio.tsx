@@ -137,12 +137,12 @@ export default function BackgroundReplaceStudio({ assets, assetsLoading, onLoadA
           <div className="replacement-section"><h2>1. 选择原图</h2>{imageControls('source', source)}</div>
           <div className="replacement-section">
             <div className="poster-edit-section-head"><h2>2. 填写替换项</h2><span>{rows.length}/5 项</span></div>
-            <p className="replacement-help">每项指定一个元素及对应图片。相似元素请说明位置，例如「右下角的牛肉」。</p>
+            <p className="replacement-help">替换整张摄影背景时填写「背景」；替换局部元素时写明位置，例如「右下角的牛肉」。</p>
             <div className="replacement-rows">{rows.map((row, index) => (
               <div className="replacement-row" key={row.id}>
                 <div className="poster-edit-section-head"><label htmlFor={`target-${row.id}`}>替换项 {index + 1}</label>
                   <button type="button" className="mp-btn-ghost mp-btn-small" disabled={busy || rows.length === 1} onClick={() => setRows((previous) => previous.filter((item) => item.id !== row.id))}>删除</button></div>
-                <input id={`target-${row.id}`} className="replacement-target" value={row.target} disabled={busy} maxLength={1000} placeholder={['右下角的牛肉', '左侧菜品', '左上角的人物'][index % 3]}
+                <input id={`target-${row.id}`} className="replacement-target" value={row.target} disabled={busy} maxLength={1000} placeholder={['背景', '左侧菜品', '左上角的人物'][index % 3]}
                   onChange={(event) => setRows((previous) => previous.map((item) => item.id === row.id ? { ...item, target: event.target.value } : item))} />
                 {imageControls(row.id, row.asset)}
               </div>

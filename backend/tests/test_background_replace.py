@@ -12,7 +12,7 @@ from app.main import app
 from app.routes import task_center
 from app.routes.assets import delete_asset
 from app.services import storage
-from app.services.core_ai import AgentRunResult, CoreAIError
+from app.services.core_ai import AgentArtifact, AgentRunResult, CoreAIError
 from tests.conftest import png_bytes
 
 
@@ -33,10 +33,11 @@ class FakeAgent:
         self.download_error = False
         self.on_trigger = None
         self.uploads = []
+        self.artifacts = []
 
     def upload_image_blob(self, data, *, content_type):
         self.uploads.append(data)
-        return f"https://example.com/input-{len(data)}.png"
+        return f"https://example.com/input-{len(self.uploads)}.png"
 
     def trigger_agent(self, agent_id, input_text, *, timeout_seconds):
         self.triggers.append((agent_id, input_text, timeout_seconds))
@@ -48,7 +49,7 @@ class FakeAgent:
         self.polls.append(run_id)
         if self.pending:
             return None
-        return AgentRunResult(run_id=run_id, status="COMPLETED", output=self.output)
+        return AgentRunResult(run_id=run_id, status="COMPLETED", output=self.output, artifacts=self.artifacts)
 
     def download_image(self, url):
         self.downloads.append(url)
@@ -86,7 +87,10 @@ def test_ordered_mapping_and_reused_material_are_preserved(env):
     agent, text, timeout = env.client.triggers[0]
     assert agent == "d1692e66-c34b-4e70-9437-7462258dd84e"
     assert timeout == 2700
-    assert text.index("原图：") < text.index("替换项1：牛肉") < text.index("替换项2：左上人物")
+    assert text == (
+        "帮我把图1的牛肉替换成图2，并且把图1的左上人物替换成图2\n\n"
+        "https://example.com/input-1.png\nhttps://example.com/input-2.png"
+    )
     assert len(result["input"]["replacements"]) == 2
     assert result["status"] == "succeeded"
     assert result["deadline_at"] - result["started_at"] == timedelta(seconds=2700)
@@ -123,6 +127,46 @@ def test_missing_or_ambiguous_final_image_is_not_success(env, output, code):
     assert result["status"] == "partial"
     assert result["error"]["code"] == code
     assert result["agent_output"] == output
+    assert not env.client.downloads
+
+
+def test_background_request_is_only_natural_instruction_and_ordered_urls(env):
+    run(env, create(env, [{"target": "背景", "asset_id": "beef"}]))
+    assert env.client.triggers[0][1] == (
+        "帮我把图1的背景替换成图2\n\n"
+        "https://example.com/input-1.png\nhttps://example.com/input-2.png"
+    )
+
+
+@pytest.mark.parametrize("reply", [
+    "已完成。![最终成图](https://example.com/final.png)",
+    "已完成。[下载最终 PNG](https://example.com/final.png)",
+    "![成图](https://example.com/final.png)\n![对比预览](https://example.com/comparison.png)",
+    "![图片](https://example.com/final.png)\n[蒙版](https://example.com/mask.png)",
+])
+def test_natural_agent_replies_do_not_require_fixed_image_caption(env, reply):
+    env.client.output = reply
+    result = run(env, create(env))
+    assert result["status"] == "succeeded"
+    assert env.client.downloads == ["https://example.com/final.png"]
+
+
+def test_final_artifact_is_used_when_reply_has_no_image_link(env):
+    env.client.output = "已完成替换，最终 PNG 见附件。"
+    env.client.artifacts = [
+        AgentArtifact("mask.png", "image/png", "https://example.com/mask.png"),
+        AgentArtifact("poster-final.png", "image/png", "https://example.com/final.png"),
+        AgentArtifact("before-after.png", "image/png", "https://example.com/comparison.png"),
+    ]
+    result = run(env, create(env))
+    assert result["status"] == "succeeded"
+    assert env.client.downloads == ["https://example.com/final.png"]
+
+
+def test_only_auxiliary_artifacts_do_not_count_as_final_image(env):
+    env.client.output = "暂未完成，只提供蒙版。"
+    env.client.artifacts = [AgentArtifact("mask-final.png", "image/png", "https://example.com/mask.png")]
+    assert run(env, create(env))["status"] == "partial"
     assert not env.client.downloads
 
 
@@ -170,6 +214,61 @@ def test_saving_failure_can_be_recovered_without_triggering_again(env):
     env.service.queue_refresh(env.db, task["_id"])
     assert run(env, task, refresh=True)["status"] == "succeeded"
     assert len(env.client.triggers) == 1
+
+
+def test_refresh_pending_run_continues_until_result_without_resetting_deadline(env, monkeypatch):
+    now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    monkeypatch.setattr(env.service, "utcnow", lambda: now)
+    monkeypatch.setattr(env.service.time, "sleep", lambda _: None)
+    task = create(env)
+    deadline = now + timedelta(minutes=25)
+    env.db.background_replace_tasks.update_one({"_id": task["_id"]}, {"$set": {
+        "status": "failed", "run_id": "run-existing", "deadline_at": deadline,
+        "error": {"code": "agent_timeout", "message": "old error"}}})
+    env.service.queue_refresh(env.db, task["_id"])
+    original_poll = env.client.poll_agent_detail
+
+    def poll(run_id):
+        saved = env.db.background_replace_tasks.find_one({"_id": task["_id"]})
+        assert saved["status"] == "running"
+        assert saved["stage"] == "agent_running"
+        assert saved["error"] is None
+        if not env.client.polls:
+            env.client.polls.append(run_id)
+            return None
+        return original_poll(run_id)
+
+    env.client.poll_agent_detail = poll
+    result = run(env, task, refresh=True)
+    assert result["status"] == "succeeded"
+    assert result["error"] is None
+    assert result["deadline_at"] == deadline.replace(tzinfo=None)
+    assert env.client.polls == ["run-existing", "run-existing"]
+    assert not env.client.triggers
+
+
+def test_refresh_pending_run_stops_at_original_deadline(env, monkeypatch):
+    now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+    monkeypatch.setattr(env.service, "utcnow", lambda: now)
+
+    def sleep(seconds):
+        nonlocal now
+        now += timedelta(seconds=seconds)
+
+    monkeypatch.setattr(env.service.time, "sleep", sleep)
+    task = create(env)
+    deadline = now + timedelta(seconds=5)
+    env.db.background_replace_tasks.update_one({"_id": task["_id"]}, {"$set": {
+        "status": "failed", "run_id": "run-existing", "deadline_at": deadline}})
+    env.client.pending = True
+    env.service.queue_refresh(env.db, task["_id"])
+    result = run(env, task, refresh=True)
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "agent_timeout"
+    assert now == deadline
+    assert result["deadline_at"] == deadline.replace(tzinfo=None)
+    assert env.client.polls == ["run-existing", "run-existing"]
+    assert not env.client.triggers
 
 
 def test_timeout_uses_persisted_deadline_then_manual_query_recovers(env, monkeypatch):

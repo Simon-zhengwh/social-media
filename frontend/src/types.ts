@@ -82,6 +82,7 @@ export type BrandRules = {
 }
 
 export type BrandDetail = BrandStyle & {
+  merchant_profile: MerchantProfile | null
   schema_version: number
   style_fields: BrandStyleFields | null
   legacy_guides: { layout_guide: string; background_guide: string } | null
@@ -89,6 +90,14 @@ export type BrandDetail = BrandStyle & {
   layout_guide: string
   background_guide: string
   reference_images: BrandReferenceImage[]
+}
+
+export type MerchantProfile = {
+  id: string
+  name: string
+  source_label: string
+  source_record_id: string
+  sections: { title: string; text: string; source_path: string; original: unknown }[]
 }
 
 export type Asset = {
