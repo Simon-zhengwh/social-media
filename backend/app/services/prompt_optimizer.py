@@ -76,6 +76,16 @@ def _reference_url(
     if asset is None:
         raise PromptOptimizerError("reference_unavailable", f"参考图不存在：{asset_id}", 422)
 
+    stable_url = str(asset.get("prepared_url") or asset.get("url") or "").strip()
+    if stable_url.startswith("https://"):
+        return stable_url
+    public_url = getattr(store, "public_url", None)
+    if callable(public_url):
+        key = asset.get("prepared_path") or asset.get("path")
+        resolved = public_url(key) if key else None
+        if isinstance(resolved, str) and resolved.startswith("https://"):
+            return resolved
+
     if settings.image_host_base_url.strip() and settings.image_host_upload_token.strip():
         try:
             return image_host.upload_asset(db, store, settings, asset_id)

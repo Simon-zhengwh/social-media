@@ -62,6 +62,8 @@ class PreparedUpload:
     height: int
     bytes: int
     sha256: str
+    url: str | None = None
+    prepared_url: str | None = None
 
 
 def ensure_storage_dirs(settings: Settings) -> None:
@@ -159,8 +161,22 @@ def prepare_upload(
     extension, mime_type = _upload_descriptor(image_format, original_name)
     original_key = object_key(settings, "originals", f"{asset_id}{extension}")
     prepared_key = object_key(settings, "prepared", f"{asset_id}.png")
-    store.put_bytes(original_key, data, mime_type)
-    store.put_bytes(prepared_key, encode_png(prepared), "image/png")
+    written: list[str] = []
+    try:
+        store.put_bytes(original_key, data, mime_type)
+        written.append(original_key)
+        store.put_bytes(prepared_key, encode_png(prepared), "image/png")
+        written.append(prepared_key)
+    except Exception:
+        for key in reversed(written):
+            try:
+                store.delete(key)
+            except Exception:  # noqa: BLE001 - preserve the original storage failure
+                pass
+        raise
+    public_url = getattr(store, "public_url", lambda _: None)
+    original_url = public_url(original_key)
+    prepared_url = public_url(prepared_key)
 
     return PreparedUpload(
         id=asset_id,
@@ -172,6 +188,8 @@ def prepare_upload(
         height=prepared.height,
         bytes=len(data),
         sha256=hashlib.sha256(data).hexdigest(),
+        url=original_url,
+        prepared_url=prepared_url,
     )
 
 

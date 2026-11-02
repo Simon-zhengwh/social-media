@@ -6,6 +6,7 @@ import {
   getBrandRules,
   updateBrandRules,
   deleteBrand,
+  duplicateBrand,
   deleteBrandLogo,
   deleteBrandReference,
   getBrand,
@@ -159,6 +160,12 @@ export default function BrandStudio({
   const [colorInput, setColorInput] = useState('')
   const [brandDeleteId, setBrandDeleteId] = useState<string | null>(null)
   const [deletingBrand, setDeletingBrand] = useState(false)
+  const [duplicateOpen, setDuplicateOpen] = useState(false)
+  const [duplicateName, setDuplicateName] = useState('')
+  const [duplicatePlatformId, setDuplicatePlatformId] = useState('')
+  const [duplicatePlacementId, setDuplicatePlacementId] = useState('')
+  const [duplicateError, setDuplicateError] = useState<string | null>(null)
+  const [duplicating, setDuplicating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -177,6 +184,7 @@ export default function BrandStudio({
   }, [confirmDelete])
 
   const selectedPlatform = platforms.find((item) => item.id === draft?.platform_id)
+  const duplicatePlatform = platforms.find((item) => item.id === duplicatePlatformId)
   const logosFull = (detail?.logo_images.length ?? 0) >= 5
   const referencesFull = (detail?.reference_images.length ?? 0) >= 5
 
@@ -272,6 +280,41 @@ export default function BrandStudio({
       setError(errorText(reason))
     } finally {
       setDeletingBrand(false)
+    }
+  }
+  const openDuplicate = () => {
+    if (!draft) return
+    setDuplicateName(`${draft.name} 副本`)
+    setDuplicatePlatformId(draft.platform_id)
+    setDuplicatePlacementId(draft.placement_id)
+    setDuplicateError(null)
+    setDuplicateOpen(true)
+  }
+
+  const submitDuplicate = async () => {
+    if (!selectedId) return
+    if (!duplicateName.trim() || !duplicatePlatformId || !duplicatePlacementId) {
+      setDuplicateError('请填写副本名称、适用平台和发布用途')
+      return
+    }
+    setDuplicating(true)
+    setDuplicateError(null)
+    try {
+      const data = await duplicateBrand(selectedId, {
+        name: duplicateName.trim(),
+        platform_id: duplicatePlatformId,
+        placement_id: duplicatePlacementId,
+      })
+      await onRefreshBrands()
+      setSelectedId(data.id)
+      setCreating(false)
+      applyDetail(data)
+      setDuplicateOpen(false)
+      setNotice(`已复制为“${data.name}”，可继续独立编辑`)
+    } catch (reason: unknown) {
+      setDuplicateError(errorText(reason))
+    } finally {
+      setDuplicating(false)
     }
   }
   const uploadLogos = async (files: File[]) => {
@@ -734,6 +777,11 @@ export default function BrandStudio({
                 >
                   删除品牌
                 </button>
+                {!creating ? (
+                  <button type="button" className="brand-duplicate-button" onClick={openDuplicate} disabled={!detail || saving || duplicating}>
+                    复制为独立风格
+                  </button>
+                ) : null}
                 <button type="button" className="mp-btn-primary" onClick={() => void saveBrand()} disabled={saving}>{saving ? '保存中…' : creating ? '创建风格' : '保存品牌配置'}</button>
               </div>
             </div>
@@ -741,6 +789,58 @@ export default function BrandStudio({
           </div>
         )}
 
+        {duplicateOpen ? (
+          <div
+            className="brand-delete-modal-backdrop"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !duplicating) setDuplicateOpen(false)
+            }}
+          >
+            <div
+              className="brand-delete-modal brand-duplicate-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="brand-duplicate-title"
+              onMouseDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && !duplicating) setDuplicateOpen(false)
+              }}
+            >
+              <strong id="brand-duplicate-title">复制为独立风格</strong>
+              <p>复制视觉规范和素材引用，再为副本选择独立平台与发布用途。商户资料仍仅从当前 AM 商家实时读取。</p>
+              <div className="brand-form-grid brand-duplicate-fields">
+                <label className="brand-field brand-field-wide">
+                  <span>副本名称 <span className="asset-required" aria-hidden="true">*</span></span>
+                  <input autoFocus required maxLength={80} value={duplicateName} onChange={(event) => setDuplicateName(event.target.value)} />
+                </label>
+                <label className="brand-field">
+                  <span>适用平台 <span className="asset-required" aria-hidden="true">*</span></span>
+                  <select required value={duplicatePlatformId} onChange={(event) => {
+                    const next = platforms.find((item) => item.id === event.target.value)
+                    setDuplicatePlatformId(event.target.value)
+                    setDuplicatePlacementId(next?.default_placement_id ?? '')
+                  }}>
+                    <option value="" disabled>请选择平台</option>
+                    {platforms.map((platform) => <option key={platform.id} value={platform.id}>{platform.name}</option>)}
+                  </select>
+                </label>
+                <label className="brand-field">
+                  <span>发布用途 <span className="asset-required" aria-hidden="true">*</span></span>
+                  <select required value={duplicatePlacementId} disabled={!duplicatePlatform} onChange={(event) => setDuplicatePlacementId(event.target.value)}>
+                    {duplicatePlatform ? duplicatePlatform.placements.map((placement) => <option key={placement.id} value={placement.id}>{placement.name}</option>) : <option value="">请选择用途</option>}
+                  </select>
+                </label>
+              </div>
+              {duplicateError ? <div className="brand-duplicate-error">{duplicateError}</div> : null}
+              <div className="brand-delete-modal-actions">
+                <button type="button" onClick={() => setDuplicateOpen(false)} disabled={duplicating}>取消</button>
+                <button type="button" className="is-primary" onClick={() => void submitDuplicate()} disabled={duplicating}>
+                  {duplicating ? '复制中…' : '创建副本'}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         {brandDeleteId && brandDeleteId === selectedId ? (
           <div
             className="brand-delete-modal-backdrop"

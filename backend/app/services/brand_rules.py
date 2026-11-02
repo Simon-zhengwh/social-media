@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services import platform_presets
+from app.services.scoped_db import ScopedCollection
 
 DEFAULT_RULES = {
     "version": 1,
@@ -20,7 +21,9 @@ STYLE_LABELS = {
 
 
 def get_rules(db: Any) -> dict[str, Any]:
-    document = db.brand_rules.find_one({"_id": "default"}) if db is not None else None
+    collection = db.brand_rules if db is not None else None
+    merchant_id = collection.merchant_id if isinstance(collection, ScopedCollection) else None
+    document = collection.find_one({"_id": merchant_id or "default"}) if collection is not None else None
     source = document or DEFAULT_RULES
     return {key: source.get(key, value) for key, value in DEFAULT_RULES.items()}
 

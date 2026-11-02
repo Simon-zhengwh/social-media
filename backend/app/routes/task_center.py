@@ -8,10 +8,12 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.api_paths import asset_url, poster_download_url
+from app.request_context import request_db
 from app.routes import whole_image as whole_routes
 from app.time_utils import utc_iso
 
-router = APIRouter(prefix="/api/task-center", tags=["task-center"])
+router = APIRouter(prefix="/task-center", tags=["task-center"])
 
 STATUSES = {"all", "active", "ready", "failed"}
 KINDS = {"all", "generate", "edit", "background_replace"}
@@ -35,6 +37,7 @@ def _poster_candidate(db: Any, task: dict[str, Any]) -> dict[str, Any]:
     task_id = str(task["_id"])
     output_id = str((preview_output or {}).get("id") or "")
     asset_id = str((preview_output or {}).get("asset_id") or "")
+    merchant_id = str(task.get("merchant_id") or "")
     status = str(task.get("status") or "failed")
     error = task.get("error") if isinstance(task.get("error"), dict) else None
     return {
@@ -44,9 +47,9 @@ def _poster_candidate(db: Any, task: dict[str, Any]) -> dict[str, Any]:
         "stage": str(task.get("stage") or "failed"),
         "progress": int(task.get("progress") or 0),
         "current_version": 0,
-        "preview_url": f"/api/assets/{asset_id}/file" if asset_id else None,
+        "preview_url": asset_url(merchant_id, asset_id) if asset_id else None,
         "download_url": (
-            f"/api/poster-edits/{task_id}/download?output_id={output_id}"
+            poster_download_url(merchant_id, task_id, output_id)
             if asset_id and output_id
             else None
         ),
@@ -185,7 +188,7 @@ def list_task_center(
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
-    db = request.app.state.db
+    db = request_db(request)
     items: list[dict[str, Any]] = []
     if kind in {"all", "generate"}:
         whole_docs = list(db.whole_tasks.find({}).sort("created_at", -1))

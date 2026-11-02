@@ -5,24 +5,102 @@ import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db import create_client, get_database
-from app.routes import assets, brands, brand_rules, platforms, poster_edit, prompts, task_center, whole_image
-from app.services.core_ai import CoreAIClient
-from app.services import storage
-from app.services.object_store import create_object_store
-from app.services import poster_edit as poster_edit_service
-from app.routes import background_replace
+from app.middleware import merchant_context_middleware
+from app.routes import (
+    assets,
+    background_replace,
+    brand_rules,
+    brands,
+    merchant_context,
+    platforms,
+    poster_edit,
+    prompts,
+    task_center,
+    whole_image,
+)
 from app.services import background_replace as background_replace_service
-from app.services import whole_image as whole_image_service
+from app.services import maintenance, poster_edit as poster_edit_service, storage, whole_image as whole_image_service
+from app.services.am_client import AMClient
+from app.services.core_ai import CoreAIClient
+from app.services.media_object_store import create_merchant_store
+from app.services.object_store import create_object_store
+from app.services.scoped_db import ScopedDatabase
 from app.services.storage import StorageError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
+
+
+def _initialize_indexes(db) -> None:
+    db.assets.create_index([("merchant_id", 1), ("sha256", 1)])
+    db.assets.create_index([("merchant_id", 1), ("created_at", -1)])
+    db.brands.create_index([("merchant_id", 1), ("created_at", 1)])
+    db.brands.create_index([("merchant_id", 1), ("reference_asset_ids", 1)])
+    db.brands.create_index([("merchant_id", 1), ("logo_asset_ids", 1)])
+    db.brands.create_index([("merchant_id", 1), ("cover_asset_id", 1)])
+    db.brand_rules.create_index([("merchant_id", 1)])
+    db.whole_tasks.create_index([("merchant_id", 1), ("created_at", -1)])
+    db.whole_tasks.create_index([("merchant_id", 1), ("input.candidate_batch_id", 1), ("input.candidate_index", 1)])
+    db.whole_tasks.create_index([("merchant_id", 1), ("input.product_asset_ids", 1)])
+    db.whole_tasks.create_index([("merchant_id", 1), ("input.style_reference_asset_ids", 1)])
+    db.whole_tasks.create_index([("merchant_id", 1), ("input.logo_asset_id", 1)])
+    db.whole_tasks.create_index([("status", 1), ("created_at", -1)])
+    db.whole_tasks.create_index([("edit.status", 1)])
+    db.whole_versions.create_index([("merchant_id", 1), ("task_id", 1), ("version", 1)])
+    db.poster_edit_tasks.create_index([("merchant_id", 1), ("created_at", -1)])
+    db.poster_edit_tasks.create_index([("merchant_id", 1), ("batch_id", 1), ("candidate_index", 1)])
+    db.poster_edit_tasks.create_index([("status", 1), ("run_id", 1)])
+    db.background_replace_tasks.create_index([("merchant_id", 1), ("created_at", -1)])
+    db.background_replace_tasks.create_index([("status", 1), ("run_id", 1)])
+    db.background_replace_tasks.create_index([("merchant_id", 1), ("input.source_asset_id", 1)])
+    db.background_replace_tasks.create_index([("merchant_id", 1), ("input.replacements.asset_id", 1)])
+    db.media_objects.create_index([("merchant_id", 1), ("status", 1)])
+    db.app_control.create_index([("enabled", 1)])
+
+
+def _scoped_store(app: FastAPI, merchant_id: str, db):
+    if app.state.settings.am_media_storage_service_key.strip():
+        return create_merchant_store(app.state.settings, db, app.state.am, merchant_id)
+    return app.state.local_store
+
+
+def _resume_poster_edits(app: FastAPI) -> None:
+    raw = app.state.raw_db
+    merchant_ids = raw.poster_edit_tasks.distinct(
+        "merchant_id",
+        {"status": {"$in": ["queued", "running"]}, "run_id": {"$nin": [None, ""]}},
+    )
+    for merchant_id in sorted(str(value) for value in merchant_ids if value):
+        db = ScopedDatabase(raw, merchant_id)
+        store = _scoped_store(app, merchant_id, db)
+        threading.Thread(
+            target=poster_edit_service.resume_tasks,
+            args=(db, app.state.settings, store, app.state.core_ai),
+            name=f"resume-poster-edits-{merchant_id}",
+            daemon=True,
+        ).start()
+
+
+def _resume_background_replacements(app: FastAPI) -> None:
+    raw = app.state.raw_db
+    merchant_ids = raw.background_replace_tasks.distinct(
+        "merchant_id",
+        {"status": {"$in": ["queued", "running"]}, "run_id": {"$nin": [None, ""]}},
+    )
+    for merchant_id in sorted(str(value) for value in merchant_ids if value):
+        db = ScopedDatabase(raw, merchant_id)
+        store = _scoped_store(app, merchant_id, db)
+        threading.Thread(
+            target=background_replace_service.resume_tasks,
+            args=(db, app.state.settings, store, app.state.core_ai),
+            name=f"resume-background-{merchant_id}",
+            daemon=True,
+        ).start()
 
 
 @asynccontextmanager
@@ -32,55 +110,51 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     mongo_client = create_client(settings.mongodb_uri)
     db = get_database(mongo_client, settings.mongodb_database)
     app.state.settings = settings
+    app.state.raw_db = db
     app.state.db = db
-    app.state.store = create_object_store(settings)
+    app.state.local_store = create_object_store(settings)
+    app.state.store = app.state.local_store
     app.state.core_ai = CoreAIClient(settings)
+    app.state.am = AMClient(settings)
+    app.state.ready = False
+    app.state.startup_error = None
     try:
         db.command("ping")
+        _initialize_indexes(db)
+        maintenance.initialize(db)
         whole_image_service.mark_interrupted(db)
-        resumable_poster_tasks = poster_edit_service.mark_interrupted(db)
-        resumable_replacements = background_replace_service.mark_interrupted(db)
-        db.background_replace_tasks.create_index([("created_at", -1)])
-        if resumable_replacements:
-            threading.Thread(
-                target=background_replace_service.resume_tasks,
-                args=(db, settings, app.state.store, app.state.core_ai),
-                name="resume-background-replacements", daemon=True,
-            ).start()
-        db.whole_tasks.create_index([("created_at", -1)])
-        db.whole_tasks.create_index(
-            [("input.candidate_batch_id", 1), ("input.candidate_index", 1)]
-        )
-        if resumable_poster_tasks:
-            threading.Thread(
-                target=poster_edit_service.resume_tasks,
-                args=(db, settings, app.state.store, app.state.core_ai),
-                name="resume-poster-edits",
-                daemon=True,
-            ).start()
-    except Exception:  # noqa: BLE001 - health endpoint reports the failure
-        logger.warning("MongoDB is not available at startup")
+        poster_resumable = poster_edit_service.mark_interrupted(db)
+        background_resumable = background_replace_service.mark_interrupted(db)
+        if poster_resumable:
+            _resume_poster_edits(app)
+        if background_resumable:
+            _resume_background_replacements(app)
+        app.state.ready = True
+        logger.info("social media initialization complete; database=%s", settings.mongodb_database)
+    except Exception as exc:  # noqa: BLE001 - readiness reports initialization failure
+        app.state.startup_error = str(exc)
+        logger.exception("social media initialization failed")
     yield
+    app.state.am.close()
     app.state.core_ai.close()
     mongo_client.close()
 
 
-app = FastAPI(title="Social Media Design Agent", version="0.3.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.include_router(assets.router)
-app.include_router(brands.router)
-app.include_router(brand_rules.router)
+app = FastAPI(title="Social Media Design Agent", version="0.4.0", lifespan=lifespan)
+app.middleware("http")(merchant_context_middleware)
+
+merchant_router = APIRouter(prefix="/api/merchants/{merchant_id}")
+merchant_router.include_router(merchant_context.router)
+merchant_router.include_router(assets.router)
+merchant_router.include_router(brands.router)
+merchant_router.include_router(brand_rules.router)
+merchant_router.include_router(prompts.router)
+merchant_router.include_router(poster_edit.router)
+merchant_router.include_router(background_replace.router)
+merchant_router.include_router(task_center.router)
+merchant_router.include_router(whole_image.router)
+app.include_router(merchant_router)
 app.include_router(platforms.router)
-app.include_router(prompts.router)
-app.include_router(poster_edit.router)
-app.include_router(background_replace.router)
-app.include_router(task_center.router)
-app.include_router(whole_image.router)
 
 
 @app.exception_handler(StorageError)
@@ -91,45 +165,50 @@ async def storage_error_handler(_: Request, exc: StorageError) -> JSONResponse:
     )
 
 
+@app.get("/api/health/live")
+def liveness() -> JSONResponse:
+    return JSONResponse(content={"status": "ok"})
+
+
 @app.get("/api/health")
 def health(request: Request) -> JSONResponse:
     settings = request.app.state.settings
-    try:
-        request.app.state.db.command("ping")
-    except Exception as exc:  # noqa: BLE001
+    if not getattr(request.app.state, "ready", False):
         return JSONResponse(
             status_code=503,
             content={
                 "status": "error",
-                "mongo": "unavailable",
-                "message": f"MongoDB 不可用：{exc}",
+                "initialized": False,
+                "message": getattr(request.app.state, "startup_error", None) or "服务尚未完成初始化",
             },
         )
     try:
-        storage.ensure_storage_dirs(settings)
-        request.app.state.store.check()
+        request.app.state.raw_db.command("ping")
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=503,
-            content={
-                "status": "error",
-                "mongo": "ok",
-                "storage": "unavailable",
-                "message": f"storage 不可写：{exc}",
-            },
+            content={"status": "error", "initialized": True, "mongo": "unavailable", "message": f"MongoDB 不可用：{exc}"},
+        )
+    try:
+        storage.ensure_storage_dirs(settings)
+        request.app.state.local_store.check()
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "initialized": True, "mongo": "ok", "storage": "unavailable", "message": f"临时存储不可写：{exc}"},
+        )
+    if not settings.am_media_storage_service_key.strip():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "initialized": True, "media_storage": "unconfigured", "message": "未配置媒体存储服务身份"},
         )
     return JSONResponse(
         content={
             "status": "ok",
+            "initialized": True,
             "mongo": "ok",
             "storage": "ok",
-            "storage_backend": request.app.state.store.describe(),
-            "image_host": (
-                "configured"
-                if settings.image_host_base_url.strip()
-                and settings.image_host_upload_token.strip()
-                else "disabled"
-            ),
-            "model": settings.core_ai_image_model,
-        }
+            "media_storage": "configured",
+            "storage_backend": "am-media",
+        },
     )

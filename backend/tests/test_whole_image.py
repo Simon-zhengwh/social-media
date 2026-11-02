@@ -288,6 +288,35 @@ def test_create_without_platform_uses_selected_ratio(settings, store):
     assert created["canvas"] == {"width": 1080, "height": 1350}
 
 
+def test_generation_normalizes_provider_output_to_requested_canvas(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+
+    def generate_1072x1440(prompt: str, *, size: str, model: str | None = None) -> bytes:
+        fake.generation_calls.append({"prompt": prompt, "size": size, "model": model})
+        buffer = io.BytesIO()
+        Image.new("RGB", (1072, 1440), (40, 90, 130)).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    fake.generate_image = generate_1072x1440
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="精确保留画布",
+            ratio="3:4",
+            brand_mode="none",
+        ),
+        _request(db, settings, store, fake),
+        BackgroundTasks(),
+    )
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    output = db.assets.find_one({"_id": version["output_asset_id"]})
+    assert created["canvas"] == {"width": 1080, "height": 1440}
+    assert (output["width"], output["height"]) == (1080, 1440)
+    assert (version["width"], version["height"]) == (1080, 1440)
+
 def test_generation_exposes_model_input_snapshot_with_reference_preview(
     settings, store, product_png
 ):
@@ -1347,7 +1376,8 @@ def test_versions_and_download_are_version_aware(settings, store):
     versions = whole_routes.list_versions(task_id, request)
     assert versions[0]["id"] == v1["_id"]
     assert versions[0]["parent_version_id"] is None
-    assert versions[0]["width"] == 640
+    assert versions[0]["width"] == 1024
+    assert versions[0]["height"] == 1024
 
     response = whole_routes.download_task(
         task_id,

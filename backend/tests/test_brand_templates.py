@@ -82,22 +82,23 @@ def test_force_import_cannot_overwrite_structured_brand():
 def test_http_routes_validation_preview_and_common_rules():
     app = FastAPI()
     app.state.db = mongomock.MongoClient().db
-    app.include_router(brands.router)
-    app.include_router(rules_routes.router)
+    prefix = "/api/merchants/merchant"
+    app.include_router(brands.router, prefix=prefix)
+    app.include_router(rules_routes.router, prefix=prefix)
     client = TestClient(app)
     data = payload().model_dump()
-    response = client.post("/api/brands", json=data)
+    response = client.post("/api/merchants/merchant/brands", json=data)
     assert response.status_code == 201
     brand_id = response.json()["id"]
-    assert client.get(f"/api/brands/{brand_id}").json()["style_fields"] == data["style_fields"]
-    preview = client.post("/api/brands/preview", json=data)
+    assert client.get(f"/api/merchants/merchant/brands/{brand_id}").json()["style_fields"] == data["style_fields"]
+    preview = client.post("/api/merchants/merchant/brands/preview", json=data)
     assert preview.status_code == 200
     assert "毛笔" in preview.json()["prompt"]
-    assert client.post("/api/brands", json={**data, "summary": " "}).status_code == 422
-    invalid = client.post("/api/brands", json={**data, "platform_id": "missing"})
+    assert client.post("/api/merchants/merchant/brands", json={**data, "summary": " "}).status_code == 422
+    invalid = client.post("/api/merchants/merchant/brands", json={**data, "platform_id": "missing"})
     assert invalid.status_code == 422
     assert app.state.db.brands.count_documents({}) == 1
-    rules = client.get("/api/brand-rules").json()
-    assert client.put("/api/brand-rules", json=rules).status_code == 200
-    assert client.put("/api/brand-rules", json=rules).status_code == 409
-    assert client.put("/api/brand-rules", json={**rules, "copy_accuracy": " "}).status_code == 422
+    rules = client.get("/api/merchants/merchant/brand-rules").json()
+    assert client.put("/api/merchants/merchant/brand-rules", json=rules).status_code == 200
+    assert client.put("/api/merchants/merchant/brand-rules", json=rules).status_code == 409
+    assert client.put("/api/merchants/merchant/brand-rules", json={**rules, "copy_accuracy": " "}).status_code == 422

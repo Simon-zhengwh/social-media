@@ -8,10 +8,11 @@ import TaskCenter from './components/TaskCenter'
 import WholeImageStudio from './components/WholeImageStudio'
 import {
   ApiError,
-  deleteAsset,
-  listAssets,
+  getMerchantContext,
+  listAssetPage,
   listBrands,
   listPlatforms,
+  merchantIdFromLocation,
   uploadAsset,
 } from './api'
 import type { Asset, BrandStyle, PlatformPreset } from './types'
@@ -97,6 +98,7 @@ const VIEW_META: Record<
 }
 
 export default function App() {
+  const [initialMerchantId] = useState(() => merchantIdFromLocation())
   const [view, setView] = useState<AppView>(() => readView())
   const [brands, setBrands] = useState<BrandStyle[]>([])
   const [brandsLoading, setBrandsLoading] = useState(true)
@@ -107,7 +109,15 @@ export default function App() {
   const [assets, setAssets] = useState<Asset[]>([])
   const [assetsLoading, setAssetsLoading] = useState(true)
   const [assetsError, setAssetsError] = useState<string | null>(null)
-  const [uploading, setUploading] = useState(false)
+  const [assetTotal, setAssetTotal] = useState(0)
+  const [assetQuery, setAssetQuery] = useState('')
+  const [loadingMoreAssets, setLoadingMoreAssets] = useState(false)
+  const [uploadingAsset, setUploadingAsset] = useState(false)
+  const [context, setContext] = useState<{ merchant: { merchant_name: string; merchant_id: string; user_name: string } } | null>(null)
+  const [contextLoading, setContextLoading] = useState(Boolean(initialMerchantId))
+  const [contextError, setContextError] = useState<string | null>(
+    initialMerchantId ? null : '缺少 merchant_id，请从 AM Console 重新选择商家进入',
+  )
   const [studioRevision, setStudioRevision] = useState(0)
 
   const loadBrands = useCallback(async (showLoading = true) => {
@@ -124,17 +134,27 @@ export default function App() {
     }
   }, [])
 
-  const loadAssets = useCallback(async (showLoading = true) => {
-    if (showLoading) {
+  const loadAssets = useCallback(async (
+    keyword = '',
+    append = false,
+    skip = 0,
+    showLoading = true,
+  ) => {
+    if (append) {
+      setLoadingMoreAssets(true)
+    } else if (showLoading) {
       setAssetsLoading(true)
     }
     try {
-      setAssets(await listAssets())
+      const page = await listAssetPage(keyword, skip, 24)
+      setAssets((previous) => append ? [...previous, ...page.items] : page.items)
+      setAssetTotal(page.total)
       setAssetsError(null)
     } catch (reason: unknown) {
       setAssetsError(errorMessage(reason))
     } finally {
       setAssetsLoading(false)
+      setLoadingMoreAssets(false)
     }
   }, [])
 
@@ -151,62 +171,25 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    let cancelled = false
-    listBrands()
-      .then((list) => {
-        if (!cancelled) {
-          setBrands(list)
-          setBrandsError(null)
-        }
+    const merchantId = initialMerchantId
+    if (!merchantId) return
+    getMerchantContext()
+      .then((value) => {
+        setContext(value)
+        setContextError(null)
+        void loadBrands()
+        listPlatforms()
+          .then((list) => {
+            setPlatforms(list)
+            setPlatformsError(null)
+          })
+          .catch((reason: unknown) => setPlatformsError(errorMessage(reason)))
+          .finally(() => setPlatformsLoading(false))
+        void loadAssets('', false, 0, true)
       })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setBrandsError(errorMessage(reason))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setBrandsLoading(false)
-        }
-      })
-    listAssets()
-      .then((list) => {
-        if (!cancelled) {
-          setAssets(list)
-          setAssetsError(null)
-        }
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setAssetsError(errorMessage(reason))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setAssetsLoading(false)
-        }
-      })
-    listPlatforms()
-      .then((list) => {
-        if (!cancelled) {
-          setPlatforms(list)
-          setPlatformsError(null)
-        }
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setPlatformsError(errorMessage(reason))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setPlatformsLoading(false)
-        }
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+      .catch((reason: unknown) => setContextError(errorMessage(reason)))
+      .finally(() => setContextLoading(false))
+  }, [initialMerchantId, loadAssets, loadBrands])
 
   const handleViewChange = (next: AppView) => {
     if (next === view && (next === 'whole' || next === 'poster_edit' || next === 'background_replace')) {
@@ -215,36 +198,35 @@ export default function App() {
     setView(next)
     updateUrl(next)
     if (next === 'assets') {
-      void loadAssets()
+      void loadAssets(assetQuery, false, 0, true)
     }
     if (next === 'brands') {
       void loadBrands()
     }
   }
 
-  const handleUpload = async (file: File): Promise<boolean> => {
-    setUploading(true)
+  const handleSearchAssets = (keyword: string) => {
+    setAssetQuery(keyword)
+    void loadAssets(keyword, false, 0, true)
+  }
+
+  const handleLoadMoreAssets = () => {
+    void loadAssets(assetQuery, true, assets.length, false)
+  }
+
+  const handleUploadAsset = async (file: File): Promise<boolean> => {
+    setUploadingAsset(true)
     setAssetsError(null)
     try {
-      await uploadAsset(file)
-      await loadAssets()
+      const uploaded = await uploadAsset(file)
+      setAssets((previous) => [uploaded, ...previous.filter((item) => item.id !== uploaded.id)])
+      setAssetTotal((current) => current + 1)
       return true
     } catch (reason: unknown) {
       setAssetsError(errorMessage(reason))
       return false
     } finally {
-      setUploading(false)
-    }
-  }
-
-  const handleDelete = async (asset: Asset): Promise<boolean> => {
-    try {
-      await deleteAsset(asset.id, true)
-      setAssets((previous) => previous.filter((item) => item.id !== asset.id))
-      return true
-    } catch (reason: unknown) {
-      setAssetsError(errorMessage(reason))
-      return false
+      setUploadingAsset(false)
     }
   }
 
@@ -282,6 +264,19 @@ export default function App() {
     setView(next)
   }
 
+  if (contextLoading) {
+    return <div className="app-loading">正在验证 AM 登录和商家权限…</div>
+  }
+  if (contextError || !context) {
+    return (
+      <div className="app-context-error">
+        <strong>无法打开商家工作区</strong>
+        <p>{contextError || '商家上下文不可用'}</p>
+        <a className="mp-btn-primary" href="https://am.connexup-uat.net">返回 AM Console 重新进入</a>
+      </div>
+    )
+  }
+
   const viewMeta = VIEW_META[view]
 
   return (
@@ -293,12 +288,10 @@ export default function App() {
             <span className="topbar-kicker">{viewMeta.kicker}</span>
             <strong>{viewMeta.title}</strong>
           </div>
-          {viewMeta.meta ? (
-            <div className="topbar-meta">
-              <span className="status-dot status-dot-live" aria-hidden="true" />
-              <span>{viewMeta.meta}</span>
-            </div>
-          ) : null}
+          <div className="topbar-meta">
+            <span className="status-dot status-dot-live" aria-hidden="true" />
+            <span>{context?.merchant.merchant_name ?? viewMeta.meta ?? '商家工作区'}</span>
+          </div>
         </header>
 
         {view === 'tasks' ? (
@@ -352,9 +345,13 @@ export default function App() {
             assets={assets}
             loading={assetsLoading}
             error={assetsError}
-            uploading={uploading}
-            onUpload={handleUpload}
-            onDelete={handleDelete}
+            total={assetTotal}
+            query={assetQuery}
+            onSearch={handleSearchAssets}
+            onLoadMore={handleLoadMoreAssets}
+            loadingMore={loadingMoreAssets}
+            uploading={uploadingAsset}
+            onUpload={handleUploadAsset}
           />
         )}
 
@@ -368,7 +365,7 @@ export default function App() {
           ) : view === 'tasks' ? (
             <span>任务按候选批次归档 · 点击封面回到工作台继续编辑</span>
           ) : view === 'brands' || view === 'poster_edit' ? null : (
-            <span>素材保存在项目内本地目录 · 海报设计时从资产库选择</span>
+            <span>资源库来自 AM Console 只读 · 临时上传保存在商家专属媒体目录</span>
           )}
         </footer>
       </div>

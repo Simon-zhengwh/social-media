@@ -5,20 +5,25 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 
+from app.api_paths import asset_url
+from app.request_context import request_db, request_merchant_id, request_store
 from app.services import asset_records
 
-router = APIRouter(prefix="/api/assets", tags=["assets"])
+router = APIRouter(prefix="/assets", tags=["assets"])
 
 
 def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
+    merchant_id = str(doc.get("merchant_id") or "")
     return {
         "id": doc["_id"],
         "original_name": doc["original_name"],
         "width": doc["width"],
         "height": doc["height"],
         "mime_type": doc["mime_type"],
-        "url": f"/api/assets/{doc['_id']}/file",
+        "url": doc.get("prepared_url") or doc.get("url") or asset_url(merchant_id, str(doc["_id"])),
         "created_at": doc["created_at"],
+        "source": doc.get("source") or "upload",
+        "read_only": False,
     }
 
 
@@ -26,7 +31,7 @@ def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
 def list_assets(request: Request) -> list[dict[str, Any]]:
     query = asset_records.uploaded_asset_query()
     docs = (
-        request.app.state.db.assets.find(query)
+        request_db(request).assets.find(query)
         .sort("created_at", -1)
         .limit(200)
     )
@@ -39,12 +44,12 @@ def upload_asset(
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     settings = request.app.state.settings
-    store = request.app.state.store
+    store = request_store(request)
     data = file.file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail=f"文件超过 {settings.max_upload_bytes / 1_000_000:g} MB 限制")
     doc, _ = asset_records.persist_upload(
-        request.app.state.db,
+        request_db(request),
         settings,
         store,
         data,
@@ -56,8 +61,8 @@ def upload_asset(
 @router.get("/{asset_id}/file")
 def get_asset_file(asset_id: str, request: Request) -> FileResponse:
     settings = request.app.state.settings
-    store = request.app.state.store
-    asset = request.app.state.db.assets.find_one({"_id": asset_id})
+    store = request_store(request)
+    asset = request_db(request).assets.find_one({"_id": asset_id})
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")
     relative = asset.get("prepared_path") or asset["path"]
@@ -104,8 +109,8 @@ def _asset_referenced(db: Any, asset_id: str) -> bool:
 
 @router.delete("/{asset_id}", status_code=204)
 def delete_asset(asset_id: str, request: Request, force: bool = False) -> Response:
-    db = request.app.state.db
-    store = request.app.state.store
+    db = request_db(request)
+    store = request_store(request)
     asset = db.assets.find_one({"_id": asset_id})
     if asset is None:
         raise HTTPException(status_code=404, detail="素材不存在")

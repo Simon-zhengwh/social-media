@@ -91,7 +91,7 @@ function assetFromTask(
     width: 0,
     height: 0,
     mime_type: 'image/png',
-    url: `/api/assets/${assetId}/file`,
+    url: image?.preview_url || task.preview_url || "",
     created_at: task.created_at,
   }
 }

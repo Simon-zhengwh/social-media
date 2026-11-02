@@ -18,8 +18,8 @@ from tests.conftest import png_bytes
 
 def test_background_replacement_routes_exist():
     paths = app.openapi()["paths"]
-    assert "/api/background-replacements" in paths
-    assert "/api/background-replacements/{task_id}/refresh-result" in paths
+    assert "/api/merchants/{merchant_id}/background-replacements" in paths
+    assert "/api/merchants/{merchant_id}/background-replacements/{task_id}/refresh-result" in paths
 
 
 class FakeAgent:
@@ -366,7 +366,7 @@ def test_route_queues_work_without_waiting_and_restores_inputs(env):
     restored = routes.get_replacement(response["id"], request)
     assert restored["source"]["asset_id"] == "source"
     assert restored["replacements"][0]["target"] == "牛肉"
-    assert app.openapi()["paths"]["/api/background-replacements"]["post"]["responses"].get("202")
+    assert app.openapi()["paths"]["/api/merchants/{merchant_id}/background-replacements"]["post"]["responses"].get("202")
     with pytest.raises(HTTPException) as exc:
         routes.download_replacement(response["id"], request)
     assert exc.value.status_code == 404

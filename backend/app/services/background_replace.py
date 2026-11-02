@@ -13,6 +13,7 @@ import httpx
 from PIL import Image, ImageOps
 from pymongo import ReturnDocument
 
+from app.api_paths import asset_url, background_download_url
 from app.config import Settings
 from app.schemas import BackgroundReplacementRequest
 from app.services import agent_image
@@ -43,7 +44,7 @@ def _asset(db: Any, asset_id: str) -> dict[str, Any]:
     if not str(asset.get("mime_type") or "").startswith("image/"):
         raise BackgroundReplaceError("reference_invalid", "原图和替换素材必须是图片", 422)
     return {"asset_id": asset_id, "name": asset.get("original_name") or "图片",
-            "preview_url": f"/api/assets/{asset_id}/file",
+            "preview_url": asset_url(str(asset.get("merchant_id") or ""), asset_id),
             "width": int(asset.get("width") or 0), "height": int(asset.get("height") or 0)}
 
 
@@ -242,9 +243,10 @@ def task_out(doc: dict[str, Any]) -> dict[str, Any]:
     output = doc.get("output")
     task_id = str(doc["_id"])
     if output:
+        merchant_id = str(doc.get("merchant_id") or "")
         output = {"asset_id": output["asset_id"], "width": output["width"], "height": output["height"],
-                  "preview_url": f"/api/assets/{output['asset_id']}/file",
-                  "download_url": f"/api/background-replacements/{task_id}/download"}
+                  "preview_url": asset_url(merchant_id, str(output["asset_id"])),
+                  "download_url": background_download_url(merchant_id, task_id)}
     return {"id": task_id, **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements",
             "agent_id", "run_id", "agent_input", "agent_output", "error"]}, "output": output,
             **{key: utc_iso(doc.get(key)) for key in ["created_at", "updated_at", "started_at", "deadline_at"]}}

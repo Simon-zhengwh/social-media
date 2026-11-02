@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
+from app.api_paths import asset_url, poster_download_url
 from app.config import Settings
 from app.services import agent_image
 from app.services.core_ai import CoreAIClient
@@ -240,13 +241,13 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:
             continue
-        references.append({"asset_id": str(asset_id), "name": str(asset.get("original_name") or "参考图片"), "preview_url": f"/api/assets/{asset_id}/file", "width": int(asset.get("width") or 0), "height": int(asset.get("height") or 0)})
+        references.append({"asset_id": str(asset_id), "name": str(asset.get("original_name") or "参考图片"), "preview_url": asset_url(str(asset.get("merchant_id") or ""), str(asset_id)), "width": int(asset.get("width") or 0), "height": int(asset.get("height") or 0)})
     task_id = str(doc["_id"])
     outputs = []
     for output in doc.get("outputs") or []:
         output_id = str(output.get("id") or "")
         asset_id = str(output.get("asset_id") or "")
-        outputs.append({"id": output_id, "role": output.get("role") or "agent_result", "label": output.get("label") or "修改结果", "asset_id": asset_id, "width": int(output.get("width") or 0), "height": int(output.get("height") or 0), "selectable": bool(output.get("selectable")), "preview_url": f"/api/assets/{asset_id}/file" if asset_id else None, "download_url": f"/api/poster-edits/{task_id}/download?output_id={output_id}" if asset_id and output_id else None, "model_input": output.get("model_input")})
+        outputs.append({"id": output_id, "role": output.get("role") or "agent_result", "label": output.get("label") or "修改结果", "asset_id": asset_id, "width": int(output.get("width") or 0), "height": int(output.get("height") or 0), "selectable": bool(output.get("selectable")), "preview_url": asset_url(str(doc.get("merchant_id") or ""), asset_id) if asset_id else None, "download_url": poster_download_url(str(doc.get("merchant_id") or ""), task_id, output_id) if asset_id and output_id else None, "model_input": output.get("model_input")})
     batch_id = str(doc.get("batch_id") or task_id)
     return {"id": task_id, "batch_id": batch_id, "candidate_index": int(doc.get("candidate_index") or 0), "candidate_count": int(doc.get("candidate_count") or 1), "status": doc.get("status") or "queued", "stage": doc.get("stage") or "queued", "progress": int(doc.get("progress") or 0), "prompt": str(input_data.get("prompt") or ""), "references": references, "outputs": outputs, "agent_id": doc.get("agent_id") or "", "agent_input": doc.get("agent_input"), "run_id": doc.get("run_id"), "error": doc.get("error"), "created_at": utc_iso(doc["created_at"]), "updated_at": utc_iso(doc["updated_at"])}
 

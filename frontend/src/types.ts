@@ -108,6 +108,8 @@ export type Asset = {
   mime_type: string
   url: string
   created_at: string
+  source?: 'am' | 'upload'
+  read_only?: boolean
 }
 
 // ---------- Whole-image flow ----------
