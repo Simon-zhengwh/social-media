@@ -11,7 +11,7 @@
 - AM：`https://am.connexup-uat.net`
 - API：`fbrdevacr.azurecr.io/uat/app/social-media-api:fbr-7713-20261102-4`
 - Web：`fbrdevacr.azurecr.io/uat/app/social-media-web:fbr-7713-20261102-4`
-- AM Console：`fbrdevacr.azurecr.io/uat/app/am-console-site:fbr-7713-20261102-5`
+- AM Console：`fbrdevacr.azurecr.io/uat/app/am-console-site:fbr-7713-20261102-7`
 - `HTTPRoute/social-media`：`Accepted=True`、`ResolvedRefs=True`
 - API/Web 各 1 Pod；API 单 Uvicorn worker，`Recreate` 发布。
 - `/api/health`：`200`，`initialized=true`、`mongo=ok`、`storage=ok`、`storage_backend=am-media`。
