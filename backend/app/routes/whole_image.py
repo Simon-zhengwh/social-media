@@ -30,6 +30,7 @@ def _edit_state(doc: dict[str, Any]) -> dict[str, Any]:
             "instruction": None,
             "source_version_id": None,
             "source_output_id": None,
+            "reference_asset_ids": [],
             "error": None,
         }
     return {
@@ -37,6 +38,7 @@ def _edit_state(doc: dict[str, Any]) -> dict[str, Any]:
         "instruction": edit.get("instruction"),
         "source_version_id": edit.get("source_version_id"),
         "source_output_id": edit.get("source_output_id"),
+        "reference_asset_ids": list(edit.get("reference_asset_ids") or []),
         "error": edit.get("error"),
     }
 
@@ -743,6 +745,11 @@ def retry_task(
     instruction = str(edit.get("instruction") or "").strip()
     source_version_id = str(edit.get("source_version_id") or "").strip()
     source_output_id = str(edit.get("source_output_id") or "").strip() or None
+    reference_asset_ids = [
+        str(asset_id).strip()
+        for asset_id in list(edit.get("reference_asset_ids") or [])
+        if str(asset_id).strip()
+    ]
     if not instruction or not source_version_id:
         raise HTTPException(status_code=409, detail="失败记录缺少重试所需信息")
 
@@ -775,6 +782,7 @@ def retry_task(
         instruction,
         source_version_id,
         source_output_id,
+        reference_asset_ids,
     )
     return task_out(db, retried_edit)
 
@@ -796,6 +804,18 @@ def create_edit(
     )
     if source is None:
         raise HTTPException(status_code=422, detail="来源版本不属于当前任务")
+    reference_attachments: list[dict[str, str]] = []
+    for asset_id in payload.reference_asset_ids:
+        asset = db.assets.find_one({"_id": asset_id})
+        if asset is None:
+            raise HTTPException(status_code=422, detail="参考图片不存在")
+        reference_attachments.append(
+            {
+                "asset_id": asset_id,
+                "name": str(asset.get("original_name") or "参考图片"),
+                "url": f"/api/assets/{asset_id}/file",
+            }
+        )
     claimed = db.whole_tasks.find_one_and_update(
         {
             "_id": task_id,
@@ -809,6 +829,7 @@ def create_edit(
                     "instruction": payload.instruction,
                     "source_version_id": payload.source_version_id,
                     "source_output_id": payload.source_output_id,
+                    "reference_asset_ids": payload.reference_asset_ids,
                     "error": None,
                 },
                 "stage": "editing",
@@ -825,6 +846,7 @@ def create_edit(
         task_id,
         role="user",
         content=payload.instruction,
+        attachments=reference_attachments,
     )
     background_tasks.add_task(
         whole_image.run_edit,
@@ -836,6 +858,7 @@ def create_edit(
         payload.instruction,
         payload.source_version_id,
         payload.source_output_id,
+        payload.reference_asset_ids,
     )
     return task_out(db, _get_task_or_404(db, task_id))
 

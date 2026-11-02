@@ -1,5 +1,7 @@
 import type {
   Asset,
+  BackgroundReplacementItem,
+  BackgroundReplacementTask,
   BrandDetail,
   BrandMode,
   BrandColor,
@@ -59,6 +61,22 @@ async function parseResponse<T>(response: Response): Promise<T> {
 export async function listAssets(): Promise<Asset[]> {
   const response = await fetch('/api/assets')
   return parseResponse<Asset[]>(response)
+}
+
+export async function createBackgroundReplacement(sourceAssetId: string, replacements: BackgroundReplacementItem[]): Promise<BackgroundReplacementTask> {
+  const response = await fetch('/api/background-replacements', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_asset_id: sourceAssetId, replacements }),
+  })
+  return parseResponse<BackgroundReplacementTask>(response)
+}
+
+export async function getBackgroundReplacement(taskId: string): Promise<BackgroundReplacementTask> {
+  return parseResponse<BackgroundReplacementTask>(await fetch(`/api/background-replacements/${encodeURIComponent(taskId)}`))
+}
+
+export async function refreshBackgroundReplacement(taskId: string): Promise<BackgroundReplacementTask> {
+  return parseResponse<BackgroundReplacementTask>(await fetch(`/api/background-replacements/${encodeURIComponent(taskId)}/refresh-result`, { method: 'POST' }))
 }
 
 export async function listPlatforms(): Promise<PlatformPreset[]> {
@@ -281,6 +299,7 @@ export async function createWholeImageEdit(
   instruction: string,
   sourceVersionId: string,
   sourceOutputId?: string | null,
+  referenceAssetIds: string[] = [],
 ): Promise<WholeImageTask> {
   const response = await fetch(
     `/api/whole-image/tasks/${encodeURIComponent(taskId)}/edits`,
@@ -291,6 +310,7 @@ export async function createWholeImageEdit(
         instruction,
         source_version_id: sourceVersionId,
         source_output_id: sourceOutputId ?? null,
+        reference_asset_ids: referenceAssetIds,
       }),
     },
   )
@@ -370,7 +390,7 @@ export async function getPosterEditBatch(batchId: string): Promise<PosterEditBat
 
 export async function listTaskCenterGroups(options: {
   status?: WholeImageTaskGroupFilter
-  kind?: 'all' | 'generate' | 'edit'
+  kind?: 'all' | 'generate' | 'edit' | 'background_replace'
   limit?: number
   cursor?: string | null
 } = {}): Promise<WholeImageTaskGroupPage> {

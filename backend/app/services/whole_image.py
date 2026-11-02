@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 
 GENERATION_SYSTEM_PROMPT = (
     "You are an expert visual designer. Create one polished, visually compelling, "
-    "complete design based on the user's request. You have full creative freedom over "
-    "composition, typography, color, visual hierarchy, and art direction. Follow the "
+    "complete design based on the user's request. Design the composition, typography, "
+    "color, visual hierarchy, and art direction within the user's constraints and "
+    "the image-preservation rules below. Follow the "
     "requested content and constraints accurately. Reproduce any user-provided text "
     "verbatim; do not add, omit, translate, or rewrite text. Follow the explicit "
     "roles assigned to each input image; never treat a style reference as a source "
@@ -35,6 +36,26 @@ GENERATION_SYSTEM_PROMPT = (
 OPTIMIZED_GENERATION_SYSTEM_PROMPT = (
     "Create one finished image following the user's prompt and the assigned roles of attached images. "
     "Return the final image only."
+)
+FOOD_PRESERVATION_PROMPT = (
+    "Food-photo preservation: treat each food photo or complete plate in the content "
+    "images (or already present in the current poster) as a protected photographic unit. "
+    "Do not take food content from style-only references. "
+    "You may crop, uniformly scale, or move that unit "
+    "as a whole. Preserve the original food count, shape, color, texture, plating, "
+    "tableware, lighting, and relative positions inside it. "
+    "Do not redraw, retouch, replace, rearrange, add, or remove food or tableware, "
+    "and do not invent food to fill cropped or hidden areas. "
+    "Creative changes belong outside these protected units. "
+    "Change a protected food detail only when the user explicitly requests that specific change."
+)
+EDIT_PRESERVATION_PROMPT = (
+    "Use the current poster as the editing base; do not rebuild it from reference images. "
+    "Apply only the requested changes; "
+    "keep all other content, text, composition, and style unchanged. "
+    "For text-only edits, change only the requested lettering and the immediate "
+    "background needed to replace it; do not regenerate food photos.\n\n"
+    + FOOD_PRESERVATION_PROMPT
 )
 
 
@@ -66,6 +87,7 @@ def _append_message(
     version_id: str | None = None,
     version: int | None = None,
     status: str = "done",
+    attachments: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     message = {
         "id": f"msg_{uuid.uuid4().hex}",
@@ -76,6 +98,7 @@ def _append_message(
         "version": version,
         "actions": [],
         "status": status,
+        "attachments": attachments or [],
     }
     db.whole_tasks.update_one({"_id": task_id}, {"$push": {"messages": message}})
     return message
@@ -103,10 +126,11 @@ def _save_output_asset(
             if image.mode not in {"RGB", "RGBA"}:
                 image = image.convert("RGB")
             if target_size is not None:
-                image = ImageOps.fit(
+                image = ImageOps.pad(
                     image,
                     target_size,
                     method=Image.Resampling.LANCZOS,
+                    color=(0, 0, 0, 0) if image.mode == "RGBA" else "white",
                     centering=(0.5, 0.5),
                 )
             buffer = io.BytesIO()
@@ -259,6 +283,8 @@ def _reference_role_guidance(
             "from style references, and do not introduce or substitute a person "
             "from a style reference."
         )
+    if product_count:
+        lines.append(FOOD_PRESERVATION_PROMPT)
     return "\n".join(lines)
 
 
@@ -285,6 +311,7 @@ def _model_input_images(
     source_asset_id: str | None = None,
     *,
     include_style: bool = True,
+    extra_reference_asset_ids: list[str] | None = None,
 ) -> list[dict[str, str]]:
     images: list[dict[str, str]] = []
     asset_ids = [
@@ -303,6 +330,10 @@ def _model_input_images(
         )
     if source_asset_id:
         asset_ids.append((source_asset_id, "current_design"))
+    asset_ids.extend(
+        (asset_id, "edit_reference")
+        for asset_id in dict.fromkeys(extra_reference_asset_ids or [])
+    )
 
     for asset_id, role in asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
@@ -656,9 +687,11 @@ def _gateway_edit_branch(
     model_input: dict[str, Any],
     prompt: str,
     target_size: tuple[int, int],
+    reference_asset_ids: list[str],
 ) -> list[dict[str, Any]]:
     original_refs: list[ImageRef] = []
     source_ref: ImageRef | None = None
+    edit_refs: list[ImageRef] = []
     asset_id: str | None = None
     try:
         original_refs = _load_reference_images(db, store, task_input, include_style=False)
@@ -669,9 +702,13 @@ def _gateway_edit_branch(
             {"status": "running", "model_input": model_input, "updated_at": utcnow()},
         )
         source_ref = image_ref_from_asset(db, store, str(source_asset["_id"]))
+        edit_refs = [
+            image_ref_from_asset(db, store, reference_asset_id)
+            for reference_asset_id in reference_asset_ids
+        ]
         data = client.edit_image(
             prompt,
-            [*original_refs, source_ref],
+            [*original_refs, source_ref, *edit_refs],
             size=size,
             model=image_model,
         )
@@ -729,6 +766,7 @@ def _gateway_edit_branch(
         return []
     finally:
         cleanup_image_refs(original_refs)
+        cleanup_image_refs(edit_refs)
         if source_ref is not None:
             source_ref.cleanup()
 
@@ -744,6 +782,8 @@ def _agent_edit_branch(
     source_asset: dict[str, Any],
     instruction: str,
     target_size: tuple[int, int],
+    reference_asset_ids: list[str],
+    canvas_ratio: str,
 ) -> list[dict[str, Any]]:
     try:
         expires = max(
@@ -758,9 +798,56 @@ def _agent_edit_branch(
             str(source_asset["_id"]),
             expires=expires,
         )
+        canvas_width, canvas_height = target_size
+        canvas_orientation = (
+            "portrait" if canvas_height > canvas_width
+            else "landscape" if canvas_width > canvas_height
+            else "square"
+        )
+        canvas_contract = (
+            f"Canvas contract: return the final image on exactly a {canvas_width}×"
+            f"{canvas_height} px {canvas_orientation} canvas ({canvas_ratio}). "
+            "Preserve the current poster's full composition and orientation. "
+            "Do not output a different aspect ratio, do not letterbox, and do not "
+            "add blank bands. Every final-stage generated image must match this canvas."
+        )
+        reference_images: list[dict[str, str]] = []
+        agent_references = [("当前海报（需要修改的原图）", image_url)]
+        for index, reference_asset_id in enumerate(reference_asset_ids, start=1):
+            reference_asset = db.assets.find_one({"_id": reference_asset_id})
+            if reference_asset is None:
+                raise StudioError("reference_image_missing", "附加参考图片不存在", 422)
+            reference_url = agent_image.asset_public_url(
+                db,
+                settings,
+                store,
+                client,
+                reference_asset_id,
+                expires=expires,
+            )
+            reference_images.append(
+                {
+                    "asset_id": reference_asset_id,
+                    "name": str(reference_asset.get("original_name") or "参考图片"),
+                    "kind": "edit_reference",
+                    "role": "edit_reference",
+                    "url": reference_url,
+                }
+            )
+            agent_references.append((f"本轮用户附加参考图 {index}", reference_url))
+        agent_instruction = (
+            f"{canvas_contract}\n\n{EDIT_PRESERVATION_PROMPT}"
+            f"\n\nCurrent edit request:\n{instruction.strip()}"
+        )
+        if reference_images:
+            agent_instruction += (
+                "\n\nThe first URL is the current poster to edit. The following URLs "
+                "are user-supplied reference images for this edit; use them only as "
+                "references and do not replace the current poster wholesale."
+            )
         agent_input = agent_image.build_agent_edit_input(
-            [("当前海报（需要修改的原图）", image_url)],
-            instruction,
+            agent_references,
+            agent_instruction,
         )
         model_input = {
             "channel": "agent",
@@ -771,6 +858,10 @@ def _agent_edit_branch(
                 "agent_id": settings.core_ai_image_agent_id,
                 "timeout_seconds": settings.core_ai_image_agent_timeout_seconds,
                 "image_url": image_url,
+                "width": canvas_width,
+                "height": canvas_height,
+                "aspect_ratio": canvas_ratio,
+                "orientation": canvas_orientation,
             },
             "images": [
                 {
@@ -779,7 +870,8 @@ def _agent_edit_branch(
                     "kind": "current_design",
                     "role": "edit_target",
                     "url": image_url,
-                }
+                },
+                *reference_images,
             ],
         }
         _set_edit_branch(
@@ -805,6 +897,7 @@ def _agent_edit_branch(
                 data=output.data,
                 role=output.role,
                 target_size=target_size,
+                require_aspect_match=output.role.startswith("agent_result"),
             )
             saved_outputs.append(
                 {
@@ -861,7 +954,15 @@ def run_edit(
     instruction: str,
     source_version_id: str,
     source_output_id: str | None = None,
+    reference_asset_ids: list[str] | None = None,
 ) -> None:
+    reference_asset_ids = list(
+        dict.fromkeys(
+            str(asset_id).strip()
+            for asset_id in (reference_asset_ids or [])
+            if str(asset_id).strip()
+        )
+    )
     task = db.whole_tasks.find_one(
         {"_id": task_id, "status": "succeeded", "edit.status": "running"}
     )
@@ -903,8 +1004,8 @@ def run_edit(
             product_range = "1" if product_count == 1 else f"1-{product_count}"
             image_roles.append(
                 f"Original content image(s): {product_range}. "
-                "Use these originals as the source of subjects and fine details; "
-                "preserve their identity, shapes, colors, and textures."
+                "Use these originals only to check subject identity and details; "
+                "do not reconstruct the current poster from them."
             )
         if task_input.get("logo_asset_id"):
             image_roles.append(
@@ -912,15 +1013,27 @@ def run_edit(
                 "Preserve its original shape, wording, proportions, and colors."
             )
         image_roles.append(
-            f"Image {original_count + 1} is the generated design reference for style and layout only. "
-            "Do not repaint, retouch, or trace the generated image; "
-            "do not use it as a pixel source or image-to-image base."
+            f"Image {original_count + 1} is the current poster to edit. "
+            "Preserve its existing image regions except where the current edit request requires changes."
         )
+        if reference_asset_ids:
+            first_index = original_count + 2
+            if len(reference_asset_ids) == 1:
+                image_roles.append(
+                    f"Image {first_index} is this turn's user-supplied edit reference 1. "
+                    "Use it only as a reference for the requested change; do not replace "
+                    "the current poster wholesale."
+                )
+            else:
+                image_roles.append(
+                    f"Images {first_index}-{first_index + len(reference_asset_ids) - 1} "
+                    "are this turn's user-supplied edit references in order. "
+                    "Use them only as references for the requested change; do not replace "
+                    "the current poster wholesale."
+                )
         prompt = (
             "\n".join(image_roles)
-            + "\nApply only the requested changes; "
-            "keep all other content, text, composition, and style unchanged."
-            f"\n\n{instruction.strip()}"
+            + f"\n\n{EDIT_PRESERVATION_PROMPT}\n\nCurrent edit request:\n{instruction.strip()}"
         )
         gateway_input = {
             "channel": "gateway",
@@ -938,6 +1051,7 @@ def run_edit(
                 task_input,
                 source_asset_id=str(source_asset["_id"]),
                 include_style=False,
+                extra_reference_asset_ids=reference_asset_ids,
             ),
         }
         version = _next_version(db, task_id)
@@ -954,6 +1068,7 @@ def run_edit(
                         "instruction": instruction,
                         "source_version_id": source_version_id,
                         "source_output_id": source_output_id,
+                        "reference_asset_ids": reference_asset_ids,
                         "error": None,
                         "outcome": None,
                         "branches": {
@@ -995,6 +1110,7 @@ def run_edit(
                     model_input=gateway_input,
                     prompt=prompt,
                     target_size=(width, height),
+                    reference_asset_ids=reference_asset_ids,
                 ),
                 executor.submit(
                     _agent_edit_branch,
@@ -1007,6 +1123,8 @@ def run_edit(
                     source_asset=source_asset,
                     instruction=instruction,
                     target_size=(width, height),
+                    reference_asset_ids=reference_asset_ids,
+                    canvas_ratio=str(task_input.get("ratio") or f"{width}:{height}"),
                 ),
             ]
             all_outputs: list[dict[str, Any]] = []

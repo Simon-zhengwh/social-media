@@ -435,9 +435,10 @@ export default function WholeImageStudio({
   const handleEdit = async (
     instruction: string,
     sourceVersionId = task?.current_version_id ?? null,
-  ) => {
+    referenceAssetIds: string[] = [],
+  ): Promise<boolean> => {
     if (!task || !sourceVersionId || editRunning || submitLock.current) {
-      return
+      return false
     }
     submitLock.current = true
     setError(null)
@@ -447,11 +448,14 @@ export default function WholeImageStudio({
         instruction,
         sourceVersionId,
         sourceVersionId === task.current_version_id ? task.current_output_id : null,
+        referenceAssetIds,
       )
       setTask(next)
       setStudioTab('chat')
+      return true
     } catch (reason: unknown) {
       setError(errorMessage(reason))
+      return false
     } finally {
       submitLock.current = false
     }
@@ -462,7 +466,11 @@ export default function WholeImageStudio({
       return
     }
     if (task.edit.status === 'failed' && task.edit.instruction && task.edit.source_version_id) {
-      await handleEdit(task.edit.instruction, task.edit.source_version_id)
+      await handleEdit(
+        task.edit.instruction,
+        task.edit.source_version_id,
+        task.edit.reference_asset_ids ?? [],
+      )
       return
     }
     if (task.status === 'failed') {
@@ -534,6 +542,12 @@ export default function WholeImageStudio({
       setSelectedBrandId(next?.id ?? '')
       setLogoChoiceTouched(false)
     }
+  }
+
+  const handleUploadChatImages = async (files: File[]): Promise<Asset[]> => {
+    const uploaded = await Promise.all(files.map((file) => uploadAsset(file)))
+    onLoadAssets()
+    return uploaded
   }
 
   const handleUploadStyleReferences = async (files: File[]) => {
@@ -712,7 +726,14 @@ export default function WholeImageStudio({
                 edit={task?.edit ?? { status: 'idle' }}
                 stage={task?.stage ?? 'editing'}
                 disabled={!canEdit || busy}
-                onSend={(instruction) => void handleEdit(instruction)}
+                onUpload={handleUploadChatImages}
+                onSend={(instruction, attachments) =>
+                  handleEdit(
+                    instruction,
+                    task?.current_version_id ?? null,
+                    attachments.map((asset) => asset.id),
+                  )
+                }
               />
             ) : null}
             {studioTab === 'versions' ? (

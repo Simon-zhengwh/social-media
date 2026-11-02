@@ -6,7 +6,10 @@
 
 ## 主要能力
 
-- 左侧菜单包含「海报设计」「任务中心」「修改海报」「资产管理」「品牌风格」。
+- 左侧菜单包含「海报设计」「任务中心」「修改海报」「背景替换」「资产管理」「品牌风格」。
+- 「背景替换」支持选择一张原图，逐项填写 1–5 个替换元素并绑定对应素材，一次调用原照替换 Agent；任务中心可按「背景替换」筛选并找回任务。
+- 背景替换通常约 30 分钟，本地最多等待 45 分钟。浏览器关闭不影响后台执行；已保存 run ID 的任务在服务重启后继续查询，截止时间不重置。等待超时后可「查询已有结果」，不会再次触发 Agent；远端仍可能继续处理。
+- 背景替换只接收 Agent 明确标注为 `![替换结果](HTTPS链接)` 的唯一最终成图，并校验与原图精确同尺寸；蒙版和辅助文件保留在处理说明中，不作为最终图。
 - 「修改海报」是轻量 Agent 工作流：上传或选择 1–5 张参考图，输入修改要求，并一次并行生成 1–6 个候选；每个候选包含透明 PNG 和最终图。
 - 海报设计支持选择预设品牌、参考图风格或无品牌模式。
 - 品牌规范保存在 MongoDB `brands` 集合；`.agents/skills/<brand>/` 仅用于首次导入和人工文档，运行时不读取。
@@ -16,6 +19,7 @@
 - 「通用规范」可在品牌风格页编辑，覆盖文案准确、素材使用、Logo 和可读性。更新应用于新任务；任务保存当时的规范正文和版本，历史任务不变。
 - 资产管理支持上传图片、查看已保存素材和删除素材。
 - 每次生成支持 1–6 张候选，默认 3 张；候选可在结果区切换，选中的版本继续编辑。
+- 菜品素材在生成和整图改图提示词中按完整照片或完整餐盘保护：只允许整体裁切、等比缩放和移动，保留食物数量、形状、颜色、纹理、摆盘、餐具、光影及内部相对位置；仅在用户明确要求修改具体菜品细节时例外。这是模型提示约束，不能保证像素完全不变。
 - 发布平台为选填项：选择平台后可指定用途，比例、尺寸和安全区规则由平台预设统一提供；不选择时可手动指定画幅比例。
 - 当前包含小红书、Instagram、TikTok、Google Business Profile 和 Meta 广告，支持 3:4、4:3、1:1、4:5、9:16、16:9 画布。
 - 小红书平台预设禁止出现地址、电话号码和二维码；用户文案包含相关内容时，生成提示词会要求省略。
@@ -26,13 +30,15 @@
 - 接口返回 `{"prompt":"..."}`，保留非空和长度校验；不要求固定七段、独立事实数组或案例专用的设计规则。优化后的提示词直接交给生图模型。
 - 生成调用 core-ai `/images/generations`；自然语言改图并行调用 `/images/edits` 和图片 Agent，两个结果并存以便对比。
 - 图片 Agent 不使用 attachments：social-media 先把当前图上传到 Core AI blob 或使用 COS 签名 URL，再把 URL 拼进 Agent `input`，通过 `trigger + get` 获取产物。
-- 接口改图继续发送本轮修改要求、原始内容素材（含选定 Logo）和选中版本的生成图；Agent 改图只接收当前选中图 URL 和本轮修改要求。
-- Agent 改图只传递本轮用户修改要求和按顺序排列的图片 URL，不再额外拼接画布尺寸、保留内容或输出格式等固定模板；具体执行由 `image-gen-skill` 自主完成。
+- Agent 返回图片时优先接收最终回复中明确引用的图片，避免把中间步骤和占位图当成最终结果；最终回复没有图片链接时，才兼容读取图片附件列表。
+- 接口改图继续发送本轮修改要求、原始内容素材（含选定 Logo）和选中版本的生成图；选中图明确作为编辑底图，原始素材仅用于核对主体细节，避免重新构建海报。
+- 整图工作台的 Agent 改图接收当前选中图 URL、本轮修改要求和与接口分支相同的菜品保留约束；仅改文字时要求只修改指定文字及替换所需的紧邻背景。
+- 独立的「修改海报」Agent 入口继续只传递本轮用户修改要求和按顺序排列的图片 URL；具体执行由 `image-gen-skill` 自主完成。
 - 任务、版本、候选和模型输入快照保存在 MongoDB；图片以本地对象存储为主，保存到项目内 `local_media/objects/`。
 - 「修改海报」在 Agent 触发后立即保存 `run_id`；服务重启时会继续轮询已有 run，不会重新发起或丢失已完成的 Agent 结果。
 - 侧边栏「任务中心」按候选批次聚合展示生成记录，可筛选状态、下载成品、页内重试失败项，并点击任务回到工作台继续编辑。
 - 一次改图保存为一个版本，包含接口结果、Agent 透明层和 Agent 最终图；存在多个可选结果时必须手动选择后才能继续修改。
-- 改图输出会归一化回源图的精确像素尺寸和比例；直接 Agent 修改以第一张参考图的尺寸作为输出画布。
+- 改图输出会归一化回源图的精确像素尺寸和比例；直接 Agent 修改以第一张参考图的尺寸作为输出画布。模型返回的比例不一致时，完整等比缩放后居中留边，不再裁切图片；透明图层留透明边，成图留白边。页面结果预览完整显示图片。
 - 刷新页面可通过 `?whole=<task_id>` 恢复整图任务和当前版本。
 - 任务中心使用 `?view=tasks`；打开任务后会切换到 `?view=whole&whole=<task_id>`（整图页省略 `view` 参数）。
 
@@ -51,6 +57,10 @@
 | `GET /api/whole-image/batches/{batch_id}` | 获取候选批次 |
 | `POST /api/whole-image/tasks/{id}/versions/{version_id}/outputs/{output_id}/select` | 选择下一轮编辑源图 |
 | `POST /api/poster-edits/batches` | 创建 1–6 个并行 Agent 修改候选 |
+| `POST /api/background-replacements` | 创建原图及 1–5 项元素替换任务，返回 202 |
+| `GET /api/background-replacements/{id}` | 获取替换任务、输入、结果和错误 |
+| `POST /api/background-replacements/{id}/refresh-result` | 查询原 run 的已有结果，返回 202，不重新触发 |
+| `GET /api/background-replacements/{id}/download` | 下载最终替换 PNG |
 | `GET /api/poster-edits/batches/{batch_id}` | 获取修改候选批次 |
 | `POST /api/poster-edits` | 创建单个 Agent 修改任务（兼容接口） |
 | `GET /api/poster-edits/{id}` | 获取直接 Agent 修改结果 |
@@ -129,6 +139,8 @@ CORE_AI_PROMPT_AGENT_ID=9a7eb9c3-0d57-4841-83b2-ea9191ff8dd8
 CORE_AI_PROMPT_AGENT_TIMEOUT_SECONDS=900
 CORE_AI_IMAGE_AGENT_ID=86c3a160-54fa-4344-9bc1-6ac56c1e080c
 CORE_AI_IMAGE_AGENT_TIMEOUT_SECONDS=900
+CORE_AI_BACKGROUND_REPLACE_AGENT_ID=d1692e66-c34b-4e70-9437-7462258dd84e
+CORE_AI_BACKGROUND_REPLACE_AGENT_TIMEOUT_SECONDS=2700
 CORE_AI_IMAGE_MODEL=gpt-image-2.5-sunburst
 CORE_AI_DESIGN_MODEL=gpt-6.1-sol
 CORE_AI_IMAGE_QUALITY=high

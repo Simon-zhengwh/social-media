@@ -109,6 +109,12 @@ export type WholeImageProvider = {
   status: string | null
 }
 
+export type WholeImageAttachment = {
+  asset_id: string
+  name: string
+  url: string
+}
+
 export type WholeImageMessage = {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -117,6 +123,7 @@ export type WholeImageMessage = {
   version_id?: string | null
   version?: number | null
   status?: 'done' | 'failed'
+  attachments?: WholeImageAttachment[]
 }
 
 export type WholeImageModelInput = {
@@ -179,6 +186,7 @@ export type WholeImageEditState = {
   instruction?: string | null
   source_version_id?: string | null
   source_output_id?: string | null
+  reference_asset_ids?: string[]
   outcome?: 'success' | 'partial' | 'failed' | null
   error?: string | null
   branches?: Partial<Record<'gateway' | 'agent', WholeImageBranch>>
@@ -269,7 +277,7 @@ export type WholeImageTaskGroupCandidate = {
 
 export type WholeImageTaskGroup = {
   id: string
-  kind: 'generate' | 'edit'
+  kind: 'generate' | 'edit' | 'background_replace'
   status: WholeImageTaskGroupStatus
   prompt: string
   brand_name: string | null
@@ -343,6 +351,27 @@ export type PosterEditBatch = {
   id: string
   candidate_count: number
   tasks: PosterEditTask[]
+  created_at: string
+  updated_at: string
+}
+
+export type BackgroundReplacementItem = { target: string; asset_id: string }
+
+export type BackgroundReplacementTask = {
+  id: string
+  status: PosterEditTask['status']
+  stage: string
+  progress: number
+  source: PosterEditReference
+  replacements: Array<PosterEditReference & { target: string }>
+  output: { asset_id: string; width: number; height: number; preview_url: string; download_url: string } | null
+  agent_id: string | null
+  run_id: string | null
+  agent_input: string | null
+  agent_output: string | null
+  error: { code: string; message: string } | null
+  started_at: string | null
+  deadline_at: string | null
   created_at: string
   updated_at: string
 }

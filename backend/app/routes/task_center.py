@@ -14,7 +14,7 @@ from app.time_utils import utc_iso
 router = APIRouter(prefix="/api/task-center", tags=["task-center"])
 
 STATUSES = {"all", "active", "ready", "failed"}
-KINDS = {"all", "generate", "edit"}
+KINDS = {"all", "generate", "edit", "background_replace"}
 
 
 def _as_utc(value: Any) -> datetime:
@@ -134,6 +134,33 @@ def _encode_cursor(item: dict[str, Any]) -> str:
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
+def _background_groups(db: Any) -> list[dict[str, Any]]:
+    from app.services.background_replace import task_out
+
+    groups = []
+    for doc in db.background_replace_tasks.find({}).sort("created_at", -1):
+        task = task_out(doc)
+        active = task["status"] in {"queued", "running"}
+        succeeded = task["status"] == "succeeded"
+        output = task.get("output") or {}
+        error = (task.get("error") or {}).get("message")
+        candidate = {"id": task["id"], "candidate_index": 0, "status": task["status"],
+                     "stage": task["stage"], "progress": task["progress"], "current_version": 0,
+                     "preview_url": output.get("preview_url"), "download_url": output.get("download_url"),
+                     "edit_status": "idle", "error": error, "created_at": task["created_at"], "updated_at": task["updated_at"]}
+        groups.append({"id": task["id"], "kind": "background_replace",
+                       "status": "active" if active else "ready" if succeeded else "failed",
+                       "prompt": "；".join(item["target"] for item in task["replacements"]),
+                       "brand_name": None, "platform_name": None, "placement_name": None,
+                       "canvas": {"width": task["source"]["width"], "height": task["source"]["height"]},
+                       "candidate_count": 1, "active_count": int(active), "succeeded_count": int(succeeded),
+                       "failed_count": int(not active and not succeeded), "retryable_count": 0,
+                       "representative_task_id": task["id"], "preview_url": output.get("preview_url"),
+                       "download_url": output.get("download_url"), "error_message": error, "candidates": [candidate],
+                       "created_at": doc["created_at"], "updated_at": doc["updated_at"]})
+    return groups
+
+
 def _decode_cursor(value: str) -> tuple[datetime, str]:
     try:
         padded = value + "=" * (-len(value) % 4)
@@ -154,7 +181,7 @@ def list_task_center(
     if status not in STATUSES:
         raise HTTPException(status_code=422, detail="status 只支持 all、active、ready 或 failed")
     if kind not in KINDS:
-        raise HTTPException(status_code=422, detail="kind 只支持 all、generate 或 edit")
+        raise HTTPException(status_code=422, detail="kind 只支持 all、generate、edit 或 background_replace")
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
@@ -167,6 +194,8 @@ def list_task_center(
             items.append(group)
     if kind in {"all", "edit"}:
         items.extend(_poster_groups(db))
+    if kind in {"all", "background_replace"}:
+        items.extend(_background_groups(db))
 
     if status != "all":
         items = [item for item in items if item["status"] == status]

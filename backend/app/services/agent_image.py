@@ -33,11 +33,12 @@ def asset_public_url(
     asset_id: str,
     *,
     expires: int,
+    use_original: bool = False,
 ) -> str:
     asset = db.assets.find_one({"_id": asset_id})
     if asset is None:
         raise CoreAIError("reference_missing", "参考图片不存在", 422)
-    key = asset.get("prepared_path") or asset.get("path")
+    key = asset.get("path") if use_original else asset.get("prepared_path") or asset.get("path")
     if not key:
         raise CoreAIError("reference_missing", "参考图片缺少存储路径", 422)
     if store.local_path(key) is None:
@@ -145,6 +146,7 @@ def save_png_asset(
     data: bytes,
     role: str,
     target_size: tuple[int, int] | None = None,
+    require_aspect_match: bool = False,
 ) -> dict[str, Any]:
     try:
         with Image.open(io.BytesIO(data)) as source:
@@ -152,17 +154,32 @@ def save_png_asset(
             image.load()
             if image.mode not in {"RGB", "RGBA"}:
                 image = image.convert("RGB")
+            if target_size is not None and require_aspect_match:
+                target_width, target_height = target_size
+                target_ratio = target_width / target_height
+                source_ratio = image.width / image.height
+                if abs(source_ratio - target_ratio) / target_ratio > 0.02:
+                    raise CoreAIError(
+                        "output_aspect_mismatch",
+                        "Agent 返回画幅与当前海报不一致："
+                        f"{image.width}×{image.height}，需要 "
+                        f"{target_width}×{target_height}。请重新修改。",
+                        502,
+                    )
             if target_size is not None:
-                image = ImageOps.fit(
+                image = ImageOps.pad(
                     image,
                     target_size,
                     method=Image.Resampling.LANCZOS,
+                    color=(0, 0, 0, 0) if image.mode == "RGBA" else "white",
                     centering=(0.5, 0.5),
                 )
             buffer = io.BytesIO()
             image.save(buffer, format="PNG", optimize=True)
             png = buffer.getvalue()
             width, height = image.size
+    except CoreAIError:
+        raise
     except Exception as exc:
         raise CoreAIError("invalid_output", "Agent 返回的图片无法解码", 502) from exc
 

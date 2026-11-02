@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     core_ai_prompt_agent_timeout_seconds: int = 900
     core_ai_image_agent_id: str = "86c3a160-54fa-4344-9bc1-6ac56c1e080c"
     core_ai_image_agent_timeout_seconds: int = 900
+    core_ai_background_replace_agent_id: str = "d1692e66-c34b-4e70-9437-7462258dd84e"
+    core_ai_background_replace_agent_timeout_seconds: int = 2700
     core_ai_image_model: str = "gpt-image-2.5-sunburst"
     core_ai_design_model: str = "gpt-6.1-sol"
     core_ai_image_quality: str = "high"

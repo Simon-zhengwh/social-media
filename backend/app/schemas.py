@@ -166,6 +166,26 @@ class WholeImageTaskCreate(BaseModel):
         return text or None
 
 
+class BackgroundReplacementItem(BaseModel):
+    target: str = Field(min_length=1, max_length=1000)
+    asset_id: str = Field(min_length=1, max_length=128)
+
+    @field_validator("target", "asset_id", mode="before")
+    @classmethod
+    def strip_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
+class BackgroundReplacementRequest(BaseModel):
+    source_asset_id: str = Field(min_length=1, max_length=128)
+    replacements: list[BackgroundReplacementItem] = Field(min_length=1, max_length=5)
+
+    @field_validator("source_asset_id", mode="before")
+    @classmethod
+    def strip_source(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+
 class PosterEditRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=5000)
     asset_ids: list[str] = Field(default_factory=list, max_length=5)
@@ -184,6 +204,7 @@ class WholeImageEditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=1000)
     source_version_id: str = Field(min_length=1, max_length=128)
     source_output_id: str | None = Field(default=None, max_length=128)
+    reference_asset_ids: list[str] = Field(default_factory=list, max_length=5)
 
     @field_validator("instruction", "source_version_id", mode="before")
     @classmethod
@@ -197,6 +218,13 @@ class WholeImageEditRequest(BaseModel):
     def normalize_whole_output_id(cls, value: Any) -> str | None:
         text = str(value or "").strip()
         return text or None
+
+    @field_validator("reference_asset_ids", mode="before")
+    @classmethod
+    def normalize_whole_reference_asset_ids(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
 
 
 class PosterEditBatchRequest(PosterEditRequest):

@@ -153,13 +153,25 @@ class CosObjectStore:
         return f"cos:{self.settings.cos_bucket}/{self.settings.cos_region}"
 
 
+def _resolved_local_path(path: Path) -> Path:
+    resolved = path.resolve()
+    # Windows can retain the extended prefix when another worker creates a parent mid-resolution.
+    if os.name == "nt":
+        value = str(resolved)
+        if value.startswith("\\\\?\\UNC\\"):
+            return Path("\\\\" + value[8:])
+        if value.startswith("\\\\?\\"):
+            return Path(value[4:])
+    return resolved
+
+
 class LocalObjectStore:
     def __init__(self, root: Path) -> None:
-        self.root = root.resolve()
+        self.root = _resolved_local_path(root)
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, key: str) -> Path:
-        candidate = (self.root / key).resolve()
+        candidate = _resolved_local_path(self.root / key)
         if candidate != self.root and self.root not in candidate.parents:
             raise ObjectStoreError("非法的对象键")
         return candidate

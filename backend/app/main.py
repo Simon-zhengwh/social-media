@@ -16,6 +16,8 @@ from app.services.core_ai import CoreAIClient
 from app.services import storage
 from app.services.object_store import create_object_store
 from app.services import poster_edit as poster_edit_service
+from app.routes import background_replace
+from app.services import background_replace as background_replace_service
 from app.services import whole_image as whole_image_service
 from app.services.storage import StorageError
 
@@ -37,6 +39,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db.command("ping")
         whole_image_service.mark_interrupted(db)
         resumable_poster_tasks = poster_edit_service.mark_interrupted(db)
+        resumable_replacements = background_replace_service.mark_interrupted(db)
+        db.background_replace_tasks.create_index([("created_at", -1)])
+        if resumable_replacements:
+            threading.Thread(
+                target=background_replace_service.resume_tasks,
+                args=(db, settings, app.state.store, app.state.core_ai),
+                name="resume-background-replacements", daemon=True,
+            ).start()
         db.whole_tasks.create_index([("created_at", -1)])
         db.whole_tasks.create_index(
             [("input.candidate_batch_id", 1), ("input.candidate_index", 1)]
@@ -68,6 +78,7 @@ app.include_router(brand_rules.router)
 app.include_router(platforms.router)
 app.include_router(prompts.router)
 app.include_router(poster_edit.router)
+app.include_router(background_replace.router)
 app.include_router(task_center.router)
 app.include_router(whole_image.router)
 

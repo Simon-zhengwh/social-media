@@ -290,6 +290,28 @@ class CoreAIClient:
             time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
         raise CoreAIError("agent_timeout", f"图片 Agent 等待超时（run_id: {run_id}）", 504)
 
+    def poll_agent_detail(self, run_id: str) -> AgentRunResult | None:
+        """Query an existing run once; never trigger a replacement run."""
+        if not self.settings.core_ai_api_key:
+            raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
+        if not run_id.strip():
+            raise CoreAIError("invalid_agent_run", "Agent run_id 不能为空", 422)
+        base = self.settings.core_ai_server_base_url.rstrip("/")
+        response = self._client.get(f"{base}/api/runs/{run_id}", timeout=30)
+        detail = self._json_or_error(response)
+        status = str(detail.get("status") or "")
+        if status in {"PENDING", "RUNNING"}:
+            return None
+        if status == "COMPLETED":
+            return AgentRunResult(
+                run_id=run_id, status=status,
+                output=detail.get("output") if isinstance(detail.get("output"), str) else "",
+                artifacts=self._agent_artifacts(detail.get("artifacts")),
+            )
+        if status in {"FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}:
+            raise CoreAIError("agent_run_failed", f"图片 Agent 运行失败：{detail.get('error') or status}")
+        raise CoreAIError("invalid_agent_run", "Agent 返回了未知运行状态")
+
     def _agent_artifacts(self, raw: Any) -> list[AgentArtifact]:
         artifacts: list[AgentArtifact] = []
         if not isinstance(raw, list):
@@ -316,19 +338,18 @@ class CoreAIClient:
         return artifacts
 
     def download_agent_images(self, result: AgentRunResult) -> list[DownloadedAgentImage]:
+        artifacts = {artifact.download_url: artifact for artifact in result.artifacts}
+        # Artifacts include intermediate tool images; the final reply identifies deliverables.
+        delivered_urls = self._markdown_image_links(result.output)
+        selected_urls = delivered_urls or list(artifacts)
         urls: list[tuple[str, str, str]] = []
-        seen: set[str] = set()
-        for artifact in result.artifacts:
-            if artifact.download_url in seen:
-                continue
-            seen.add(artifact.download_url)
-            urls.append((artifact.download_url, artifact.file_name, artifact.content_type))
-        if not urls:
-            for index, url in enumerate(self._markdown_image_links(result.output), start=1):
-                if url in seen:
-                    continue
-                seen.add(url)
-                urls.append((url, f"agent-image-{index}.png", "image/png"))
+        for index, url in enumerate(selected_urls, start=1):
+            artifact = artifacts.get(url)
+            urls.append((
+                url,
+                artifact.file_name if artifact else f"agent-image-{index}.png",
+                artifact.content_type if artifact else "image/png",
+            ))
         if not urls:
             raise CoreAIError("agent_image_missing", "Agent 已完成，但没有返回图片")
         images: list[DownloadedAgentImage] = []
@@ -350,6 +371,8 @@ class CoreAIClient:
                     )
                 )
             except CoreAIError as exc:
+                if delivered_urls:
+                    raise
                 last_error = exc
         if not images:
             raise last_error or CoreAIError("download_failed", "Agent 图片下载失败")

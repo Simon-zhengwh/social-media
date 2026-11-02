@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import AssetLibrary from './components/AssetLibrary'
 import BrandStudio from './components/BrandStudio'
 import PosterEditStudio from './components/PosterEditStudio'
+import BackgroundReplaceStudio from './components/BackgroundReplaceStudio'
 import Sidebar, { type AppView } from './components/Sidebar'
 import TaskCenter from './components/TaskCenter'
 import WholeImageStudio from './components/WholeImageStudio'
@@ -17,6 +18,7 @@ import type { Asset, BrandStyle, PlatformPreset } from './types'
 
 function readView(): AppView {
   const value = new URLSearchParams(window.location.search).get('view')
+  if (value === 'background_replace') return 'background_replace'
   if (value === 'assets') {
     return 'assets'
   }
@@ -44,6 +46,7 @@ function updateUrl(next: AppView) {
   url.searchParams.delete('poster_batch')
   url.searchParams.delete('poster')
   url.searchParams.delete('candidate')
+  url.searchParams.delete('replacement')
   window.history.replaceState({}, '', url)
 }
 
@@ -74,6 +77,11 @@ const VIEW_META: Record<
   poster_edit: {
     kicker: 'POSTER EDIT',
     title: '修改海报',
+    meta: null,
+  },
+  background_replace: {
+    kicker: 'PHOTO REPLACEMENT',
+    title: '背景替换',
     meta: null,
   },
   assets: {
@@ -201,7 +209,7 @@ export default function App() {
   }, [])
 
   const handleViewChange = (next: AppView) => {
-    if (next === view && (next === 'whole' || next === 'poster_edit')) {
+    if (next === view && (next === 'whole' || next === 'poster_edit' || next === 'background_replace')) {
       setStudioRevision((current) => current + 1)
     }
     setView(next)
@@ -258,8 +266,17 @@ export default function App() {
     setView('poster_edit')
   }
 
-  const handleCreateTask = (kind: 'generate' | 'edit') => {
-    const next: AppView = kind === 'edit' ? 'poster_edit' : 'whole'
+  const handleOpenReplacement = (taskId: string) => {
+    updateUrl('background_replace')
+    const url = new URL(window.location.href)
+    url.searchParams.set('replacement', taskId)
+    window.history.replaceState({}, '', url)
+    setStudioRevision((current) => current + 1)
+    setView('background_replace')
+  }
+
+  const handleCreateTask = (kind: 'generate' | 'edit' | 'background_replace') => {
+    const next: AppView = kind === 'background_replace' ? 'background_replace' : kind === 'edit' ? 'poster_edit' : 'whole'
     updateUrl(next)
     setStudioRevision((current) => current + 1)
     setView(next)
@@ -288,6 +305,7 @@ export default function App() {
           <TaskCenter
             onOpenTask={handleOpenTask}
             onOpenPosterBatch={handleOpenPosterBatch}
+            onOpenReplacement={handleOpenReplacement}
             onCreate={handleCreateTask}
           />
         ) : view === 'whole' ? (
@@ -308,6 +326,14 @@ export default function App() {
         ) : view === 'poster_edit' ? (
           <PosterEditStudio
             key={`poster-edit-${studioRevision}`}
+            assets={assets}
+            assetsLoading={assetsLoading}
+            onLoadAssets={() => void loadAssets()}
+            onGoAssets={() => handleViewChange('assets')}
+          />
+        ) : view === 'background_replace' ? (
+          <BackgroundReplaceStudio
+            key={`background-replace-${studioRevision}`}
             assets={assets}
             assetsLoading={assetsLoading}
             onLoadAssets={() => void loadAssets()}

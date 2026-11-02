@@ -10,7 +10,7 @@ import mongomock
 import pytest
 from PIL import Image
 
-from app.services.core_ai import CoreAIClient, CoreAIError
+from app.services.core_ai import AgentArtifact, AgentRunResult, CoreAIClient, CoreAIError
 from app.services.image_ref import ImageRef, image_ref_from_asset
 
 
@@ -429,3 +429,114 @@ def test_run_agent_detail_returns_artifacts(settings):
     assert result.run_id == "run-1"
     assert result.output == "done"
     assert [item.file_name for item in result.artifacts] == ["layer.png", "final.png"]
+
+
+@pytest.mark.parametrize("with_artifacts", [False, True])
+def test_download_agent_images_prefers_final_reply_over_intermediate_artifacts(
+    settings, monkeypatch, with_artifacts
+):
+    requested = []
+    layer = image_bytes(color=(20, 80, 180))
+    final = image_bytes(color=(230, 210, 180))
+
+    def handler(request):
+        requested.append(request.url.path)
+        data = layer if request.url.path == "/layer.png" else final
+        return httpx.Response(200, content=data, headers={"Content-Type": "image/png"})
+
+    artifacts = [
+        AgentArtifact("placeholder.png", "image/png", "https://files.example.com/intermediate.png"),
+        AgentArtifact("poster.png", "image/png", "https://files.example.com/final.png"),
+        AgentArtifact("layer.png", "image/png", "https://files.example.com/layer.png"),
+    ] if with_artifacts else []
+    result = AgentRunResult(
+        run_id="run-1", status="COMPLETED", artifacts=artifacts,
+        output=(
+            "![透明图层](https://files.example.com/layer.png)\n"
+            "![最终成图](https://files.example.com/final.png)\n"
+            "![重复链接](https://files.example.com/final.png)"
+        ),
+    )
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    try:
+        images = client.download_agent_images(result)
+    finally:
+        client.close()
+
+    assert requested == ["/layer.png", "/final.png"]
+    assert [image.data for image in images] == [layer, final]
+    if with_artifacts:
+        assert [image.file_name for image in images] == ["layer.png", "poster.png"]
+
+
+def test_download_agent_images_uses_artifacts_when_final_reply_has_no_images(settings, monkeypatch):
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.path)
+        return httpx.Response(200, content=image_bytes(), headers={"Content-Type": "image/png"})
+
+    result = AgentRunResult(
+        run_id="run-1", status="COMPLETED", output="已完成",
+        artifacts=[AgentArtifact("poster.png", "image/png", "https://files.example.com/final.png")],
+    )
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    try:
+        images = client.download_agent_images(result)
+    finally:
+        client.close()
+
+    assert requested == ["/final.png"]
+    assert len(images) == 1
+    assert images[0].file_name == "poster.png"
+
+
+def test_failed_final_image_does_not_fall_back_to_intermediate_artifacts(settings, monkeypatch):
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.path)
+        if request.url.path == "/final.png":
+            return httpx.Response(404)
+        return httpx.Response(200, content=image_bytes(), headers={"Content-Type": "image/png"})
+
+    result = AgentRunResult(
+        run_id="run-1", status="COMPLETED",
+        output="![最终成图](https://files.example.com/final.png)",
+        artifacts=[AgentArtifact("placeholder.png", "image/png", "https://files.example.com/intermediate.png")],
+    )
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    try:
+        with pytest.raises(CoreAIError) as exc:
+            client.download_agent_images(result)
+        assert exc.value.code == "download_failed"
+    finally:
+        client.close()
+
+    assert requested == ["/final.png"]
+
+
+def test_final_image_failure_is_not_hidden_by_a_successful_layer_download(settings, monkeypatch):
+    def handler(request):
+        if request.url.path == "/final.png":
+            return httpx.Response(404)
+        return httpx.Response(200, content=image_bytes(), headers={"Content-Type": "image/png"})
+
+    result = AgentRunResult(
+        run_id="run-1", status="COMPLETED",
+        output=(
+            "![透明图层](https://files.example.com/layer.png)\n"
+            "![最终成图](https://files.example.com/final.png)"
+        ),
+    )
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    try:
+        with pytest.raises(CoreAIError) as exc:
+            client.download_agent_images(result)
+        assert exc.value.code == "download_failed"
+    finally:
+        client.close()

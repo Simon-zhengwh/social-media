@@ -365,6 +365,7 @@ def test_generation_separates_subject_images_from_style_only_references(
         "Never reuse people, faces, identities, poses, clothing, or subjects from style references"
         in prompt
     )
+    assert "Do not take food content from style-only references" in prompt
     assert fake.edit_calls[0]["reference_names"] == [
         "person.png",
         "style-with-person.png",
@@ -430,6 +431,235 @@ def test_generation_does_not_impose_a_global_decoration_limit(settings, store, o
     assert "Do not add unrequested written stickers" not in sent
     assert "Do not add other slogans, handwritten captions, notes, written stickers" not in sent
 
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_generation_protects_food_photos_in_raw_and_optimized_prompts(
+    settings, store, product_png, optimized
+):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "side-dishes.png")
+    request_text = "团餐海报，除了素材图之外禁止添加菜品，禁止重绘菜品"
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt=request_text, prompt_optimized=optimized,
+            product_asset_ids=[product.id], brand_mode="none",
+        ),
+        _request(db, settings, store, fake), BackgroundTasks(),
+    )
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    sent = fake.edit_calls[0]
+    prompt = sent["prompt"]
+    assert "full creative freedom" not in prompt
+    assert "Food-photo preservation:" in prompt
+    assert "crop, uniformly scale, or move" in prompt
+    assert "plating, tableware, lighting, and relative positions" in prompt
+    assert "Do not redraw, retouch, replace, rearrange, add, or remove food" in prompt
+    assert "only when the user explicitly requests that specific change" in prompt
+    assert prompt.endswith(request_text)
+    assert sent["reference_bytes"] == [store.get_bytes(product.prepared_path)]
+    saved = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    assert saved["model_input"]["prompt"] == prompt
+
+
+def test_text_edit_protects_food_in_both_gateway_and_agent_inputs(
+    settings, store, product_png
+):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "side-dishes.png")
+    created = _create(
+        db, settings, store, fake,
+        prompt="原始文案：鲜切牛肉，搭配满桌招牌配菜。禁止重绘菜品",
+        product_asset_ids=[product.id],
+    )
+    task_id = created["id"]
+    whole_service.run_generation(db, settings, store, fake, task_id)
+    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    fake.edit_calls.clear()
+    fake.fail_agent = False
+    instruction = "把文案改成：除了新鲜牛肉，配菜也很新鲜"
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(instruction=instruction, source_version_id=v1["_id"]),
+        _request(db, settings, store, fake), BackgroundTasks(),
+    )
+
+    whole_service.run_edit(db, settings, store, fake, task_id, instruction, v1["_id"])
+
+    gateway_prompt = fake.edit_calls[0]["prompt"]
+    agent_prompt = fake.agent_calls[-1]["input"]
+    for prompt in (gateway_prompt, agent_prompt):
+        assert "Use the current poster as the editing base" in prompt
+        assert "Food-photo preservation:" in prompt
+        assert "Do not redraw, retouch, replace, rearrange, add, or remove food" in prompt
+        assert "only when the user explicitly requests that specific change" in prompt
+        assert "For text-only edits, change only the requested lettering" in prompt
+        assert instruction in prompt
+        assert "原始文案：鲜切牛肉" not in prompt
+        assert "style and layout only" not in prompt
+        assert "do not use it as a pixel source" not in prompt
+    assert "Image 2 is the current poster to edit." in gateway_prompt
+    assert gateway_prompt.endswith(instruction)
+    assert agent_prompt.endswith(instruction + "\n\nhttps://example.com/current-poster.png")
+    version = db.whole_versions.find_one({"task_id": task_id, "version": 2})
+    for output in version["outputs"]:
+        expected = gateway_prompt if output["channel"] == "gateway" else agent_prompt
+        assert output["model_input"]["prompt"] == expected
+
+
+def test_edit_request_normalizes_and_persists_reference_asset_ids(settings, store, product_png):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "dish.png")
+    reference = _seed_product(db, settings, store, product_png, "reference.png")
+    created = _create(
+        db,
+        settings,
+        store,
+        fake,
+        product_asset_ids=[product.id],
+    )
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+    version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+
+    payload = WholeImageEditRequest(
+        instruction="参考这张图调整配色",
+        source_version_id=version["_id"],
+        reference_asset_ids=[reference.id, reference.id],
+    )
+    assert payload.reference_asset_ids == [reference.id]
+
+    task = whole_routes.create_edit(
+        created["id"],
+        payload,
+        _request(db, settings, store, fake),
+        BackgroundTasks(),
+    )
+
+    assert task["edit"]["reference_asset_ids"] == [reference.id]
+    assert task["messages"][-1]["attachments"] == [
+        {
+            "asset_id": reference.id,
+            "name": "reference.png",
+            "url": f"/api/assets/{reference.id}/file",
+        }
+    ]
+
+
+def test_edit_reference_images_reach_both_branches(
+    settings, store, product_png, monkeypatch
+):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "dish.png")
+    reference = _seed_product(db, settings, store, product_png, "reference.png")
+    created = _create(
+        db,
+        settings,
+        store,
+        fake,
+        product_asset_ids=[product.id],
+    )
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+    version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    fake.edit_calls.clear()
+    fake.agent_calls.clear()
+    fake.fail_agent = False
+    monkeypatch.setattr(
+        whole_service.agent_image,
+        "asset_public_url",
+        lambda _db, _settings, _store, _client, asset_id, **_kwargs: (
+            f"https://example.com/{asset_id}.png"
+        ),
+    )
+    instruction = "参考这张图调整配色"
+
+    whole_routes.create_edit(
+        created["id"],
+        WholeImageEditRequest(
+            instruction=instruction,
+            source_version_id=version["_id"],
+            reference_asset_ids=[reference.id],
+        ),
+        _request(db, settings, store, fake),
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(
+        db,
+        settings,
+        store,
+        fake,
+        created["id"],
+        instruction,
+        version["_id"],
+        reference_asset_ids=[reference.id],
+    )
+
+    gateway_call = fake.edit_calls[-1]
+    source = db.assets.find_one({"_id": version["output_asset_id"]})
+    assert gateway_call["reference_names"][-2:] == [
+        source["original_name"],
+        "reference.png",
+    ]
+    assert "Image 3 is this turn's user-supplied edit reference 1." in gateway_call["prompt"]
+    agent_input = fake.agent_calls[-1]["input"]
+    assert agent_input.endswith(
+        "https://example.com/"
+        + str(version["output_asset_id"])
+        + f".png\nhttps://example.com/{reference.id}.png"
+    )
+    task = db.whole_tasks.find_one({"_id": created["id"]})
+    gateway_images = task["edit"]["branches"]["gateway"]["model_input"]["images"]
+    agent_images = task["edit"]["branches"]["agent"]["model_input"]["images"]
+    assert [image["role"] for image in gateway_images] == [
+        "product",
+        "current_design",
+        "edit_reference",
+    ]
+    assert [image["role"] for image in agent_images] == [
+        "edit_target",
+        "edit_reference",
+    ]
+    expected_orientation = (
+        "portrait" if source["height"] > source["width"]
+        else "landscape" if source["width"] > source["height"]
+        else "square"
+    )
+    assert "Canvas contract:" in agent_input
+    assert f"{source['width']}×{source['height']}" in agent_input
+    assert expected_orientation in agent_input
+    assert "1:1" in agent_input
+    agent_model_input = task["edit"]["branches"]["agent"]["model_input"]
+    assert agent_model_input["parameters"]["width"] == source["width"]
+    assert agent_model_input["parameters"]["height"] == source["height"]
+    assert agent_model_input["parameters"]["orientation"] == expected_orientation
+    assert agent_model_input["parameters"]["aspect_ratio"] == "1:1"
+    assert task["edit"]["reference_asset_ids"] == [reference.id]
+
+
+def test_agent_final_output_must_match_current_canvas(settings, store):
+    db = mongomock.MongoClient().db
+    buffer = io.BytesIO()
+    Image.new("RGB", (1536, 1152), (80, 40, 20)).save(buffer, format="PNG")
+
+    with pytest.raises(CoreAIError) as exc_info:
+        whole_service.agent_image.save_png_asset(
+            db,
+            settings,
+            store,
+            key_prefix="aspect-mismatch",
+            original_stem="aspect-mismatch",
+            data=buffer.getvalue(),
+            role="agent_result",
+            target_size=(1072, 1440),
+            require_aspect_match=True,
+        )
+
+    assert exc_info.value.code == "output_aspect_mismatch"
+    assert db.assets.count_documents({}) == 0
 
 def test_failed_generation_exposes_the_attempted_model_input(settings, store, product_png):
     db = mongomock.MongoClient().db
@@ -531,7 +761,7 @@ def test_six_products_reach_generation_and_edit_in_order(settings, store, produc
     ]
     assert "Original content image(s): 1-6." in sent["prompt"]
     assert "Image 7 is the original logo." in sent["prompt"]
-    assert "Image 8 is the generated design reference" in sent["prompt"]
+    assert "Image 8 is the current poster to edit." in sent["prompt"]
     task = db.whole_tasks.find_one({"_id": task_id})
     assert task["edit"]["status"] == "idle"
     assert [image["asset_id"] for image in task["model_input_latest"]["images"]] == (
@@ -800,10 +1030,10 @@ def test_edit_sends_original_assets_before_current_source(
     assert refs[2] == source_bytes
     prompt = fake.edit_calls[-1]["prompt"]
     assert "Original content image(s): 1-2." in prompt
-    assert "Image 3 is the generated design reference for style and layout only." in prompt
-    assert "Use these originals as the source of subjects and fine details" in prompt
-    assert "Do not repaint, retouch, or trace the generated image" in prompt
-    assert "do not use it as a pixel source or image-to-image base" in prompt
+    assert "Image 3 is the current poster to edit." in prompt
+    assert "Use these originals only to check subject identity and details" in prompt
+    assert "Use the current poster as the editing base" in prompt
+    assert "do not reconstruct the current poster from them" in prompt
     assert "Apply only the requested changes" in prompt
     assert "keep all other content, text, composition, and style unchanged" in prompt
     assert prompt.endswith("把日期改成本周末")
@@ -877,7 +1107,7 @@ def test_edit_omits_style_references(
         store.get_bytes(source_asset["path"]),
     ]
     assert "Original content image(s): 1." in sent["prompt"]
-    assert "Image 2 is the generated design reference for style and layout only." in sent["prompt"]
+    assert "Image 2 is the current poster to edit." in sent["prompt"]
     assert sent["prompt"].endswith("调整海报配色")
     assert "Style-only reference image(s)" not in sent["prompt"]
     assert "把素材中的人物融合进海报" not in sent["prompt"]
@@ -941,7 +1171,7 @@ def test_edit_keeps_original_logo_without_brand_or_platform_context(settings, st
     sent = fake.edit_calls[-1]
     assert sent["reference_names"] == ["dish.png", "logo.png", created["id"] + "-v1.png"]
     assert "Image 2 is the original logo." in sent["prompt"]
-    assert "Image 3 is the generated design reference for style and layout only." in sent["prompt"]
+    assert "Image 3 is the current poster to edit." in sent["prompt"]
     assert "Preserve its original shape, wording, proportions, and colors" in sent["prompt"]
     assert sent["prompt"].endswith("把标题上移")
     for redundant_context in (
@@ -990,8 +1220,8 @@ def test_second_edit_reuses_originals_with_only_current_instruction_and_selected
     assert "把日期改成本周末" not in prompt
     assert "标题增加白色描边" in prompt
     assert "prior modifications" not in prompt
-    assert "Use these originals as the source of subjects and fine details" in prompt
-    assert "Do not repaint, retouch, or trace the generated image" in prompt
+    assert "Use these originals only to check subject identity and details" in prompt
+    assert "Use the current poster as the editing base" in prompt
     source_asset = db.assets.find_one({"_id": v2["output_asset_id"]})
     original_bytes = store.get_bytes(original.prepared_path)
     assert fake.edit_calls[0]["reference_bytes"][0] == original_bytes
@@ -1000,6 +1230,41 @@ def test_second_edit_reuses_originals_with_only_current_instruction_and_selected
     ]
     assert fake.edit_calls[-1]["reference_names"] == ["original.png", source_asset["original_name"]]
     assert db.whole_tasks.find_one({"_id": task_id})["edit"]["status"] == "idle"
+
+
+@pytest.mark.parametrize("channel", ["gateway", "agent"])
+@pytest.mark.parametrize("mode", ["RGB", "RGBA"])
+def test_output_size_normalization_keeps_both_edges_of_a_landscape_image(
+    settings, store, channel, mode
+):
+    from app.services import agent_image
+
+    db = mongomock.MongoClient().db
+    image = Image.new(mode, (120, 80), "white")
+    image.paste("red", (0, 0, 10, 80))
+    image.paste("blue", (110, 0, 120, 80))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    if channel == "gateway":
+        saved = whole_service._save_output_asset(
+            db, settings, store, task_id="task", version=2,
+            data=buffer.getvalue(), target_size=(120, 160),
+        )
+    else:
+        saved = agent_image.save_png_asset(
+            db, settings, store, key_prefix="task-v2", original_stem="task-v2",
+            data=buffer.getvalue(), role="agent_result", target_size=(120, 160),
+        )
+
+    with Image.open(io.BytesIO(store.get_bytes(saved["path"]))) as output:
+        assert output.size == (120, 160)
+        rgb = output.convert("RGB")
+        assert rgb.getpixel((0, 80)) == (255, 0, 0)
+        assert rgb.getpixel((119, 80)) == (0, 0, 255)
+        if mode == "RGBA":
+            assert output.getpixel((60, 0))[3] == 0
+        else:
+            assert rgb.getpixel((60, 0)) == (255, 255, 255)
 
 
 def test_failed_edit_keeps_last_good_version(settings, store):
@@ -1226,9 +1491,10 @@ def test_dual_edit_stores_three_outputs_and_requires_manual_selection(settings, 
     assert fake.agent_calls[-2]["upload_bytes"]
     assert fake.agent_calls[-1]["agent_id"] == settings.core_ai_image_agent_id
     assert fake.agent_calls[-1]["timeout_seconds"] == 900
-    assert fake.agent_calls[-1]["input"] == (
-        "把背景换成橙色\n\nhttps://example.com/current-poster.png"
-    )
+    agent_input = fake.agent_calls[-1]["input"]
+    assert "Use the current poster as the editing base" in agent_input
+    assert "Food-photo preservation:" in agent_input
+    assert agent_input.endswith("把背景换成橙色\n\nhttps://example.com/current-poster.png")
 
     out = whole_routes.get_task(task_id, request)
     assert out["requires_output_selection"] is True
