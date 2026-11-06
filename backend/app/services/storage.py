@@ -40,7 +40,7 @@ SUPPORTED_IMAGE_SUFFIXES = frozenset(
 SUPPORTED_IMAGE_LABEL = (
     "JPEG、PNG、WebP、GIF、BMP、TIFF、AVIF、HEIC/HEIF、JPEG 2000、ICO、TGA"
 )
-STORAGE_SUBDIRS = ("originals", "prepared", "backgrounds", "outputs", "logs")
+STORAGE_SUBDIRS = ("originals", "prepared", "backgrounds", "outputs", "artifacts", "logs")
 
 
 class StorageError(Exception):
@@ -78,9 +78,9 @@ def resolve_storage_path(settings: Settings, relative: str) -> Path:
 
 
 def object_key(settings: Settings, subdir: str, name: str) -> str:
-    if subdir not in {"originals", "prepared", "backgrounds", "outputs"}:
+    if subdir not in {"originals", "prepared", "backgrounds", "outputs", "artifacts"}:
         raise StorageError("invalid_subdir", "非法的对象目录")
-    if not name.endswith(".png") and subdir != "originals":
+    if subdir not in {"originals", "artifacts"} and not name.endswith(".png"):
         name = f"{name}.png"
     prefix = settings.cos_prefix.strip("/") or "social-media"
     return f"{prefix}/{subdir}/{name}"

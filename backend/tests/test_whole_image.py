@@ -1692,3 +1692,20 @@ def test_preset_brand_accepts_existing_reference_with_legacy_null_kind(settings,
     task = db.whole_tasks.find_one({"_id": created["id"]})
     assert task["status"] == "succeeded"
     assert fake.edit_calls[-1]["reference_names"] == ["dish.png", "reference-1.jpg"]
+
+
+def test_artifact_object_keys_keep_their_extension(settings):
+    assert (
+        storage.object_key(settings, "artifacts", "wtask_v2_wart_abc.html")
+        == "social-media/artifacts/wtask_v2_wart_abc.html"
+    )
+    assert (
+        storage.object_key(settings, "artifacts", "wtask_v2_wart_abc.zip")
+        == "social-media/artifacts/wtask_v2_wart_abc.zip"
+    )
+    assert (
+        storage.object_key(settings, "outputs", "wtask_v2")
+        == "social-media/outputs/wtask_v2.png"
+    )
+    with pytest.raises(storage.StorageError):
+        storage.object_key(settings, "elsewhere", "x.png")
