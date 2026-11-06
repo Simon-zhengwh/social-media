@@ -2,17 +2,25 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageOps
 
 from app.config import Settings
 from app.services import storage
-from app.services.core_ai import AgentRunResult, CoreAIClient, CoreAIError, DownloadedAgentImage
+from app.services.core_ai import (
+    AgentArtifact,
+    AgentRunResult,
+    CoreAIClient,
+    CoreAIError,
+    DownloadedAgentImage,
+)
 from app.services.object_store import ObjectStore
 
 
@@ -213,3 +221,168 @@ def save_png_asset(
         "height": height,
     }
 
+
+AUXILIARY_IMAGE = re.compile(
+    r"透明|前景|蒙版|遮罩|mask|cutout|抠图|对比|comparison|before[_ -]?after|"
+    r"原图|original|模板|template|贴纸|sticker|改动区域|edit-region",
+    re.I,
+)
+GENERIC_IMAGE_NAME = re.compile(r"^generated-image\.(png|jpe?g|webp)$", re.I)
+FINAL_HINT = re.compile(
+    r"最终|成图|成品|替换后|修改后|改字后|海报|poster|final|result|预览|preview",
+    re.I,
+)
+TRANSPARENT_HINT = re.compile(r"透明|前景|foreground|layer|alpha", re.I)
+MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(<?([^\s)>]+)>?(?:\s+\"[^\"]*\")?\)")
+
+ARTIFACT_KINDS = {"text/html": "html", "application/zip": "bundle"}
+ARTIFACT_SUFFIXES = {
+    "text/html": ".html",
+    "application/zip": ".zip",
+    "application/json": ".json",
+    "text/markdown": ".md",
+    "text/plain": ".txt",
+}
+
+
+def artifact_suffix(content_type: str) -> str:
+    return ARTIFACT_SUFFIXES.get(content_type.split(";")[0].strip().lower(), ".bin")
+
+
+def has_transparency(data: bytes) -> bool:
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source)
+            image.load()
+            if "A" not in image.getbands():
+                return False
+            alpha = image.convert("RGBA").getchannel("A")
+            low, _high = alpha.getextrema()
+            return low < 250
+    except Exception:
+        return False
+
+
+def _image_artifacts(result: AgentRunResult) -> list[AgentArtifact]:
+    return [
+        artifact
+        for artifact in result.artifacts
+        if artifact.content_type.split(";")[0].strip().lower().startswith("image/")
+    ]
+
+
+def _describe(artifact: AgentArtifact) -> str:
+    return f"{artifact.title} {artifact.file_name}".strip()
+
+
+def _is_auxiliary(artifact: AgentArtifact) -> bool:
+    if AUXILIARY_IMAGE.search(_describe(artifact)):
+        return True
+    title = artifact.title.strip().lower()
+    return bool(GENERIC_IMAGE_NAME.match(artifact.file_name.strip())) and title in {
+        "",
+        "generated image",
+    }
+
+
+def pick_final_image_urls(result: AgentRunResult) -> list[str]:
+    images = _image_artifacts(result)
+    by_url = {artifact.download_url: artifact for artifact in images}
+    ordered: list[str] = []
+    for url in MARKDOWN_IMAGE.findall(result.output or ""):
+        artifact = by_url.get(url)
+        if artifact is None or _is_auxiliary(artifact):
+            continue
+        if url not in ordered:
+            ordered.append(url)
+    if ordered:
+        return ordered
+    for artifact in images:
+        if not _is_auxiliary(artifact) and FINAL_HINT.search(_describe(artifact)):
+            if artifact.download_url not in ordered:
+                ordered.append(artifact.download_url)
+    if ordered:
+        return ordered
+    return [artifact.download_url for artifact in images]
+
+
+def pick_transparent_image_url(
+    result: AgentRunResult, *, excluded: list[str]
+) -> str | None:
+    candidates = [
+        artifact
+        for artifact in _image_artifacts(result)
+        if artifact.download_url not in excluded
+    ]
+    for artifact in candidates:
+        if TRANSPARENT_HINT.search(_describe(artifact)):
+            return artifact.download_url
+    # Titles are not always descriptive; the caller validates the bytes with
+    # has_transparency() before using this layer, so the first remaining
+    # candidate is a safe fallback.
+    return candidates[0].download_url if candidates else None
+
+
+def pick_html_artifact(result: AgentRunResult) -> AgentArtifact | None:
+    for artifact in result.artifacts:
+        if artifact.content_type.split(";")[0].strip().lower() == "text/html":
+            return artifact
+        if artifact.file_name.lower().endswith((".html", ".htm")):
+            return artifact
+    return None
+
+
+def pick_bundle_artifact(result: AgentRunResult) -> AgentArtifact | None:
+    for artifact in result.artifacts:
+        if artifact.content_type.split(";")[0].strip().lower() == "application/zip":
+            return artifact
+    return None
+
+
+def save_agent_artifact(
+    db: Any,
+    settings: Settings,
+    store: ObjectStore,
+    *,
+    task_id: str,
+    version: int,
+    artifact: AgentArtifact,
+    data: bytes,
+) -> dict[str, Any]:
+    content_type = (
+        artifact.content_type.split(";")[0].strip().lower()
+        or "application/octet-stream"
+    )
+    suffix = artifact_suffix(content_type)
+    artifact_id = f"wart_{uuid.uuid4().hex}"
+    relative = storage.object_key(
+        settings, "artifacts", f"{task_id}_v{version}_{artifact_id}{suffix}"
+    )
+    store.put_bytes(relative, data, content_type)
+    file_name = Path(artifact.file_name or f"agent-artifact{suffix}").name
+    if not file_name.lower().endswith(suffix):
+        file_name = f"{Path(file_name).stem or 'agent-artifact'}{suffix}"
+    db.whole_artifacts.insert_one(
+        {
+            "_id": artifact_id,
+            "task_id": task_id,
+            "version": version,
+            "kind": ARTIFACT_KINDS.get(content_type, "file"),
+            "file_name": file_name,
+            "content_type": content_type,
+            "path": relative,
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "title": artifact.title,
+            "source_url": artifact.download_url,
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+    return {
+        "id": artifact_id,
+        "kind": ARTIFACT_KINDS.get(content_type, "file"),
+        "file_name": file_name,
+        "content_type": content_type,
+        "size": len(data),
+        "title": artifact.title,
+    }
