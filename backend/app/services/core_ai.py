@@ -372,7 +372,9 @@ class CoreAIClient:
                     run_id=run_id,
                     status=status,
                     output=output if isinstance(output, str) else "",
-                    artifacts=self._agent_artifacts(detail.get("artifacts")),
+                    artifacts=self._agent_artifacts(
+                        detail.get("artifacts"), include_files=True
+                    ),
                     token_usage=detail.get("token_usage") if isinstance(detail.get("token_usage"), dict) else {},
                     started_at=detail.get("started_at") if isinstance(detail.get("started_at"), str) else None,
                     completed_at=detail.get("completed_at") if isinstance(detail.get("completed_at"), str) else None,
@@ -407,7 +409,9 @@ class CoreAIClient:
             raise CoreAIError("agent_run_failed", f"图片 Agent 运行失败：{detail.get('error') or status}")
         raise CoreAIError("invalid_agent_run", "Agent 返回了未知运行状态")
 
-    def _agent_artifacts(self, raw: Any) -> list[AgentArtifact]:
+    def _agent_artifacts(
+        self, raw: Any, *, include_files: bool = False
+    ) -> list[AgentArtifact]:
         artifacts: list[AgentArtifact] = []
         if not isinstance(raw, list):
             return artifacts
@@ -419,7 +423,12 @@ class CoreAIClient:
             if not isinstance(url, str) or not url.startswith("https://"):
                 continue
             if content_type and not content_type.startswith("image/"):
-                continue
+                if not (
+                    include_files
+                    and content_type.split(";")[0].strip().lower()
+                    in self.ARTIFACT_CONTENT_TYPES
+                ):
+                    continue
             artifacts.append(
                 AgentArtifact(
                     file_name=str(item.get("file_name") or "agent-image.png"),
@@ -436,7 +445,12 @@ class CoreAIClient:
         artifacts = {artifact.download_url: artifact for artifact in result.artifacts}
         # Artifacts include intermediate tool images; the final reply identifies deliverables.
         delivered_urls = self._markdown_image_links(result.output)
-        selected_urls = delivered_urls or list(artifacts)
+        image_fallback_urls = [
+            url
+            for url, artifact in artifacts.items()
+            if artifact.content_type.split(";")[0].strip().lower().startswith("image/")
+        ]
+        selected_urls = delivered_urls or image_fallback_urls
         urls: list[tuple[str, str, str]] = []
         for index, url in enumerate(selected_urls, start=1):
             artifact = artifacts.get(url)

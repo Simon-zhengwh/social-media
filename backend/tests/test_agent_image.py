@@ -78,19 +78,87 @@ def test_transparent_layer_is_never_picked_as_final():
     assert agent_image.has_transparency(layer.getvalue()) is True
     assert agent_image.has_transparency(poster.getvalue()) is False
 
+    layer_url = "https://f.example.com/layer.png"
+    final_url = "https://f.example.com/final.png"
     result = _result(
-        "![透明](https://f.example.com/layer.png)\n![成图](https://f.example.com/final.png)",
+        f"![透明]({layer_url})\n![成图]({final_url})",
         [
-            AgentArtifact("generated-image.png", "image/png", "https://f.example.com/layer.png", "Generated image"),
-            AgentArtifact("generated-image.png", "image/png", "https://f.example.com/final.png", "最终成图"),
+            AgentArtifact("generated-image.png", "image/png", layer_url, "模型原生透明前景"),
+            AgentArtifact("generated-image.png", "image/png", final_url, "最终成图"),
         ],
     )
+    assert agent_image.pick_final_image_urls(result) == [final_url]
+    assert layer_url not in agent_image.pick_final_image_urls(result)
     assert (
-        agent_image.pick_transparent_image_url(
-            result, excluded=["https://f.example.com/final.png"]
-        )
-        == "https://f.example.com/layer.png"
+        agent_image.pick_transparent_image_url(result, excluded=[final_url])
+        == layer_url
     )
+
+
+def test_opaque_and_composite_real_titles_are_picked_as_final():
+    opaque_url = "https://f.example.com/opaque.png"
+    beef_url = "https://f.example.com/beef.png"
+    preview_url = "https://f.example.com/preview.png"
+    layer_url = "https://f.example.com/layer.png"
+    result = _result(
+        "",
+        [
+            AgentArtifact("generated-image.png", "image/png", layer_url, "模型原生透明前景"),
+            AgentArtifact("opaque.png", "image/png", opaque_url, "背景替换后整图（1086x1448全不透明 PNG）"),
+            AgentArtifact("beef.png", "image/png", beef_url, "牛肉替换后的海报成图（600x806，完全不透明）"),
+            AgentArtifact("preview.png", "image/png", preview_url, "替换效果预览（新背景 +原设计前景）"),
+        ],
+    )
+
+    assert agent_image.pick_final_image_urls(result) == [
+        opaque_url,
+        beef_url,
+        preview_url,
+    ]
+
+
+def test_real_transparent_layer_title_stays_auxiliary():
+    layer_url = "https://f.example.com/layer.png"
+    final_url = "https://f.example.com/final.png"
+    result = _result(
+        "",
+        [
+            AgentArtifact("generated-image.png", "image/png", layer_url, "模型原生透明前景"),
+            AgentArtifact("poster.png", "image/png", final_url, "海报成品"),
+        ],
+    )
+
+    assert agent_image.pick_final_image_urls(result) == [final_url]
+
+
+def test_result_titles_are_picked_by_title_tier():
+    default_url = "https://f.example.com/default.png"
+    background_url = "https://f.example.com/background.png"
+    intermediate_url = "https://f.example.com/intermediate.png"
+    result = _result(
+        "已完成，详情见附件",
+        [
+            AgentArtifact("compose.png", "image/png", default_url, "默认合成结果1024x1536"),
+            AgentArtifact("background.png", "image/png", background_url, "模型原生补背景结果"),
+            AgentArtifact("generated-image.png", "image/png", intermediate_url, "Generated image"),
+        ],
+    )
+
+    assert agent_image.pick_final_image_urls(result) == [default_url, background_url]
+
+
+def test_final_tier_three_prefers_non_auxiliary_images():
+    layer_url = "https://f.example.com/layer.png"
+    plain_url = "https://f.example.com/plain.png"
+    result = _result(
+        "",
+        [
+            AgentArtifact("generated-image.png", "image/png", layer_url, "模型原生透明前景"),
+            AgentArtifact("plain.png", "image/png", plain_url, "杂项"),
+        ],
+    )
+
+    assert agent_image.pick_final_image_urls(result) == [plain_url]
 
 
 def test_save_agent_artifact_stores_html_with_extension(settings, store):

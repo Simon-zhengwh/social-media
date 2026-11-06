@@ -609,3 +609,68 @@ def test_download_agent_file_rejects_images_and_oversize(settings, monkeypatch):
     finally:
         settings.max_download_bytes = original_limit
         client.close()
+
+
+def test_wait_agent_detail_includes_html_and_zip_but_poll_keeps_images_only(
+    settings, monkeypatch
+):
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.path)
+        if request.url.path.startswith("/api/runs/"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "run-files",
+                    "status": "COMPLETED",
+                    "output": "已完成",
+                    "artifacts": [
+                        {
+                            "file_name": "poster.png",
+                            "content_type": "image/png",
+                            "download_url": "https://files.example.com/poster.png",
+                        },
+                        {
+                            "file_name": "editor.html",
+                            "content_type": "text/html",
+                            "download_url": "https://files.example.com/editor.html",
+                        },
+                        {
+                            "file_name": "bundle.zip",
+                            "content_type": "application/zip",
+                            "download_url": "https://files.example.com/bundle.zip",
+                        },
+                    ],
+                },
+            )
+        return httpx.Response(
+            200, content=image_bytes(), headers={"Content-Type": "image/png"}
+        )
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    try:
+        waited = client.wait_agent_detail(
+            "run-files", timeout_seconds=10, poll_interval=0
+        )
+        polled = client.poll_agent_detail("run-files")
+        downloads = client.download_agent_images(waited)
+    finally:
+        client.close()
+
+    assert [item.file_name for item in waited.artifacts] == [
+        "poster.png",
+        "editor.html",
+        "bundle.zip",
+    ]
+    assert [item.file_name for item in polled.artifacts] == ["poster.png"]
+    # The reply has no image links, so the fallback must skip the HTML and ZIP.
+    assert [item.source_url for item in downloads] == [
+        "https://files.example.com/poster.png"
+    ]
+    assert requested == [
+        "/api/runs/run-files",
+        "/api/runs/run-files",
+        "/poster.png",
+    ]

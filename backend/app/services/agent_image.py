@@ -222,17 +222,20 @@ def save_png_asset(
     }
 
 
-AUXILIARY_IMAGE = re.compile(
-    r"透明|前景|蒙版|遮罩|mask|cutout|抠图|对比|comparison|before[_ -]?after|"
+STRONG_AUXILIARY = re.compile(
+    r"蒙版|遮罩|mask|cutout|抠图|对比|comparison|before[_ -]?after|"
     r"原图|original|模板|template|贴纸|sticker|改动区域|edit-region",
     re.I,
 )
+# "不透明" means opaque, the opposite of a transparent layer, so only an
+# un-negated 透明 counts as a transparency hint.
+WEAK_AUXILIARY = re.compile(r"(?<!不)透明|前景|foreground|layer|alpha", re.I)
 GENERIC_IMAGE_NAME = re.compile(r"^generated-image\.(png|jpe?g|webp)$", re.I)
 FINAL_HINT = re.compile(
-    r"最终|成图|成品|替换后|修改后|改字后|海报|poster|final|result|预览|preview",
+    r"最终|成图|成品|替换后|修改后|改字后|海报|poster|final|result|预览|preview|结果|合成",
     re.I,
 )
-TRANSPARENT_HINT = re.compile(r"透明|前景|foreground|layer|alpha", re.I)
+TRANSPARENT_HINT = re.compile(r"(?<!不)透明|前景|foreground|layer|alpha", re.I)
 MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(<?([^\s)>]+)>?(?:\s+\"[^\"]*\")?\)")
 
 ARTIFACT_KINDS = {"text/html": "html", "application/zip": "bundle"}
@@ -257,7 +260,9 @@ def has_transparency(data: bytes) -> bool:
             if "A" not in image.getbands():
                 return False
             alpha = image.convert("RGBA").getchannel("A")
-            low, _high = alpha.getextrema()
+            # A fully transparent image must still count as a layer, so only
+            # the minimum alpha is relevant.
+            low, _ = alpha.getextrema()
             return low < 250
     except Exception:
         return False
@@ -276,7 +281,12 @@ def _describe(artifact: AgentArtifact) -> str:
 
 
 def _is_auxiliary(artifact: AgentArtifact) -> bool:
-    if AUXILIARY_IMAGE.search(_describe(artifact)):
+    described = _describe(artifact)
+    if STRONG_AUXILIARY.search(described):
+        return True
+    # Weak markers (透明层/前景) only decide when no final hint is present, because
+    # real posters are titled "…全不透明" or "替换效果预览（新背景 +原设计前景）".
+    if WEAK_AUXILIARY.search(described) and not FINAL_HINT.search(described):
         return True
     title = artifact.title.strip().lower()
     return bool(GENERIC_IMAGE_NAME.match(artifact.file_name.strip())) and title in {
@@ -303,6 +313,9 @@ def pick_final_image_urls(result: AgentRunResult) -> list[str]:
                 ordered.append(artifact.download_url)
     if ordered:
         return ordered
+    candidates = [artifact for artifact in images if not _is_auxiliary(artifact)]
+    if candidates:
+        return [artifact.download_url for artifact in candidates]
     return [artifact.download_url for artifact in images]
 
 
