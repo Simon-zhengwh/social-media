@@ -399,8 +399,19 @@ def _version_document(
             "height": height,
             "selectable": True,
             "model_input": model_input,
+            "artifacts": [],
             "created_at": utcnow(),
         }
+    ]
+    # Keep the output schema uniform: only agent outputs carry artifacts, but
+    # every stored output exposes the key so clients can iterate safely.
+    normalized_outputs = [
+        (
+            {**item, "artifacts": item.get("artifacts") or []}
+            if isinstance(item, dict)
+            else item
+        )
+        for item in normalized_outputs
     ]
     return {
         "_id": f"wver_{uuid.uuid4().hex}",
@@ -765,6 +776,56 @@ def _gateway_edit_branch(
             source_ref.cleanup()
 
 
+OUTPUT_ORDER = {"gateway_result": 0, "agent_result": 1, "agent_transparent": 2}
+
+
+def _output_sort_key(item: dict[str, Any]) -> int:
+    if str(item.get("channel") or "gateway") == "gateway":
+        return 0
+    return OUTPUT_ORDER.get(str(item.get("role") or "gateway_result"), 3)
+
+
+def _save_agent_artifacts(
+    db: Database,
+    settings: Settings,
+    store: ObjectStore,
+    client: CoreAIClient,
+    *,
+    task_id: str,
+    version: int,
+    result: Any,
+) -> list[dict[str, Any]]:
+    picks: list[Any] = []
+    html = agent_image.pick_html_artifact(result)
+    if html is not None:
+        picks.append(html)
+    bundle = agent_image.pick_bundle_artifact(result)
+    if bundle is not None and bundle.download_url not in {
+        item.download_url for item in picks
+    }:
+        picks.append(bundle)
+    saved: list[dict[str, Any]] = []
+    for artifact in picks:
+        try:
+            data = client.download_agent_file(
+                artifact.download_url, content_type=artifact.content_type
+            )
+            saved.append(
+                agent_image.save_agent_artifact(
+                    db,
+                    settings,
+                    store,
+                    task_id=task_id,
+                    version=version,
+                    artifact=artifact,
+                    data=data,
+                )
+            )
+        except Exception:  # noqa: BLE001 - poster delivery must survive artifact failures
+            logger.exception("failed to store agent artifact for %s", task_id)
+    return saved
+
+
 def _agent_edit_branch(
     db: Database,
     settings: Settings,
@@ -848,7 +909,7 @@ def _agent_edit_branch(
         model_input = {
             "channel": "agent",
             "endpoint": f"/api/runs/agent/{settings.core_ai_image_agent_id}/trigger",
-            "model": "image-gen-skill",
+            "model": "image-editor",
             "prompt": agent_input,
             "parameters": {
                 "agent_id": settings.core_ai_image_agent_id,
@@ -876,37 +937,98 @@ def _agent_edit_branch(
             "agent",
             {"status": "running", "model_input": model_input, "updated_at": utcnow()},
         )
-        result, outputs = agent_image.run_agent_images(
-            client,
-            agent_id=settings.core_ai_image_agent_id,
-            input_text=agent_input,
+        result = client.run_agent_detail(
+            settings.core_ai_image_agent_id,
+            agent_input,
             timeout_seconds=settings.core_ai_image_agent_timeout_seconds,
         )
-        saved_outputs: list[dict[str, Any]] = []
-        for index, output in enumerate(outputs, start=1):
-            saved = agent_image.save_png_asset(
+        final_urls = agent_image.pick_final_image_urls(result)
+        if not final_urls:
+            raise CoreAIError("agent_image_missing", "Agent已完成，但没有返回海报图片", 502)
+        artifact_meta = _save_agent_artifacts(
+            db, settings, store, client, task_id=task_id, version=version, result=result
+        )
+        transparent_url = agent_image.pick_transparent_image_url(
+            result, excluded=final_urls
+        )
+        transparent_data: bytes | None = None
+        if transparent_url is not None:
+            try:
+                candidate = client.download_image(transparent_url)
+                if agent_image.has_transparency(candidate):
+                    transparent_data = candidate
+            except CoreAIError:
+                logger.warning("could not download agent layer for %s", task_id)
+        final_saved: dict[str, Any] | None = None
+        final_source: str | None = None
+        last_error: CoreAIError | None = None
+        for url in final_urls[:4]:
+            data = client.download_image(url)
+            if agent_image.has_transparency(data):
+                if transparent_data is None:
+                    transparent_data = data
+                continue
+            try:
+                saved = agent_image.save_png_asset(
+                    db,
+                    settings,
+                    store,
+                    key_prefix=f"{task_id}_v{version}_agent_1",
+                    original_stem=f"{task_id}-v{version}-agent-1",
+                    data=data,
+                    role="agent_result",
+                    target_size=target_size,
+                    require_aspect_match=True,
+                )
+            except CoreAIError as exc:
+                last_error = exc
+                continue
+            final_saved, final_source = saved, url
+            break
+        if final_saved is None:
+            raise last_error or CoreAIError(
+                "agent_image_missing", "Agent没有返回可用的最终海报", 502
+            )
+        saved_outputs: list[dict[str, Any]] = [
+            {
+                "id": f"agent_result_{uuid.uuid4().hex}",
+                "channel": "agent",
+                "role": "agent_result",
+                "label": "Agent最终图",
+                "asset_id": final_saved["asset_id"],
+                "width": final_saved["width"],
+                "height": final_saved["height"],
+                "selectable": True,
+                "model_input": model_input,
+                "source_url": final_source,
+                "artifacts": artifact_meta,
+                "created_at": utcnow(),
+            }
+        ]
+        if transparent_data is not None:
+            layer = agent_image.save_png_asset(
                 db,
                 settings,
                 store,
-                key_prefix=f"{task_id}_v{version}_agent_{index}",
-                original_stem=f"{task_id}-v{version}-agent-{index}",
-                data=output.data,
-                role=output.role,
+                key_prefix=f"{task_id}_v{version}_agent_2",
+                original_stem=f"{task_id}-v{version}-agent-2",
+                data=transparent_data,
+                role="agent_transparent",
                 target_size=target_size,
-                require_aspect_match=output.role.startswith("agent_result"),
             )
             saved_outputs.append(
                 {
-                    "id": f"{output.role}_{uuid.uuid4().hex}",
+                    "id": f"agent_transparent_{uuid.uuid4().hex}",
                     "channel": "agent",
-                    "role": output.role,
-                    "label": output.label,
-                    "asset_id": saved["asset_id"],
-                    "width": saved["width"],
-                    "height": saved["height"],
-                    "selectable": output.selectable,
+                    "role": "agent_transparent",
+                    "label": "Agent透明 PNG",
+                    "asset_id": layer["asset_id"],
+                    "width": layer["width"],
+                    "height": layer["height"],
+                    "selectable": False,
                     "model_input": model_input,
-                    "source_url": output.source_url,
+                    "source_url": transparent_url,
+                    "artifacts": [],
                     "created_at": utcnow(),
                 }
             )
@@ -1131,6 +1253,7 @@ def run_edit(
             all_outputs: list[dict[str, Any]] = []
             for future in as_completed(futures):
                 all_outputs.extend(future.result())
+            all_outputs.sort(key=_output_sort_key)
         updated = db.whole_tasks.find_one({"_id": task_id}) or {}
         branches = ((updated.get("edit") or {}).get("branches") or {})
         gateway_status = (branches.get("gateway") or {}).get("status")
@@ -1171,6 +1294,13 @@ def run_edit(
         gateway_count = 1 if gateway_status == "completed" else 0
         agent_count = sum(1 for item in all_outputs if item.get("channel") == "agent")
         message = f"已完成 v{version}：接口 {gateway_count} 张，Agent {agent_count} 张。"
+        artifact_count = sum(
+            len(item.get("artifacts") or [])
+            for item in all_outputs
+            if item.get("channel") == "agent"
+        )
+        if artifact_count:
+            message += f"附加 HTML/结果包 {artifact_count}个。"
         if outcome == "partial":
             message += " 有一条链路失败，已保留成功结果。"
         document = _version_document(

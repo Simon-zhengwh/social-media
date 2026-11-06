@@ -185,7 +185,9 @@ class LocalObjectStore:
         del content_type
         path = self._path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        # Keep the temp name short: Windows rejects paths over 260 characters,
+        # and artifact keys can already be close to that limit.
+        tmp = path.parent / f".tmp-{uuid.uuid4().hex}"
         try:
             tmp.write_bytes(data)
             os.replace(tmp, path)

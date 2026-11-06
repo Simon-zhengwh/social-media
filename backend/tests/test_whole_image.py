@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from app.routes import whole_image as whole_routes
 from app.schemas import WholeImageEditRequest, WholeImageTaskCreate
 from app.services import storage, whole_image as whole_service
-from app.services.core_ai import AgentRunResult, CoreAIError, DownloadedAgentImage
+from app.services.core_ai import AgentArtifact, AgentRunResult, CoreAIError
 
 
 class FakeCoreAI:
@@ -27,6 +27,34 @@ class FakeCoreAI:
         self.fail_edit = False
         self.fail_agent = True
         self._color_index = 0
+        self.agent_artifacts = [
+            AgentArtifact(
+                "generated-image.png",
+                "image/png",
+                "https://example.com/agent-layer.png",
+                "模型原生透明前景",
+            ),
+            AgentArtifact(
+                "generated-image.png",
+                "image/png",
+                "https://example.com/agent-result.png",
+                "最终成图",
+            ),
+            AgentArtifact(
+                "editor.html",
+                "text/html",
+                "https://example.com/editor.html",
+                "离线编辑器",
+            ),
+            AgentArtifact(
+                "result-bundle.zip",
+                "application/zip",
+                "https://example.com/result.zip",
+                "完整结果包",
+            ),
+        ]
+        self.agent_downloads: list[str] = []
+        self.agent_result_size: tuple[int, int] | None = None
 
     def _image(self, color: tuple[int, int, int]) -> bytes:
         buffer = io.BytesIO()
@@ -65,37 +93,56 @@ class FakeCoreAI:
         self.agent_calls.append({"upload_bytes": data, "content_type": content_type})
         return "https://example.com/current-poster.png"
 
-    def run_agent_detail(self, agent_id: str, input_text: str, *, timeout_seconds: int, poll_interval: float = 2.0) -> AgentRunResult:
+    def _transparent_image(self) -> bytes:
+        image = Image.new("RGBA", (640, 640), (0, 0, 0, 0))
+        for x in range(120, 520):
+            for y in range(120, 220):
+                image.putpixel((x, y), (180, 80, 40, 255))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    def _sized_image(self, size: tuple[int, int], color: tuple[int, int, int]) -> bytes:
+        buffer = io.BytesIO()
+        Image.new("RGB", size, color).save(buffer, format="PNG")
+        return buffer.getvalue()
+
+    def run_agent_detail(
+        self,
+        agent_id: str,
+        input_text: str,
+        *,
+        timeout_seconds: int,
+        poll_interval: float = 2.0,
+    ) -> AgentRunResult:
         self.agent_calls.append(
             {"agent_id": agent_id, "input": input_text, "timeout_seconds": timeout_seconds}
         )
         return AgentRunResult(
             run_id="run-agent-1",
             status="COMPLETED",
-            output="透明层和最终图已生成",
+            output=(
+                "![透明层](https://example.com/agent-layer.png)\n"
+                "![成图](https://example.com/agent-result.png)"
+            ),
+            artifacts=self.agent_artifacts,
         )
 
-    def download_agent_images(self, result: AgentRunResult):
-        transparent = io.BytesIO()
-        image = Image.new("RGBA", (640, 640), (0, 0, 0, 0))
-        for x in range(120, 520):
-            for y in range(120, 220):
-                image.putpixel((x, y), (180, 80, 40, 255))
-        image.save(transparent, format="PNG")
-        return [
-            DownloadedAgentImage(
-                data=transparent.getvalue(),
-                source_url="https://example.com/agent-layer.png",
-                file_name="agent-layer.png",
-                content_type="image/png",
-            ),
-            DownloadedAgentImage(
-                data=self._image((120, 40, 180)),
-                source_url="https://example.com/agent-result.png",
-                file_name="agent-result.png",
-                content_type="image/png",
-            ),
-        ]
+    def download_image(self, url: str) -> bytes:
+        self.agent_downloads.append(url)
+        if url.endswith("agent-layer.png"):
+            return self._transparent_image()
+        if url.endswith("agent-result.png"):
+            if self.agent_result_size is not None:
+                return self._sized_image(self.agent_result_size, (120, 40, 180))
+            return self._sized_image((640, 640), (120, 40, 180))
+        raise CoreAIError("download_failed", "未知图片")
+
+    def download_agent_file(self, url: str, *, content_type: str) -> bytes:
+        self.agent_downloads.append(url)
+        if content_type == "text/html":
+            return b"<!doctype html><h1>Editor</h1>"
+        return b"PK\x03\x04bundle"
 
     def chat_json(self, messages, *, model=None, timeout_seconds=None):
         return {"status": "pass", "violations": []}
@@ -1549,9 +1596,16 @@ def test_dual_edit_stores_three_outputs_and_requires_manual_selection(settings, 
     assert task["current_output_id"] is None
     assert [output["role"] for output in v2["outputs"]] == [
         "gateway_result",
-        "agent_transparent",
         "agent_result",
+        "agent_transparent",
     ]
+    agent_output = next(output for output in v2["outputs"] if output["role"] == "agent_result")
+    assert [item["kind"] for item in agent_output["artifacts"]] == ["html", "bundle"]
+    assert [item["file_name"] for item in agent_output["artifacts"]] == [
+        "editor.html",
+        "result-bundle.zip",
+    ]
+    assert v2["outputs"][0]["artifacts"] == []
     assert sum(1 for output in v2["outputs"] if output["selectable"]) == 2
     assert fake.agent_calls[-2]["upload_bytes"]
     assert fake.agent_calls[-1]["agent_id"] == settings.core_ai_image_agent_id
@@ -1709,3 +1763,27 @@ def test_artifact_object_keys_keep_their_extension(settings):
     )
     with pytest.raises(storage.StorageError):
         storage.object_key(settings, "elsewhere", "x.png")
+
+
+def test_agent_branch_rejects_mismatched_aspect_after_trying_candidates(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    task_id, _ = _generate(db, settings, store, fake)
+    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    # The default fake returns a 640x320 poster while the source canvas is 640x640.
+    fake.agent_result_size = (640, 320)
+
+    request = _request(db, settings, store, fake)
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(instruction="改背景", source_version_id=v1["_id"]),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(db, settings, store, fake, task_id, "改背景", v1["_id"])
+
+    task = db.whole_tasks.find_one({"_id": task_id})
+    assert task["edit"]["branches"]["agent"]["status"] == "failed"
+    assert "画幅" in task["edit"]["branches"]["agent"]["error"]
+    assert task["edit"]["outcome"] == "partial"
