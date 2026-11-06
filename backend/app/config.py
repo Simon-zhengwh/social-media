@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     core_ai_api_key: str = ""
     core_ai_prompt_agent_id: str = "9a7eb9c3-0d57-4841-83b2-ea9191ff8dd8"
     core_ai_prompt_agent_timeout_seconds: int = 900
-    core_ai_image_agent_id: str = "86c3a160-54fa-4344-9bc1-6ac56c1e080c"
-    core_ai_image_agent_timeout_seconds: int = 900
+    core_ai_image_agent_id: str = "5a162c34-f333-453f-9835-de6a4f96e3fb"
+    core_ai_image_agent_timeout_seconds: int = 1800
     core_ai_test_agent_id: str = "5a162c34-f333-453f-9835-de6a4f96e3fb"
     core_ai_test_timeout_seconds: int = 1800
     # Original-photo replacements retain the existing environment variable names.

@@ -1555,7 +1555,7 @@ def test_dual_edit_stores_three_outputs_and_requires_manual_selection(settings, 
     assert sum(1 for output in v2["outputs"] if output["selectable"]) == 2
     assert fake.agent_calls[-2]["upload_bytes"]
     assert fake.agent_calls[-1]["agent_id"] == settings.core_ai_image_agent_id
-    assert fake.agent_calls[-1]["timeout_seconds"] == 900
+    assert fake.agent_calls[-1]["timeout_seconds"] == 1800
     agent_input = fake.agent_calls[-1]["input"]
     assert "Use the current poster as the editing base" in agent_input
     assert "Food-photo preservation:" in agent_input
