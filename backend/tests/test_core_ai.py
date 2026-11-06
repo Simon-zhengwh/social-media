@@ -540,3 +540,72 @@ def test_final_image_failure_is_not_hidden_by_a_successful_layer_download(settin
         assert exc.value.code == "download_failed"
     finally:
         client.close()
+
+
+def test_download_agent_file_reads_html_and_zip(settings, monkeypatch):
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.path)
+        if request.url.path == "/editor.html":
+            return httpx.Response(
+                200,
+                content=b"<!doctype html><h1>Editor</h1>",
+                headers={"Content-Type": "text/html; charset=utf-8"},
+            )
+        return httpx.Response(
+            200,
+            content=b"PK\x03\x04bundle",
+            headers={"Content-Type": "application/zip"},
+        )
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    try:
+        html = client.download_agent_file(
+            "https://files.example.com/editor.html", content_type="text/html"
+        )
+        bundle = client.download_agent_file(
+            "https://files.example.com/result.zip", content_type="application/zip"
+        )
+    finally:
+        client.close()
+
+    assert html.startswith(b"<!doctype html>")
+    assert bundle.startswith(b"PK")
+    assert requested == ["/editor.html", "/result.zip"]
+
+
+def test_download_agent_file_rejects_images_and_oversize(settings, monkeypatch):
+    def handler(request):
+        if request.url.path == "/poster.png":
+            return httpx.Response(
+                200,
+                content=b"x" * 64,
+                headers={"Content-Type": "image/png"},
+            )
+        return httpx.Response(
+            200,
+            content=b"<!doctype html>" + b"x" * 64,
+            headers={"Content-Type": "text/html"},
+        )
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    original_limit = settings.max_download_bytes
+    try:
+        with pytest.raises(CoreAIError) as unsupported:
+            client.download_agent_file(
+                "https://files.example.com/poster.png", content_type="image/png"
+            )
+        assert unsupported.value.code == "invalid_artifact"
+
+        settings.max_download_bytes = 16
+        with pytest.raises(CoreAIError) as too_large:
+            client.download_agent_file(
+                "https://files.example.com/editor.html", content_type="text/html"
+            )
+        assert too_large.value.code == "artifact_too_large"
+    finally:
+        settings.max_download_bytes = original_limit
+        client.close()

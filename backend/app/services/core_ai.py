@@ -283,6 +283,63 @@ class CoreAIClient:
         except httpx.HTTPError as exc:
             raise CoreAIError('preview_download_failed', 'HTML 预览暂时无法读取，可下载原文件查看') from exc
 
+    ARTIFACT_CONTENT_TYPES = (
+        "text/html",
+        "application/zip",
+        "application/json",
+        "text/markdown",
+        "text/plain",
+    )
+
+    def download_agent_file(self, url: str, *, content_type: str) -> bytes:
+        """Download a non-image Agent deliverable (HTML editor, result bundle)."""
+        expected = content_type.split(";")[0].strip().lower()
+        if expected not in self.ARTIFACT_CONTENT_TYPES:
+            raise CoreAIError("invalid_artifact", "不支持的 Agent产物类型", 422)
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                self._validate_public_url(url)
+                with self._download_client.stream("GET", url) as response:
+                    if response.status_code >= 400:
+                        raise CoreAIError(
+                            "artifact_download_failed",
+                            f"Agent产物下载失败（HTTP {response.status_code}）",
+                        )
+                    self._validate_public_url(str(response.url))
+                    actual = (
+                        response.headers.get("Content-Type", "")
+                        .split(";")[0]
+                        .strip()
+                        .lower()
+                    )
+                    if actual and actual != expected:
+                        raise CoreAIError(
+                            "invalid_artifact", "Agent产物类型与声明不一致", 422
+                        )
+                    chunks: list[bytes] = []
+                    total = 0
+                    for chunk in response.iter_bytes():
+                        total += len(chunk)
+                        if total > self.settings.max_download_bytes:
+                            raise CoreAIError(
+                                "artifact_too_large", "Agent产物超过体积限制", 413
+                            )
+                        chunks.append(chunk)
+                data = b"".join(chunks)
+                if not data:
+                    raise CoreAIError("empty_artifact", "Agent产物为空")
+                return data
+            except CoreAIError:
+                raise
+            except (httpx.HTTPError, OSError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(1.5 + attempt)
+        raise CoreAIError(
+            "artifact_download_failed", f"Agent产物下载失败：{last_error}"
+        )
+
     def wait_agent_detail(
         self,
         run_id: str,
