@@ -5,6 +5,7 @@ import WholeImageForm from './WholeImageForm'
 import WholeModelInputPanel from './WholeModelInputPanel'
 import WholeImageResultPanel from './WholeImageResultPanel'
 import WholeVersionPanel from './WholeVersionPanel'
+import OriginalReplacementPanel from './OriginalReplacementPanel'
 import {
   ApiError,
   createWholeImageEdit,
@@ -43,10 +44,11 @@ type Props = {
   onGoAssets: () => void
 }
 
-type StudioTab = 'chat' | 'versions' | 'model_input'
+type StudioTab = 'chat' | 'original_replace' | 'versions' | 'model_input'
 
 const TABS: Array<{ key: StudioTab; label: string }> = [
   { key: 'chat', label: '对话' },
+  { key: 'original_replace', label: '原照替换' },
   { key: 'versions', label: '版本' },
   { key: 'model_input', label: '模型输入' },
 ]
@@ -138,7 +140,8 @@ export default function WholeImageStudio({
   const [logoUploading, setLogoUploading] = useState(false)
   const [logoDeleting, setLogoDeleting] = useState(false)
   const [pickerPurpose, setPickerPurpose] = useState<'product' | 'logo' | null>(null)
-  const [studioTab, setStudioTab] = useState<StudioTab>('chat')
+  const [studioTab, setStudioTab] = useState<StudioTab>(() =>
+    new URLSearchParams(window.location.search).get('tab') === 'original_replace' ? 'original_replace' : 'chat')
   const [creating, setCreating] = useState(() => Boolean(readWholeTaskId()))
   const [versionsLoading, setVersionsLoading] = useState(false)
   const [selectingOutput, setSelectingOutput] = useState(false)
@@ -710,7 +713,13 @@ export default function WholeImageStudio({
                 role="tab"
                 aria-selected={studioTab === tab.key}
                 className={studioTab === tab.key ? 'is-active' : ''}
-                onClick={() => setStudioTab(tab.key)}
+                onClick={() => {
+                  setStudioTab(tab.key)
+                  const url = new URL(window.location.href)
+                  if (tab.key === 'original_replace') url.searchParams.set('tab', 'original_replace')
+                  else url.searchParams.delete('tab')
+                  window.history.replaceState({}, '', url)
+                }}
               >
                 {tab.label}
                 {tab.key === 'versions' ? (
@@ -735,6 +744,21 @@ export default function WholeImageStudio({
                   )
                 }
               />
+            ) : null}
+            {studioTab === 'original_replace' && task ? (
+              <OriginalReplacementPanel key={task.id} task={task} assets={assets} assetsLoading={assetsLoading}
+                onLoadAssets={onLoadAssets} onGoAssets={onGoAssets}
+                onApplied={async (next) => {
+                  setTask(next)
+                  lastVersionRef.current = next.current_version_id
+                  await loadVersions(next.id)
+                }}
+                onRefreshTask={async () => {
+                  const next = await getWholeImageTask(task.id)
+                  setTask(next)
+                  lastVersionRef.current = next.current_version_id
+                  await loadVersions(next.id)
+                }} />
             ) : null}
             {studioTab === 'versions' ? (
               <WholeVersionPanel

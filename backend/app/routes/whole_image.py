@@ -11,8 +11,9 @@ from urllib.parse import quote
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app.schemas import WholeImageEditRequest, WholeImageTaskCreate
-from app.services import brand_rules, brand_style, platform_presets, whole_image
+from app.schemas import (WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
+                         WholeImageOriginalReplacementApplyRequest)
+from app.services import original_replacement_runner, brand_rules, brand_style, original_replacement, platform_presets, whole_image
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
 from app.time_utils import utc_iso
 from app.services.canvas import canvas_size
@@ -466,6 +467,9 @@ def _version_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
         "version": version,
         "parent_version_id": doc.get("parent_version_id"),
         "operation": operation,
+        "replacement_task_id": doc.get("replacement_task_id"),
+        "source_output_id": doc.get("source_output_id"),
+        "replacements": doc.get("replacements") or [],
         "instruction": doc.get("instruction") or "",
         "width": int(doc.get("width") or (primary or {}).get("width") or 0),
         "height": int(doc.get("height") or (primary or {}).get("height") or 0),
@@ -861,6 +865,71 @@ def create_edit(
         payload.reference_asset_ids,
     )
     return task_out(db, _get_task_or_404(db, task_id))
+
+
+@router.post("/tasks/{task_id}/original-replacements", status_code=202)
+def create_original_replacement(task_id: str, payload: WholeImageOriginalReplacementRequest,
+                                request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    _require_configured(request)
+    state = request.app.state
+    try:
+        doc = original_replacement.create(state.db, task_id, **payload.model_dump())
+    except (whole_image.StudioError, original_replacement_runner.OriginalReplacementError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    background_tasks.add_task(original_replacement_runner.run_task, state.db, state.settings, state.store, state.core_ai, doc["_id"])
+    return original_replacement_runner.task_out(doc)
+
+
+@router.get("/tasks/{task_id}/original-replacements")
+def list_original_replacements(task_id: str, request: Request) -> list[dict[str, Any]]:
+    try:
+        return [original_replacement_runner.task_out(doc) for doc in original_replacement.list_tasks(request.app.state.db, task_id)]
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.post("/tasks/{task_id}/original-replacements/{replacement_id}/apply")
+def apply_original_replacement(task_id: str, replacement_id: str, payload: WholeImageOriginalReplacementApplyRequest,
+                               request: Request) -> dict[str, Any]:
+    try:
+        doc = original_replacement.apply(request.app.state.db, task_id, replacement_id, **payload.model_dump())
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return task_out(request.app.state.db, doc)
+
+
+@router.post("/tasks/{task_id}/original-replacements/{replacement_id}/refresh-result", status_code=202)
+def refresh_original_replacement(task_id: str, replacement_id: str, request: Request,
+                                 background_tasks: BackgroundTasks) -> dict[str, Any]:
+    _require_configured(request)
+    state = request.app.state
+    try:
+        original_replacement.get_task(state.db, task_id, replacement_id)
+        doc = original_replacement_runner.queue_refresh(state.db, replacement_id)
+    except (whole_image.StudioError, original_replacement_runner.OriginalReplacementError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    if doc["status"] == "queued":
+        background_tasks.add_task(original_replacement_runner.run_task, state.db, state.settings,
+                                  state.store, state.core_ai, replacement_id, refresh=True)
+    return original_replacement_runner.task_out(doc)
+
+
+@router.get("/tasks/{task_id}/original-replacements/{replacement_id}/download")
+def download_original_replacement(task_id: str, replacement_id: str, request: Request) -> Response:
+    state = request.app.state
+    try:
+        doc = original_replacement.get_task(state.db, task_id, replacement_id)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    output = doc.get("output")
+    if doc["status"] != "succeeded" or not output:
+        raise HTTPException(status_code=404, detail="最终结果尚未就绪")
+    name = f"original-replace-{replacement_id}.png"
+    local = state.store.local_path(output["path"])
+    if local is not None:
+        return FileResponse(local, media_type="image/png", filename=name)
+    return RedirectResponse(state.store.presign(output["path"], expires=state.settings.cos_presign_expiry_seconds,
+                                               download_name=name), status_code=302)
 
 
 @router.get("/tasks/{task_id}/versions")

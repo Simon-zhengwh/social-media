@@ -1,7 +1,7 @@
 import type {
   Asset,
-  BackgroundReplacementItem,
-  BackgroundReplacementTask,
+  OriginalReplacementItem,
+  OriginalReplacementTask,
   BrandDetail,
   BrandMode,
   BrandColor,
@@ -10,8 +10,6 @@ import type {
   BrandStyle,
   ImageModel,
   PlatformPreset,
-  PosterEditBatch,
-  PosterEditTask,
   Ratio,
   WholeImageTaskGroupFilter,
   WholeImageTaskGroupPage,
@@ -63,20 +61,27 @@ export async function listAssets(): Promise<Asset[]> {
   return parseResponse<Asset[]>(response)
 }
 
-export async function createBackgroundReplacement(sourceAssetId: string, replacements: BackgroundReplacementItem[]): Promise<BackgroundReplacementTask> {
-  const response = await fetch('/api/background-replacements', {
+export async function refreshOriginalReplacement(taskId: string, replacementId: string): Promise<OriginalReplacementTask> {
+  return parseResponse<OriginalReplacementTask>(await fetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements/${encodeURIComponent(replacementId)}/refresh-result`, { method: 'POST' }))
+}
+
+export async function listOriginalReplacements(taskId: string): Promise<OriginalReplacementTask[]> {
+  return parseResponse<OriginalReplacementTask[]>(await fetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements`))
+}
+
+export async function createOriginalReplacement(taskId: string, sourceVersionId: string, sourceOutputId: string,
+  replacements: OriginalReplacementItem[]): Promise<OriginalReplacementTask> {
+  return parseResponse<OriginalReplacementTask>(await fetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_asset_id: sourceAssetId, replacements }),
-  })
-  return parseResponse<BackgroundReplacementTask>(response)
+    body: JSON.stringify({ source_version_id: sourceVersionId, source_output_id: sourceOutputId, replacements }),
+  }))
 }
 
-export async function getBackgroundReplacement(taskId: string): Promise<BackgroundReplacementTask> {
-  return parseResponse<BackgroundReplacementTask>(await fetch(`/api/background-replacements/${encodeURIComponent(taskId)}`))
-}
-
-export async function refreshBackgroundReplacement(taskId: string): Promise<BackgroundReplacementTask> {
-  return parseResponse<BackgroundReplacementTask>(await fetch(`/api/background-replacements/${encodeURIComponent(taskId)}/refresh-result`, { method: 'POST' }))
+export async function applyOriginalReplacement(task: WholeImageTask, replacementId: string): Promise<WholeImageTask> {
+  return parseResponse<WholeImageTask>(await fetch(`/api/whole-image/tasks/${encodeURIComponent(task.id)}/original-replacements/${encodeURIComponent(replacementId)}/apply`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_current_version_id: task.current_version_id, expected_current_output_id: task.current_output_id }),
+  }))
 }
 
 export async function listPlatforms(): Promise<PlatformPreset[]> {
@@ -349,48 +354,9 @@ export async function selectWholeImageVersion(
   return parseResponse<WholeImageTask>(response)
 }
 
-export async function createPosterEdit(
-  prompt: string,
-  assetIds: string[],
-): Promise<PosterEditTask> {
-  const response = await fetch('/api/poster-edits', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, asset_ids: assetIds }),
-  })
-  return parseResponse<PosterEditTask>(response)
-}
-
-export async function getPosterEdit(taskId: string): Promise<PosterEditTask> {
-  const response = await fetch(`/api/poster-edits/${encodeURIComponent(taskId)}`)
-  return parseResponse<PosterEditTask>(response)
-}
-
-export async function createPosterEditBatch(
-  prompt: string,
-  assetIds: string[],
-  candidateCount: number,
-): Promise<PosterEditBatch> {
-  const response = await fetch('/api/poster-edits/batches', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      prompt,
-      asset_ids: assetIds,
-      candidate_count: candidateCount,
-    }),
-  })
-  return parseResponse<PosterEditBatch>(response)
-}
-
-export async function getPosterEditBatch(batchId: string): Promise<PosterEditBatch> {
-  const response = await fetch(`/api/poster-edits/batches/${encodeURIComponent(batchId)}`)
-  return parseResponse<PosterEditBatch>(response)
-}
-
 export async function listTaskCenterGroups(options: {
   status?: WholeImageTaskGroupFilter
-  kind?: 'all' | 'generate' | 'edit' | 'background_replace'
+  kind?: 'all' | 'generate' | 'original_replace'
   limit?: number
   cursor?: string | null
 } = {}): Promise<WholeImageTaskGroupPage> {

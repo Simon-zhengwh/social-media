@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import AssetLibrary from './components/AssetLibrary'
 import BrandStudio from './components/BrandStudio'
-import PosterEditStudio from './components/PosterEditStudio'
-import BackgroundReplaceStudio from './components/BackgroundReplaceStudio'
 import Sidebar, { type AppView } from './components/Sidebar'
 import TaskCenter from './components/TaskCenter'
 import WholeImageStudio from './components/WholeImageStudio'
+import AgentTestPage from './components/AgentTestPage'
 import {
   ApiError,
   deleteAsset,
@@ -18,15 +17,12 @@ import type { Asset, BrandStyle, PlatformPreset } from './types'
 
 function readView(): AppView {
   const value = new URLSearchParams(window.location.search).get('view')
-  if (value === 'background_replace') return 'background_replace'
+  if (value === 'agent-tests') return 'agent-tests'
   if (value === 'assets') {
     return 'assets'
   }
   if (value === 'brands') {
     return 'brands'
-  }
-  if (value === 'poster_edit') {
-    return 'poster_edit'
   }
   if (value === 'tasks') {
     return 'tasks'
@@ -47,6 +43,7 @@ function updateUrl(next: AppView) {
   url.searchParams.delete('poster')
   url.searchParams.delete('candidate')
   url.searchParams.delete('replacement')
+  url.searchParams.delete('tab')
   window.history.replaceState({}, '', url)
 }
 
@@ -64,6 +61,11 @@ const VIEW_META: Record<
   AppView,
   { kicker: string; title: string; meta: string | null }
 > = {
+  'agent-tests': {
+    kicker: 'AGENT BENCHMARK',
+    title: 'Agent 测试',
+    meta: 'image-editor · 固定五例',
+  },
   whole: {
     kicker: 'POSTER STUDIO',
     title: '海报设计',
@@ -72,16 +74,6 @@ const VIEW_META: Record<
   tasks: {
     kicker: 'TASK CENTER',
     title: '任务中心',
-    meta: null,
-  },
-  poster_edit: {
-    kicker: 'POSTER EDIT',
-    title: '修改海报',
-    meta: null,
-  },
-  background_replace: {
-    kicker: 'PHOTO REPLACEMENT',
-    title: '背景替换',
     meta: null,
   },
   assets: {
@@ -140,9 +132,15 @@ export default function App() {
 
   useEffect(() => {
     const url = new URL(window.location.href)
-    if (url.searchParams.get('view') === 'poster') {
+    const requestedView = url.searchParams.get('view')
+    if (requestedView && requestedView !== 'whole' && readView() === 'whole') {
       url.searchParams.delete('view')
       url.searchParams.delete('task')
+      url.searchParams.delete('poster_batch')
+      url.searchParams.delete('poster')
+      url.searchParams.delete('candidate')
+      url.searchParams.delete('replacement')
+      url.searchParams.delete('tab')
       window.history.replaceState({}, '', url)
     } else if (url.searchParams.has('task')) {
       url.searchParams.delete('task')
@@ -209,7 +207,7 @@ export default function App() {
   }, [])
 
   const handleViewChange = (next: AppView) => {
-    if (next === view && (next === 'whole' || next === 'poster_edit' || next === 'background_replace')) {
+    if (next === view && next === 'whole') {
       setStudioRevision((current) => current + 1)
     }
     setView(next)
@@ -256,30 +254,21 @@ export default function App() {
     setView('whole')
   }
 
-  const handleOpenPosterBatch = (batchId: string) => {
-    const url = new URL(window.location.href)
-    url.searchParams.set('view', 'poster_edit')
-    url.searchParams.set('poster_batch', batchId)
-    url.searchParams.delete('poster')
-    url.searchParams.delete('whole')
-    window.history.replaceState({}, '', url)
-    setView('poster_edit')
-  }
-
-  const handleOpenReplacement = (taskId: string) => {
-    updateUrl('background_replace')
+  const handleOpenReplacement = (taskId: string, wholeTaskId: string) => {
+    updateUrl('whole')
     const url = new URL(window.location.href)
     url.searchParams.set('replacement', taskId)
+    url.searchParams.set('whole', wholeTaskId)
+    url.searchParams.set('tab', 'original_replace')
     window.history.replaceState({}, '', url)
     setStudioRevision((current) => current + 1)
-    setView('background_replace')
+    setView('whole')
   }
 
-  const handleCreateTask = (kind: 'generate' | 'edit' | 'background_replace') => {
-    const next: AppView = kind === 'background_replace' ? 'background_replace' : kind === 'edit' ? 'poster_edit' : 'whole'
-    updateUrl(next)
+  const handleCreateTask = () => {
+    updateUrl('whole')
     setStudioRevision((current) => current + 1)
-    setView(next)
+    setView('whole')
   }
 
   const viewMeta = VIEW_META[view]
@@ -301,10 +290,11 @@ export default function App() {
           ) : null}
         </header>
 
-        {view === 'tasks' ? (
+        {view === 'agent-tests' ? (
+          <AgentTestPage />
+        ) : view === 'tasks' ? (
           <TaskCenter
             onOpenTask={handleOpenTask}
-            onOpenPosterBatch={handleOpenPosterBatch}
             onOpenReplacement={handleOpenReplacement}
             onCreate={handleCreateTask}
           />
@@ -321,22 +311,6 @@ export default function App() {
             assetsLoading={assetsLoading}
             onLoadAssets={() => void loadAssets()}
             onRefreshBrands={loadBrands}
-            onGoAssets={() => handleViewChange('assets')}
-          />
-        ) : view === 'poster_edit' ? (
-          <PosterEditStudio
-            key={`poster-edit-${studioRevision}`}
-            assets={assets}
-            assetsLoading={assetsLoading}
-            onLoadAssets={() => void loadAssets()}
-            onGoAssets={() => handleViewChange('assets')}
-          />
-        ) : view === 'background_replace' ? (
-          <BackgroundReplaceStudio
-            key={`background-replace-${studioRevision}`}
-            assets={assets}
-            assetsLoading={assetsLoading}
-            onLoadAssets={() => void loadAssets()}
             onGoAssets={() => handleViewChange('assets')}
           />
         ) : view === 'brands' ? (
@@ -367,7 +341,9 @@ export default function App() {
             </>
           ) : view === 'tasks' ? (
             <span>任务按候选批次归档 · 点击封面回到工作台继续编辑</span>
-          ) : view === 'brands' || view === 'poster_edit' ? null : (
+          ) : view === 'agent-tests' ? (
+            <span>原始输入 · 独立运行 · Trace 与耗时记录</span>
+          ) : view === 'brands' ? null : (
             <span>素材保存在项目内本地目录 · 海报设计时从资产库选择</span>
           )}
         </footer>

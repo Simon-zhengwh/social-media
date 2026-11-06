@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from PIL import Image, ImageOps
@@ -220,6 +220,7 @@ class CoreAIClient:
         input_text: str,
         *,
         timeout_seconds: int,
+        attachments: list[dict[str, str]] | None = None,
     ) -> str:
         """Start an agent run and return its run_id without waiting for completion."""
         if not self.settings.core_ai_api_key:
@@ -232,7 +233,7 @@ class CoreAIClient:
         try:
             response = self._client.post(
                 f"{base}/api/runs/agent/{agent_id}/trigger",
-                json={"input": input_text},
+                json={"input": input_text, **({"attachments": attachments} if attachments else {})},
                 timeout=min(timeout_seconds, 30),
             )
             run = self._json_or_error(response)
@@ -244,6 +245,43 @@ class CoreAIClient:
             raise CoreAIError("agent_timeout", "图片 Agent 请求超时，结果未知", 504) from exc
         except httpx.HTTPError as exc:
             raise CoreAIError("agent_unavailable", f"无法连接图片 Agent：{exc}") from exc
+
+    def get_agent_run(self, run_id: str) -> dict[str, Any]:
+        """Read the same run, including its transcript, trace_id and all artifact types."""
+        if not self.settings.core_ai_api_key:
+            raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
+            raise CoreAIError("invalid_agent_run", "Agent run_id 无效", 422)
+        base = self.settings.core_ai_server_base_url.rstrip("/")
+        return self._json_or_error(self._client.get(f"{base}/api/runs/{run_id}", timeout=30))
+
+    def read_agent_html(self, url: str) -> bytes:
+        """Read a submitted HTML artifact without forwarding API credentials to downloads."""
+        base, initial = urlparse(self.settings.core_ai_server_base_url), urlparse(url)
+        if (initial.scheme, initial.netloc) != (base.scheme, base.netloc) or not initial.path.startswith('/api/public/artifacts/'):
+            raise CoreAIError('unsafe_preview', '仅预览当前平台已提交的 HTML 产物', 422)
+        try:
+            for _ in range(6):
+                self._validate_public_url(url)
+                with self._download_client.stream('GET', url, follow_redirects=False) as response:
+                    if response.is_redirect:
+                        location = response.headers.get('location')
+                        if not location:
+                            break
+                        url = urljoin(url, location)
+                        continue
+                    if response.status_code >= 300:
+                        raise CoreAIError('preview_download_failed', f'HTML 预览读取失败（HTTP {response.status_code}）')
+                    chunks, size = [], 0
+                    for chunk in response.iter_bytes():
+                        size += len(chunk)
+                        if size > self.settings.max_download_bytes:
+                            raise CoreAIError('preview_too_large', 'HTML 超过预览大小限制，请下载原文件查看', 413)
+                        chunks.append(chunk)
+                    return b''.join(chunks)
+            raise CoreAIError('preview_download_failed', 'HTML 产物重定向次数过多')
+        except httpx.HTTPError as exc:
+            raise CoreAIError('preview_download_failed', 'HTML 预览暂时无法读取，可下载原文件查看') from exc
 
     def wait_agent_detail(
         self,

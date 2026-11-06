@@ -258,76 +258,39 @@ def test_retry_rejects_missing_task():
     assert exc_info.value.status_code == 404
 
 
-def _poster_task(task_id: str, batch_id: str, index: int, status: str, created_at: datetime):
-    outputs = []
-    if status == "succeeded":
-        outputs = [
-            {"id": f"out_{task_id}_layer", "role": "agent_transparent", "asset_id": f"asset_{task_id}_layer"},
-            {"id": f"out_{task_id}_final", "role": "agent_result", "asset_id": f"asset_{task_id}_final"},
-        ]
-    return {
-        "_id": task_id,
-        "batch_id": batch_id,
-        "candidate_index": index,
-        "candidate_count": 2,
-        "status": status,
-        "stage": "done" if status == "succeeded" else "failed",
-        "progress": 100 if status == "succeeded" else 0,
-        "input": {"prompt": "修改海报", "asset_ids": ["asset_source"]},
-        "outputs": outputs,
-        "error": {"code": "edit_failed", "message": "候选失败"} if status == "failed" else None,
-        "created_at": created_at,
-        "updated_at": created_at,
-    }
 
-
-def test_unified_task_center_groups_poster_edit_batches_and_filters():
+def test_task_center_excludes_archived_workflows():
     db = mongomock.MongoClient().db
-    db.assets.insert_one({"_id": "asset_source", "width": 1086, "height": 1448})
-    db.poster_edit_tasks.insert_many(
-        [
-            _poster_task("pedit_0", "batch_edit", 0, "succeeded", BASE_TIME),
-            _poster_task("pedit_1", "batch_edit", 1, "failed", BASE_TIME + timedelta(seconds=1)),
-        ]
-    )
+    db.whole_tasks.insert_one(_task("wtask_current"))
+    # Retired records remain in storage, but must not be exposed or inspected.
+    db.poster_edit_tasks.insert_one({"_id": "archived_edit", "created_at": BASE_TIME})
+    db.background_replace_tasks.insert_one({"_id": "archived_replacement", "created_at": BASE_TIME})
 
-    result = task_center_routes.list_task_center(
-        _list_request(db), status="all", kind="edit", limit=10, cursor=None
-    )
-    assert result["total"] == 1
-    group = result["items"][0]
-    assert group["kind"] == "edit"
-    assert group["id"] == "batch_edit"
-    assert group["status"] == "ready"
-    assert group["candidate_count"] == 2
-    assert group["succeeded_count"] == 1
-    assert group["failed_count"] == 1
-    assert [item["candidate_index"] for item in group["candidates"]] == [0, 1]
-    assert group["preview_url"] == "/api/assets/asset_pedit_0_final/file"
-
-    assert task_center_routes.list_task_center(
-        _list_request(db), status="all", kind="generate", limit=10, cursor=None
-    )["total"] == 0
-    assert task_center_routes.list_task_center(
-        _list_request(db), status="failed", kind="edit", limit=10, cursor=None
-    )["total"] == 0
+    for kind in ("all", "generate"):
+        result = task_center_routes.list_task_center(_list_request(db), kind=kind)
+        assert result["total"] == 1
+        assert [item["id"] for item in result["items"]] == ["wtask_current"]
+        assert result["items"][0]["kind"] == "generate"
+    assert db.poster_edit_tasks.count_documents({}) == 1
+    assert db.background_replace_tasks.count_documents({}) == 1
 
 
-def test_unified_task_center_cursor_pagination_across_kinds():
+@pytest.mark.parametrize("kind", ["edit", "background_replace"])
+def test_task_center_rejects_retired_workflow_filters(kind):
+    with pytest.raises(HTTPException) as exc_info:
+        task_center_routes.list_task_center(_list_request(mongomock.MongoClient().db), kind=kind)
+    assert exc_info.value.status_code == 422
+
+
+def test_task_center_cursor_pagination_keeps_whole_image_groups():
     db = mongomock.MongoClient().db
-    db.assets.insert_one({"_id": "asset_source", "width": 1086, "height": 1448})
-    db.whole_tasks.insert_one(_task("wtask_old", created_at=BASE_TIME))
-    db.poster_edit_tasks.insert_one(
-        _poster_task("pedit_new", "batch_new", 0, "succeeded", BASE_TIME + timedelta(minutes=1))
-    )
-
-    first = task_center_routes.list_task_center(
-        _list_request(db), status="all", kind="all", limit=1, cursor=None
-    )
-    assert [item["id"] for item in first["items"]] == ["batch_new"]
+    db.whole_tasks.insert_many([
+        _task("wtask_old", created_at=BASE_TIME),
+        _task("wtask_new", created_at=BASE_TIME + timedelta(minutes=1)),
+    ])
+    first = task_center_routes.list_task_center(_list_request(db), limit=1)
+    assert [item["id"] for item in first["items"]] == ["wtask_new"]
     assert first["next_cursor"]
-    second = task_center_routes.list_task_center(
-        _list_request(db), status="all", kind="all", limit=1, cursor=first["next_cursor"]
-    )
+    second = task_center_routes.list_task_center(_list_request(db), limit=1, cursor=first["next_cursor"])
     assert [item["id"] for item in second["items"]] == ["wtask_old"]
     assert second["next_cursor"] is None

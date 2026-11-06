@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.services import asset_records, brand_rules, platform_presets, storage
+from app.services import asset_records, brand_rules, merchant_profile, platform_presets, storage
 from app.services.image_ref import ImageRef, image_ref_from_asset
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,7 @@ class BrandStyle:
     schema_version: int = 1
     style_fields: dict[str, str] | None = None
     legacy_guides: dict[str, str] | None = None
+    merchant_id: str | None = None
 
     def snapshot(self, references: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         return {
@@ -86,6 +87,7 @@ class BrandStyle:
             "name": self.name,
             "short_name": self.short_name,
             "summary": self.summary,
+            "note": self.note,
             "schema_version": self.schema_version,
             "style_fields": dict(self.style_fields) if self.style_fields is not None else None,
             "platform_id": self.platform_id,
@@ -363,7 +365,7 @@ def brand_from_document(document: Any) -> BrandStyle:
     if document.get("style_fields"):
         layout_guide = brand_rules.compile_style_fields(document["style_fields"])
         background_guide = layout_guide
-    if not layout_guide or not background_guide:
+    if document.get("schema_version") != 2 and (not layout_guide or not background_guide):
         raise BrandError("invalid_brand", "品牌排版指南和背景指南不能为空")
     raw_platform = str(document.get("platform_id") or document.get("platform") or "").strip()
     try:
@@ -378,6 +380,7 @@ def brand_from_document(document: Any) -> BrandStyle:
         schema_version=int(document.get("schema_version") or 1),
         style_fields=document.get("style_fields"),
         legacy_guides=document.get("legacy_guides"),
+        merchant_id=str(document.get("merchant_id") or "").strip() or None,
         short_name=str(document.get("short_name") or name).strip(),
         summary=str(document.get("summary") or "").strip(),
         platform=platform_name(normalized_platform) or raw_platform,
@@ -441,7 +444,7 @@ def brand_from_snapshot(snapshot: Any) -> BrandStyle | None:
         return None
     layout_guide = str(snapshot.get("layout_guide") or "").strip()
     background_guide = str(snapshot.get("background_guide") or "").strip()
-    if not layout_guide or not background_guide:
+    if snapshot.get("schema_version") != 2 and (not layout_guide or not background_guide):
         return None
     reference_asset_ids = _normalize_asset_ids(snapshot.get("reference_asset_ids"))
     if not reference_asset_ids:
@@ -566,6 +569,9 @@ def snapshot_brand(
     snapshot["cover_asset_id"] = cover_asset_id
     snapshot["reference_asset_ids"] = [item["asset_id"] for item in references]
     snapshot["logo_asset_ids"] = logo_asset_ids
+    snapshot["merchant_context"] = merchant_profile.prompt_context(
+        merchant_profile.get_profile(db, brand.merchant_id)
+    )
     return snapshot
 
 

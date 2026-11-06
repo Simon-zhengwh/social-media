@@ -98,6 +98,7 @@ export type MerchantProfile = {
   source_label: string
   source_record_id: string
   sections: { title: string; text: string; source_path: string; original: unknown }[]
+  prompt_sections: { title: string; text: string }[]
 }
 
 export type Asset = {
@@ -253,7 +254,10 @@ export type WholeImageVersion = {
   id: string
   version: number
   parent_version_id: string | null
-  operation: 'generate' | 'edit'
+  operation: 'generate' | 'edit' | 'original_replace'
+  replacement_task_id?: string | null
+  source_output_id?: string | null
+  replacements?: OriginalReplacementItem[]
   instruction: string
   width: number
   height: number
@@ -285,8 +289,9 @@ export type WholeImageTaskGroupCandidate = {
 }
 
 export type WholeImageTaskGroup = {
+  whole_task_id?: string | null
   id: string
-  kind: 'generate' | 'edit' | 'background_replace'
+  kind: 'generate' | 'original_replace'
   status: WholeImageTaskGroupStatus
   prompt: string
   brand_name: string | null
@@ -313,9 +318,9 @@ export type WholeImageTaskGroupPage = {
   total: number
 }
 
-// ---------- Direct poster editing ----------
+// ---------- Original photo replacement ----------
 
-export type PosterEditReference = {
+export type OriginalReplacementReference = {
   asset_id: string
   name: string
   preview_url: string
@@ -323,56 +328,21 @@ export type PosterEditReference = {
   height: number
 }
 
-export type PosterEditOutput = {
-  id: string
-  role: string
-  label: string
-  asset_id: string
-  width: number
-  height: number
-  selectable: boolean
-  preview_url: string | null
-  download_url: string | null
-  model_input: string | null
-}
+export type OriginalReplacementItem = { target: string; asset_id: string }
 
-export type PosterEditTask = {
+export type OriginalReplacementTask = {
   id: string
-  batch_id: string
-  candidate_index: number
-  candidate_count: number
+  whole_task_id?: string | null
+  source_version_id?: string | null
+  source_output_id?: string | null
+  source_version?: number | null
+  applied_version_id?: string | null
+  applied_version?: number | null
   status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'interrupted'
   stage: string
   progress: number
-  prompt: string
-  references: PosterEditReference[]
-  outputs: PosterEditOutput[]
-  agent_id: string
-  agent_input: string | null
-  run_id: string | null
-  error: { code: string; message: string } | null
-  created_at: string
-  updated_at: string
-}
-
-
-export type PosterEditBatch = {
-  id: string
-  candidate_count: number
-  tasks: PosterEditTask[]
-  created_at: string
-  updated_at: string
-}
-
-export type BackgroundReplacementItem = { target: string; asset_id: string }
-
-export type BackgroundReplacementTask = {
-  id: string
-  status: PosterEditTask['status']
-  stage: string
-  progress: number
-  source: PosterEditReference
-  replacements: Array<PosterEditReference & { target: string }>
+  source: OriginalReplacementReference
+  replacements: Array<OriginalReplacementReference & { target: string }>
   output: { asset_id: string; width: number; height: number; preview_url: string; download_url: string } | null
   agent_id: string | null
   run_id: string | null

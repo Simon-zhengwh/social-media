@@ -75,7 +75,7 @@ def get_asset_file(asset_id: str, request: Request) -> FileResponse:
 
 
 def _asset_referenced(db: Any, asset_id: str) -> bool:
-    if db.background_replace_tasks.find_one({"$or": [
+    if db.background_replace_tasks.find_one({"whole_task_id": {"$type": "string", "$ne": ""}, "$or": [
         {"input.source_asset_id": asset_id}, {"input.replacements.asset_id": asset_id},
     ]}):
         return True

@@ -46,8 +46,7 @@ FOOD_PRESERVATION_PROMPT = (
     "tableware, lighting, and relative positions inside it. "
     "Do not redraw, retouch, replace, rearrange, add, or remove food or tableware, "
     "and do not invent food to fill cropped or hidden areas. "
-    "Creative changes belong outside these protected units. "
-    "Change a protected food detail only when the user explicitly requests that specific change."
+    "\n\n" + brand_rules.ASSET_PRESERVATION_RULE
 )
 EDIT_PRESERVATION_PROMPT = (
     "Use the current poster as the editing base; do not rebuild it from reference images. "
@@ -543,16 +542,9 @@ def run_generation(
         )
         brand_context = ""
         if not optimized and brand.get("name"):
-            guides = (
-                brand_rules.compile_style_fields(brand["style_fields"])
-                if brand.get("style_fields") else
-                "\n".join(dict.fromkeys(str(brand.get(key) or '').strip() for key in ("layout_guide", "background_guide")))
-            )
             brand_context = (
-                f"\n\nBrand context: {brand.get('name')}. "
-                f"{str(brand.get('summary') or '').strip()}\n"
+                f"\n\n{brand_rules.brand_context(brand)}\n"
                 f"{_brand_style_context(brand)}\n"
-                f"Brand generation guide:\n{guides}"
                 + (
                     "\nUse attached brand reference images for brand colors, typography, "
                     "composition, and decorative style. Keep product details faithful "
@@ -561,6 +553,8 @@ def run_generation(
                     else ""
                 )
             )
+        merchant_context = str(brand.get("merchant_context") or "").strip()
+        merchant_block = f"\n\n{merchant_context}" if merchant_context else ""
         platform_context = platform_presets.prompt_from_task(
             claimed.get("platform"), claimed.get("placement")
         )
@@ -576,7 +570,7 @@ def run_generation(
         prompt = (
             f"{OPTIMIZED_GENERATION_SYSTEM_PROMPT if optimized else GENERATION_SYSTEM_PROMPT}"
             f"{reference_role_block}"
-            f"{common_block}{brand_context}{platform_block}\n\nUser request:\n"
+            f"{common_block}{brand_context}{merchant_block}{platform_block}\n\nUser request:\n"
             f"{str(input_data.get('prompt') or '').strip()}"
         ).strip()
         canvas = claimed.get("canvas") or {}
@@ -781,6 +775,7 @@ def _agent_edit_branch(
     version: int,
     source_asset: dict[str, Any],
     instruction: str,
+    merchant_context: str,
     target_size: tuple[int, int],
     reference_asset_ids: list[str],
     canvas_ratio: str,
@@ -835,8 +830,9 @@ def _agent_edit_branch(
                 }
             )
             agent_references.append((f"本轮用户附加参考图 {index}", reference_url))
+        merchant_block = f"\n\n{merchant_context.strip()}" if merchant_context.strip() else ""
         agent_instruction = (
-            f"{canvas_contract}\n\n{EDIT_PRESERVATION_PROMPT}"
+            f"{canvas_contract}\n\n{EDIT_PRESERVATION_PROMPT}{merchant_block}"
             f"\n\nCurrent edit request:\n{instruction.strip()}"
         )
         if reference_images:
@@ -996,6 +992,8 @@ def run_edit(
         height = int(source_output.get("height") if source_output else source.get("height") or source_asset.get("height") or 1024)
         size = gateway_image_size(width, height)
         task_input = task.get("input") or {}
+        task_brand = task.get("brand") if isinstance(task.get("brand"), dict) else {}
+        merchant_context = str(task_brand.get("merchant_context") or "").strip()
         image_model = str(task_input.get("image_model") or settings.core_ai_image_model)
         product_count = min(len(task_input.get("product_asset_ids") or []), 6)
         original_count = product_count + (1 if task_input.get("logo_asset_id") else 0)
@@ -1031,9 +1029,11 @@ def run_edit(
                     "Use them only as references for the requested change; do not replace "
                     "the current poster wholesale."
                 )
+        merchant_block = f"\n\n{merchant_context}" if merchant_context else ""
         prompt = (
             "\n".join(image_roles)
-            + f"\n\n{EDIT_PRESERVATION_PROMPT}\n\nCurrent edit request:\n{instruction.strip()}"
+            + f"\n\n{EDIT_PRESERVATION_PROMPT}{merchant_block}"
+            + f"\n\nCurrent edit request:\n{instruction.strip()}"
         )
         gateway_input = {
             "channel": "gateway",
@@ -1122,6 +1122,7 @@ def run_edit(
                     version=version,
                     source_asset=source_asset,
                     instruction=instruction,
+                    merchant_context=merchant_context,
                     target_size=(width, height),
                     reference_asset_ids=reference_asset_ids,
                     canvas_ratio=str(task_input.get("ratio") or f"{width}:{height}"),

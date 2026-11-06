@@ -182,23 +182,84 @@ def test_common_rules_snapshot_is_immutable_for_generation(settings, store, opti
     task = db.whole_tasks.find_one({"_id": created["id"]})
     assert task["brand_rules"] == original
     assert "SNAPSHOT_RULE" in client.generation_calls[0]["prompt"]
+    assert "严格小于 30°" in client.generation_calls[0]["prompt"]
     assert "NEW_RULE" not in client.generation_calls[0]["prompt"]
 
 
-def test_structured_brand_generation_uses_fields_once(settings, store):
+@pytest.mark.parametrize("structured", [False, True])
+def test_generation_uses_note_snapshot_and_excludes_hidden_fields(settings, store, structured):
     db = mongomock.MongoClient().db
     client = FakeCoreAI()
     req = _request(db, settings, store, client)
     db.brands.update_one({"_id": "seejoy"}, {"$set": {
-        "schema_version": 2,
-        "style_fields": {"palette_notes": "绿", "typography": "UNIQUE_FONT", "subject_style": "实拍", "background": "纸感"},
+        "schema_version": 2 if structured else 1,
+        "style_fields": {"palette_notes": "绿", "typography": "UNIQUE_FONT", "subject_style": "实拍", "background": "纸感"} if structured else None,
+        "summary": "HIDDEN_SUMMARY",
+        "note": "VISIBLE_NOTE",
         "layout_guide": "LEGACY_CONTENT", "background_guide": "OLD_BACKGROUND",
     }})
     created = whole_routes.create_task(WholeImageTaskCreate(prompt="测试", brand_id="seejoy"), req, BackgroundTasks())
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {"note": "NEW_NOTE"}})
     whole_service.run_generation(db, settings, store, client, created["id"])
     prompt = client.generation_calls[0]["prompt"]
-    assert prompt.count("UNIQUE_FONT") == 1
-    assert "LEGACY_CONTENT" not in prompt
+    for hidden in ("UNIQUE_FONT", "HIDDEN_SUMMARY", "LEGACY_CONTENT", "OLD_BACKGROUND", "NEW_NOTE"):
+        assert hidden not in prompt
+    assert prompt.count("VISIBLE_NOTE") == 1
+    snapshot = db.whole_tasks.find_one({"_id": created["id"]})["brand"]
+    assert snapshot["summary"] == "HIDDEN_SUMMARY"
+    assert (snapshot["style_fields"] is not None) == structured
+    assert snapshot["note"] == "VISIBLE_NOTE"
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_merchant_context_reaches_generation_and_edit_prompts(settings, store, product_png, optimized):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "dish.png")
+    request = _request(db, settings, store, fake)
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {"merchant_id": "merchant"}})
+    db.merchant_profiles.insert_one({
+        "_id": "merchant", "name": "MERCHANT_NAME", "source_label": "HIDDEN_SOURCE_LABEL",
+        "sections": [
+            {"source_path": "brand.positioning", "text": "POSITIONING"},
+            {"source_path": "locations.0.core_highlights", "text": "CORE_HIGHLIGHTS"},
+            {"source_path": "locations.0.competitive_context.target_customers", "text": "TARGET_CUSTOMERS"},
+            {"source_path": "brand.voice.description", "text": "VOICE_DESCRIPTION"},
+            {"source_path": "locations.0.nap.address", "text": "HIDDEN_ADDRESS"},
+        ],
+    })
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="新品海报", product_asset_ids=[product.id], prompt_optimized=optimized,
+            brand_id="seejoy", brand_mode="preset",
+        ),
+        request, BackgroundTasks(),
+    )
+
+    assert "MERCHANT_NAME" in db.whole_tasks.find_one({"_id": created["id"]})["brand"]["merchant_context"]
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    generation_prompt = fake.edit_calls[0]["prompt"]
+    for visible in ("商户背景参考：MERCHANT_NAME", "POSITIONING", "CORE_HIGHLIGHTS", "TARGET_CUSTOMERS", "VOICE_DESCRIPTION"):
+        assert visible in generation_prompt
+    assert "HIDDEN_SOURCE_LABEL" not in generation_prompt
+    assert "HIDDEN_ADDRESS" not in generation_prompt
+
+    version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    fake.edit_calls.clear()
+    fake.fail_agent = False
+    instruction = "强化聚会氛围"
+    whole_routes.create_edit(
+        created["id"],
+        WholeImageEditRequest(instruction=instruction, source_version_id=version["_id"]),
+        request, BackgroundTasks(),
+    )
+    whole_service.run_edit(db, settings, store, fake, created["id"], instruction, version["_id"])
+
+    for prompt in (fake.edit_calls[0]["prompt"], fake.agent_calls[-1]["input"]):
+        assert "商户背景参考：MERCHANT_NAME" in prompt
+        assert "POSITIONING" in prompt
+        assert "HIDDEN_ADDRESS" not in prompt
 
 
 def test_historical_generation_does_not_fetch_new_common_rules(settings, store):
@@ -457,7 +518,9 @@ def test_generation_protects_food_photos_in_raw_and_optimized_prompts(
     assert "crop, uniformly scale, or move" in prompt
     assert "plating, tableware, lighting, and relative positions" in prompt
     assert "Do not redraw, retouch, replace, rearrange, add, or remove food" in prompt
-    assert "only when the user explicitly requests that specific change" in prompt
+    assert "only when the user explicitly requests that specific change" not in prompt
+    for constraint in ("严格小于 30°", "禁止 30° 及以上", "生成式补画或扩图", "不得编造", "摄影场景及其他内容素材"):
+        assert constraint in prompt
     assert prompt.endswith(request_text)
     assert sent["reference_bytes"] == [store.get_bytes(product.prepared_path)]
     saved = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
@@ -495,7 +558,9 @@ def test_text_edit_protects_food_in_both_gateway_and_agent_inputs(
         assert "Use the current poster as the editing base" in prompt
         assert "Food-photo preservation:" in prompt
         assert "Do not redraw, retouch, replace, rearrange, add, or remove food" in prompt
-        assert "only when the user explicitly requests that specific change" in prompt
+        assert "only when the user explicitly requests that specific change" not in prompt
+        for constraint in ("严格小于 30°", "禁止 30° 及以上", "生成式补画或扩图", "不得编造", "摄影场景及其他内容素材"):
+            assert constraint in prompt
         assert "For text-only edits, change only the requested lettering" in prompt
         assert instruction in prompt
         assert "原始文案：鲜切牛肉" not in prompt
@@ -803,7 +868,7 @@ def test_generation_uses_sunburst_image_model(settings, store):
     assert fake.edit_calls[-1]["model"] == "gpt-image-2.5-sunburst"
 
 
-def test_preset_brand_guides_and_reference_images_reach_image_model(settings, store, product_png):
+def test_preset_brand_references_reach_model_without_hidden_guides(settings, store, product_png):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     brand_reference = storage.prepare_upload(
@@ -840,8 +905,8 @@ def test_preset_brand_guides_and_reference_images_reach_image_model(settings, st
 
     whole_service.run_generation(db, settings, store, fake, created["id"])
 
-    assert "TEST LAYOUT GUIDE" in fake.edit_calls[0]["prompt"]
-    assert "TEST BACKGROUND GUIDE" in fake.edit_calls[0]["prompt"]
+    assert "TEST LAYOUT GUIDE" not in fake.edit_calls[0]["prompt"]
+    assert "TEST BACKGROUND GUIDE" not in fake.edit_calls[0]["prompt"]
     assert "Use attached brand reference images" in fake.edit_calls[0]["prompt"]
     assert "Style-only reference image(s): 1." in fake.edit_calls[0]["prompt"]
     assert fake.edit_calls[0]["reference_bytes"] == [

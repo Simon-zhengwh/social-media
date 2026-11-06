@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFil
 from PIL import Image, ImageOps
 
 from app.schemas import BrandUpdate, DuplicateBrandRequest
-from app.services import asset_records, brand_rules, brand_style, platform_presets
+from app.services import asset_records, brand_rules, brand_style, merchant_profile, platform_presets
 
 router = APIRouter(prefix="/api/brands", tags=["brands"])
 
@@ -52,7 +52,7 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         })
     return {
         "id": brand.id,
-        "merchant_profile": _merchant_profile(db, document.get("merchant_id")),
+        "merchant_profile": merchant_profile.get_profile(db, brand.merchant_id),
         "name": brand.name,
         "short_name": brand.short_name,
         "summary": brand.summary,
@@ -74,19 +74,6 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         "logo_asset_ids": [item["asset_id"] for item in logo_images],
         "logo_images": logo_images,
         "reference_images": references,
-    }
-
-
-def _merchant_profile(db: Any, merchant_id: str | None) -> dict[str, Any] | None:
-    profile = db.merchant_profiles.find_one({"_id": merchant_id}) if merchant_id else None
-    if profile is None:
-        return None
-    return {
-        "id": str(profile["_id"]),
-        "name": profile.get("name", ""),
-        "source_label": profile.get("source_label", ""),
-        "source_record_id": profile.get("source_record_id", ""),
-        "sections": profile.get("sections", []),
     }
 
 
@@ -196,14 +183,16 @@ def update_brand(
     )
 
     style_fields = payload.style_fields.model_dump() if payload.style_fields is not None else document.get("style_fields")
-    if document.get("schema_version") == 2 and payload.style_fields is None:
-        raise HTTPException(422, "请使用结构化字段编辑此风格")
     layout_guide = brand_rules.compile_style_fields(style_fields) if style_fields else payload.layout_guide.strip()
     background_guide = layout_guide if style_fields else payload.background_guide.strip()
+    # Saving notes must preserve the stored guides when hidden fields are unchanged.
+    if style_fields and style_fields == document.get("style_fields"):
+        layout_guide = document.get("layout_guide", layout_guide)
+        background_guide = document.get("background_guide", background_guide)
     template_updates: dict[str, Any] = {}
-    if style_fields is not None:
+    if payload.schema_version == 2 or style_fields is not None:
         template_updates.update(schema_version=2, style_fields=style_fields)
-        if document.get("schema_version") != 2 and not document.get("legacy_guides") and document.get("layout_guide"):
+        if style_fields is not None and document.get("schema_version") != 2 and not document.get("legacy_guides") and document.get("layout_guide"):
             template_updates["legacy_guides"] = {"layout_guide": document.get("layout_guide", ""), "background_guide": document.get("background_guide", "")}
 
     if payload.is_default:

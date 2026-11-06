@@ -50,25 +50,9 @@ type BrandDraft = {
   cover_asset_id: string | null
 }
 
-const emptyStyle = (): BrandStyleFields => ({
-  palette_notes: '', typography: '', subject_style: '', background: '',
-  layout: '重点清晰、层级明确，正文不遮挡关键主体', decoration: '', identity: '', restrictions: '',
-})
-
-const styleFields: { key: keyof BrandStyleFields; label: string; hint: string; example: string; required?: boolean }[] = [
-  { key: 'palette_notes', label: '配色说明', hint: '说明颜色的主次、用途和允许的变化；与色值至少填一项。', example: '深绿为主色，奶油白作背景，红色强调优惠；允许同色系变化。' },
-  { key: 'typography', label: '字体风格', hint: '分别描述标题、正文和数字的字体气质。', example: '标题用粗笔刷字，正文用清晰无衬线字，价格数字醒目。', required: true },
-  { key: 'subject_style', label: '主体表现', hint: '描述商品、人物等主体的表现方式。', example: '真实菜品摄影拼贴，保持食物细节和自然色泽。', required: true },
-  { key: 'background', label: '背景与质感', hint: '描述背景颜色、材质和氛围。', example: '奶油白背景，带轻微纸张纹理。', required: true },
-  { key: 'layout', label: '排版偏好', hint: '说明视觉重点、文字层级和疏密偏好，可调整默认建议。', example: '菜品为主，标题放大，优惠条件放在次级区域。' },
-  { key: 'decoration', label: '装饰元素', hint: '不需要装饰时可明确填写“无”。', example: '少量手写箭头、撕纸边缘和促销色块。' },
-  { key: 'identity', label: '固定识别元素', hint: '填写品牌固定角色或其他视觉标记。', example: '白布幽灵角色，佩戴深色墨镜。' },
-  { key: 'restrictions', label: '专属禁忌与补充', hint: '补充该风格特有的限制。', example: '不使用霓虹效果，不添加未定稿角色。' },
-]
-
 const ruleFields: { key: Exclude<keyof BrandRules, 'version'>; label: string; hint: string }[] = [
   { key: 'copy_accuracy', label: '文案准确', hint: '保证价格、日期、条件和承诺准确。' },
-  { key: 'asset_usage', label: '素材使用', hint: '区分内容素材与风格参考的用途。' },
+  { key: 'asset_usage', label: '素材使用', hint: '限定裁切、等比缩放、移动、旋转及小于 30° 的轻微透视；禁止重绘或编造素材。' },
   { key: 'logo_usage', label: 'Logo 使用', hint: '保持品牌标识的图形、字形、比例和原色。' },
   { key: 'readability', label: '可读性', hint: '避免遮挡关键主体或裁切必要信息。' },
 ]
@@ -230,12 +214,8 @@ export default function BrandStudio({
 
   const saveBrand = async () => {
     if (!draft) return
-    if (!draft.name.trim() || !draft.summary.trim() || !draft.platform_id || !draft.placement_id) {
-      setError('请填写风格名称、风格定位、适用平台和发布用途')
-      return
-    }
-    if (draft.style_fields && (!draft.style_fields.typography.trim() || !draft.style_fields.subject_style.trim() || !draft.style_fields.background.trim() || (!draft.colors.length && !draft.style_fields.palette_notes.trim()))) {
-      setError('请填写字体风格、主体表现、背景与质感，并至少填写配色说明或一个色值')
+    if (!draft.name.trim() || !draft.platform_id || !draft.placement_id) {
+      setError('请填写风格名称、适用平台和发布用途')
       return
     }
     setSaving(true)
@@ -458,7 +438,7 @@ export default function BrandStudio({
               setError(null)
               setNotice(null)
               setEditingColor(null)
-              setDraft({ schema_version: 2, style_fields: emptyStyle(), name: '', short_name: '', summary: '', platform_id: '', placement_id: '', colors: [], logo_asset_ids: [], layout_guide: '', background_guide: '', logo_keywords: [], note: '', is_default: false, cover_asset_id: null })
+              setDraft({ schema_version: 2, style_fields: null, name: '', short_name: '', summary: '', platform_id: '', placement_id: '', colors: [], logo_asset_ids: [], layout_guide: '', background_guide: '', logo_keywords: [], note: '', is_default: false, cover_asset_id: null })
             }}>＋ 新建风格</button>
           </div>
         </div>
@@ -505,7 +485,7 @@ export default function BrandStudio({
                       <strong>{brand.name}</strong>
                       <span className="brand-platform-chip">{brand.platform || '未配置平台'}{brand.purpose ? ` · ${brand.purpose}` : ''}</span>
                     </span>
-                    <span className="brand-card-summary">{brand.summary || '品牌专属视觉规范'}</span>
+                    {brand.note ? <span className="brand-card-summary">{brand.note}</span> : null}
                   </div>
                   <div className="brand-card-footer">
                     <span className="brand-palette-mini">
@@ -553,7 +533,7 @@ export default function BrandStudio({
         {loading || !draft ? (
           <div className="asset-empty"><strong>正在读取品牌配置</strong><span>请稍候…</span></div>
         ) : (
-          <div className="brand-detail-body brand-merchant-workspace">
+          <div className={`brand-detail-body${detail?.merchant_profile?.prompt_sections?.length ? ' brand-merchant-workspace' : ''}`}>
             <MerchantProfilePanel profile={detail?.merchant_profile ?? null} />
             <div className="brand-platform-column">
             <section className="brand-form-section brand-basics-section">
@@ -586,11 +566,6 @@ export default function BrandStudio({
                     {selectedPlatform ? selectedPlatform.placements.map((placement) => <option key={placement.id} value={placement.id}>{placement.name}</option>) : <option value="">请选择用途</option>}
                   </select>
                 </label>
-                <label className="brand-field brand-field-wide">
-                  <span>风格定位 <span className="asset-required" aria-hidden="true">*</span></span>
-                  <small>用几个关键词概括整体气质。</small>
-                  <textarea rows={2} required maxLength={500} placeholder="例如：温暖、复古、轻手作感" value={draft.summary} onChange={(event) => updateDraft({ summary: event.target.value })} />
-                </label>
               </div>
 
               <div className="brand-visual-assets">
@@ -618,7 +593,7 @@ export default function BrandStudio({
                 </div>
 
                 <div className="brand-asset-group">
-                  <div className="brand-subhead"><strong>主色调</strong><span>与配色说明至少填一项 · {draft.colors.length}/6</span></div>
+                  <div className="brand-subhead"><strong>主色调</strong><span>{draft.colors.length}/6</span></div>
                   <div className="brand-color-strip">
                     {draft.colors.map((color, index) => (
                       <button type="button" className={`brand-color-swatch${editingColor === index ? ' is-active' : ''}`} key={`${color.hex}-${index}`} style={{ background: color.hex }} title={color.hex} aria-label={color.hex} onClick={() => { setEditingColor(index); setColorInput(color.hex) }} />
@@ -645,28 +620,11 @@ export default function BrandStudio({
             </section>
 
             <section className="brand-form-section">
-              <div className="brand-section-head">
-                <div><span className="eyebrow">STYLE TEMPLATE</span><h2>风格填写模板</h2></div>
-              </div>
-              <p className="brand-template-hint">只需填写这套风格独有的要求。文案准确、素材使用、Logo 和可读性由通用规范统一提供。示例仅供参考，不会自动保存。</p>
-              {draft.style_fields ? (
-                <div className="brand-form-grid">
-                  {styleFields.map(({ key, label, hint, example, required }) => (
-                    <label className="brand-field" key={key}>
-                      <span>{label}{required ? <> <span className="asset-required" aria-hidden="true">*</span></> : key === 'palette_notes' ? ' · 配色二选一' : null}</span>
-                      <small>{hint}</small>
-                      <textarea rows={3} required={required} maxLength={key === 'restrictions' ? 6000 : 4000} placeholder={`例如：${example}`} value={draft.style_fields![key]} onChange={(event) => updateDraft({ style_fields: { ...draft.style_fields!, [key]: event.target.value } })} />
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <>
-                  <p className="brand-template-hint">这套风格尚未转换为填写模板，原规范仍有效。转换后请整理并填齐必填项。</p>
-                  <button type="button" className="mp-btn-ghost" onClick={() => updateDraft({ schema_version: 2, style_fields: emptyStyle() })}>转换为填写模板</button>
-                  <label className="brand-field"><span>原布局规范</span><textarea rows={7} value={draft.layout_guide} onChange={(event) => updateDraft({ layout_guide: event.target.value })} /></label>
-                  <label className="brand-field"><span>原背景规范</span><textarea rows={5} value={draft.background_guide} onChange={(event) => updateDraft({ background_guide: event.target.value })} /></label>
-                </>
-              )}
+              <label className="brand-field brand-field-wide">
+                <span>备注</span>
+                <small>选填，简单写下这套风格的要求即可。</small>
+                <textarea rows={4} maxLength={4000} placeholder="例如：整体简洁一些，标题醒目，多留白。" value={draft.note} onChange={(event) => updateDraft({ note: event.target.value })} />
+              </label>
             </section>
 
             <section className="brand-form-section">

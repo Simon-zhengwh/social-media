@@ -113,7 +113,7 @@ export default function BrandModeSelector({
                       <span className="brand-option-title">
                         <strong>{displayName}</strong>
                       </span>
-                      <span>{brand.summary || '品牌专属视觉规范'}</span>
+                      {brand.note ? <span>{brand.note}</span> : null}
                       {brand.colors.length ? (
                         <span className="brand-option-palette" aria-label="品牌主色调">
                           {brand.colors.slice(0, 6).map((color) => (

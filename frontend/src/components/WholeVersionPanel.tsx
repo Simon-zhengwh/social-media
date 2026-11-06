@@ -70,6 +70,7 @@ export default function WholeVersionPanel({
                 <div className="version-copy">
                   <div className="version-title">
                     <strong>v{version.version}</strong>
+                    {version.operation === 'original_replace' ? <span className="version-current">原照替换</span> : null}
                     {current ? <span className="version-current">当前</span> : null}
                     <span className="version-time tnum">{formatTime(version.created_at)}</span>
                   </div>

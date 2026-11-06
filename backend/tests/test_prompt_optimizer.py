@@ -144,13 +144,15 @@ def _optimize(db, settings, store, client, **overrides):
 
 
 @pytest.mark.parametrize("brand_mode", ["none", "preset", "reference"])
-def test_optimizer_common_rules_all_modes_and_structured_guide(settings, store, optimizer_db, brand_mode):
+def test_optimizer_common_rules_and_notes_exclude_hidden_fields(settings, store, optimizer_db, brand_mode):
     from app.services import brand_rules
 
     db, products, reference_id = optimizer_db
     db.brand_rules.insert_one({"_id": "default", **brand_rules.DEFAULT_RULES, "copy_accuracy": "COMMON_COPY_RULE"})
     db.brands.update_one({"_id": "seejoy"}, {"$set": {
         "schema_version": 2,
+        "summary": "HIDDEN_SUMMARY",
+        "note": "VISIBLE_NOTE",
         "style_fields": {"palette_notes": "绿色", "typography": "V2_FONT_RULE", "subject_style": "实拍", "background": "纸感"},
         "layout_guide": "LEGACY_MUST_NOT_APPEAR", "background_guide": "OLD_BACKGROUND",
     }})
@@ -159,9 +161,62 @@ def test_optimizer_common_rules_all_modes_and_structured_guide(settings, store, 
               product_asset_ids=products, style_reference_asset_ids=[reference_id] if brand_mode == "reference" else [])
     text = client.calls[0]["input"]
     assert "COMMON_COPY_RULE" in text
+    assert "严格小于 30°" in text
+    assert "生成式补画或扩图" in text
+    assert "不得编造" in text
     assert "LEGACY_MUST_NOT_APPEAR" not in text
+    assert "V2_FONT_RULE" not in text
+    assert "HIDDEN_SUMMARY" not in text
+    assert text.count("VISIBLE_NOTE") == (1 if brand_mode == "preset" else 0)
+
+
+@pytest.mark.parametrize("brand_mode", ["preset", "none", "reference"])
+def test_optimizer_uses_only_displayed_merchant_background(settings, store, optimizer_db, brand_mode):
+    from app.routes.brands import _brand_detail
+
+    db, products, reference_id = optimizer_db
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {"merchant_id": "merchant", "note": "NOTE_TAKES_PRIORITY"}})
+    profile = {
+        "_id": "merchant", "name": "MERCHANT_NAME", "source_label": "HIDDEN_SOURCE_LABEL",
+        "source_record_id": "HIDDEN_RECORD_ID", "source": {"private": "HIDDEN_RAW_RECORD"},
+        "sections": [
+            {"source_path": "brand.positioning", "text": "POSITIONING", "original": "HIDDEN_ORIGINAL"},
+            {"source_path": "locations.0.core_highlights", "text": "CORE_HIGHLIGHTS"},
+            {"source_path": "locations.0.competitive_context.target_customers", "text": "TARGET_CUSTOMERS"},
+            {"source_path": "brand.voice.description", "text": "VOICE_DESCRIPTION"},
+            {"source_path": "brand.personality", "text": "HIDDEN_PERSONALITY"},
+            {"source_path": "locations.0.nap.address", "text": "HIDDEN_ADDRESS"},
+            {"source_path": "locations.0.nap.phone", "text": "HIDDEN_PHONE"},
+        ],
+    }
+    db.merchant_profiles.insert_one(profile)
+    client = FakeCoreAI()
+    _optimize(db, settings, store, client, brand_mode=brand_mode,
+              brand_id="seejoy" if brand_mode == "preset" else None,
+              product_asset_ids=products, style_reference_asset_ids=[reference_id] if brand_mode == "reference" else [])
+    text = client.calls[0]["input"]
+    displayed = _brand_detail(db, db.brands.find_one({"_id": "seejoy"}))["merchant_profile"]
+    assert len(displayed["prompt_sections"]) == 4
+    for section in displayed["prompt_sections"]:
+        assert text.count(section["text"]) == (1 if brand_mode == "preset" else 0)
+    assert ("MERCHANT_NAME" in text) == (brand_mode == "preset")
+    for hidden in ("HIDDEN_SOURCE_LABEL", "HIDDEN_RECORD_ID", "HIDDEN_RAW_RECORD", "HIDDEN_ORIGINAL",
+                   "HIDDEN_PERSONALITY", "HIDDEN_ADDRESS", "HIDDEN_PHONE"):
+        assert hidden not in text
     if brand_mode == "preset":
-        assert text.count("V2_FONT_RULE") == 1
+        assert "背景参考" in text and "平台限制" in text and "本次要求和备注优先" in text
+    assert db.merchant_profiles.find_one({"_id": "merchant"}) == profile
+
+
+@pytest.mark.parametrize("merchant_id", [None, "missing", "empty"])
+def test_optimizer_handles_unlinked_missing_or_empty_merchant(settings, store, optimizer_db, merchant_id):
+    db, products, _ = optimizer_db
+    db.brands.update_one({"_id": "seejoy"}, {"$set": {"merchant_id": merchant_id}})
+    db.merchant_profiles.insert_one({"_id": "empty", "name": "UNUSED_MERCHANT", "sections": []})
+    client = FakeCoreAI()
+    _optimize(db, settings, store, client, product_asset_ids=products)
+    assert "商户背景" not in client.calls[0]["input"]
+    assert "UNUSED_MERCHANT" not in client.calls[0]["input"]
 
 
 def test_optimizer_inherits_brand_platform_when_not_explicit(settings, store, optimizer_db):
@@ -219,7 +274,8 @@ def test_blank_prompt_uses_products_brand_reference_and_xiaohongshu_rules(
     assert "data:image" not in text
     assert "当前提示词为空" in text
     assert "品牌：SEEJOY 喜聚" in text
-    assert "使用毛笔主标题" in text
+    assert "使用毛笔主标题" not in text
+    assert "深森林绿、品牌红和奶油白的真实餐饮拼贴风格。" not in text
     assert "小红书" in text
     assert "商家地址和联系电话" not in text
     assert "素材图 1" in text
@@ -227,20 +283,21 @@ def test_blank_prompt_uses_products_brand_reference_and_xiaohongshu_rules(
     assert "额外贴纸或涂鸦最多一处" not in text
 
 
-def test_unified_generation_guide_is_injected_once(settings, store, optimizer_db):
+def test_notes_replace_legacy_guides_in_optimizer(settings, store, optimizer_db):
     db, products, _ = optimizer_db
     guide = "统一生成规范：暖调复古、实拍保真、少文字。"
     db.brands.update_one(
         {"_id": "seejoy"},
-        {"$set": {"layout_guide": guide, "background_guide": guide}},
+        {"$set": {"layout_guide": guide, "background_guide": guide, "note": "备注要求：留白多一些"}},
     )
     client = FakeCoreAI()
 
     _optimize(db, settings, store, client, product_asset_ids=products)
 
     text = client.calls[0]["input"]
-    assert text.count(guide) == 1
-    assert "品牌生成规范：" in text
+    assert guide not in text
+    assert text.count("备注要求：留白多一些") == 1
+    assert "品牌生成规范：" not in text
     assert "品牌摄影与背景规范" not in text
 
 def test_unselected_platform_uses_freeform_guidance(settings, store, optimizer_db):

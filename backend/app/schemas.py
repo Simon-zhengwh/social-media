@@ -71,7 +71,7 @@ class BrandUpdate(BaseModel):
     logo_asset_ids: list[str] = Field(default_factory=list, max_length=5)
     # Legacy fields remain accepted while existing records and clients migrate.
     platform: str = Field(default="", max_length=40)
-    note: str = Field(default="", max_length=500)
+    note: str = Field(default="", max_length=4000)
     layout_guide: str = Field(default="", max_length=20000)
     background_guide: str = Field(default="", max_length=20000)
     schema_version: Literal[1, 2] = 1
@@ -83,10 +83,6 @@ class BrandUpdate(BaseModel):
     @model_validator(mode="after")
     def validate_guides(self):
         if self.schema_version == 2 or self.style_fields is not None:
-            if self.style_fields is None or not self.summary:
-                raise ValueError("请填写风格定位和风格字段")
-            if not self.colors and not self.style_fields.palette_notes:
-                raise ValueError("请填写色值或配色说明")
             self.schema_version = 2
         elif not self.layout_guide or not self.background_guide:
             raise ValueError("品牌排版指南和背景指南不能为空")
@@ -166,7 +162,7 @@ class WholeImageTaskCreate(BaseModel):
         return text or None
 
 
-class BackgroundReplacementItem(BaseModel):
+class OriginalReplacementItem(BaseModel):
     target: str = Field(min_length=1, max_length=1000)
     asset_id: str = Field(min_length=1, max_length=128)
 
@@ -176,9 +172,9 @@ class BackgroundReplacementItem(BaseModel):
         return str(value or "").strip()
 
 
-class BackgroundReplacementRequest(BaseModel):
+class OriginalReplacementInput(BaseModel):
     source_asset_id: str = Field(min_length=1, max_length=128)
-    replacements: list[BackgroundReplacementItem] = Field(min_length=1, max_length=5)
+    replacements: list[OriginalReplacementItem] = Field(min_length=1, max_length=5)
 
     @field_validator("source_asset_id", mode="before")
     @classmethod
@@ -186,19 +182,21 @@ class BackgroundReplacementRequest(BaseModel):
         return str(value or "").strip()
 
 
-class PosterEditRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=5000)
-    asset_ids: list[str] = Field(default_factory=list, max_length=5)
+class WholeImageOriginalReplacementRequest(BaseModel):
+    source_version_id: str = Field(min_length=1, max_length=128)
+    source_output_id: str = Field(min_length=1, max_length=128)
+    replacements: list[OriginalReplacementItem] = Field(min_length=1, max_length=5)
 
-    @field_validator("prompt", mode="before")
+    @field_validator("source_version_id", "source_output_id", mode="before")
     @classmethod
-    def normalize_poster_prompt(cls, value: Any) -> str:
+    def strip_source_ids(cls, value: Any) -> str:
         return str(value or "").strip()
 
-    @field_validator("asset_ids")
-    @classmethod
-    def normalize_poster_asset_ids(cls, value: list[str]) -> list[str]:
-        return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))[:5]
+
+class WholeImageOriginalReplacementApplyRequest(BaseModel):
+    expected_current_version_id: str = Field(min_length=1, max_length=128)
+    expected_current_output_id: str = Field(min_length=1, max_length=128)
+
 
 class WholeImageEditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=1000)
@@ -225,10 +223,6 @@ class WholeImageEditRequest(BaseModel):
         if value is None:
             return []
         return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
-
-
-class PosterEditBatchRequest(PosterEditRequest):
-    candidate_count: int = Field(default=3, ge=1, le=6)
 
 
 class PromptOptimizeRequest(BaseModel):

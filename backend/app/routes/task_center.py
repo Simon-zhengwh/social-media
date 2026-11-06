@@ -14,7 +14,7 @@ from app.time_utils import utc_iso
 router = APIRouter(prefix="/api/task-center", tags=["task-center"])
 
 STATUSES = {"all", "active", "ready", "failed"}
-KINDS = {"all", "generate", "edit", "background_replace"}
+KINDS = {"all", "generate", "original_replace"}
 
 
 def _as_utc(value: Any) -> datetime:
@@ -25,107 +25,6 @@ def _as_utc(value: Any) -> datetime:
     return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _poster_candidate(db: Any, task: dict[str, Any]) -> dict[str, Any]:
-    outputs = [item for item in task.get("outputs") or [] if isinstance(item, dict)]
-    final_output = next(
-        (item for item in outputs if str(item.get("role") or "").startswith("agent_result")),
-        None,
-    )
-    preview_output = final_output or (outputs[0] if outputs else None)
-    task_id = str(task["_id"])
-    output_id = str((preview_output or {}).get("id") or "")
-    asset_id = str((preview_output or {}).get("asset_id") or "")
-    status = str(task.get("status") or "failed")
-    error = task.get("error") if isinstance(task.get("error"), dict) else None
-    return {
-        "id": task_id,
-        "candidate_index": int(task.get("candidate_index") or 0),
-        "status": status,
-        "stage": str(task.get("stage") or "failed"),
-        "progress": int(task.get("progress") or 0),
-        "current_version": 0,
-        "preview_url": f"/api/assets/{asset_id}/file" if asset_id else None,
-        "download_url": (
-            f"/api/poster-edits/{task_id}/download?output_id={output_id}"
-            if asset_id and output_id
-            else None
-        ),
-        "edit_status": "idle",
-        "error": str((error or {}).get("message") or "") or None,
-        "created_at": utc_iso(task.get("created_at")),
-        "updated_at": utc_iso(task.get("updated_at")),
-    }
-
-
-def _poster_group(db: Any, batch_id: str, tasks: list[dict[str, Any]]) -> dict[str, Any]:
-    ordered = sorted(
-        tasks,
-        key=lambda item: (
-            int(item.get("candidate_index") or 0),
-            _as_utc(item.get("created_at")),
-            str(item.get("_id")),
-        ),
-    )
-    candidates = [_poster_candidate(db, item) for item in ordered]
-    active_count = sum(
-        1 for item in ordered if item.get("status") in {"queued", "running"}
-    )
-    succeeded_count = sum(
-        1 for item in ordered if item.get("status") == "succeeded"
-    )
-    failed_count = sum(
-        1 for item in ordered if item.get("status") in {"failed", "interrupted", "partial"}
-    )
-    if active_count:
-        status = "active"
-    elif succeeded_count:
-        status = "ready"
-    else:
-        status = "failed"
-    representative = next(
-        (item for item in candidates if item["status"] == "succeeded"),
-        next((item for item in candidates if item["status"] in {"queued", "running"}), candidates[0]),
-    )
-    first = ordered[0]
-    first_input = first.get("input") if isinstance(first.get("input"), dict) else {}
-    first_asset_id = next(iter(first_input.get("asset_ids") or []), None)
-    first_asset = db.assets.find_one({"_id": first_asset_id}) if first_asset_id else None
-    error_message = next((item["error"] for item in candidates if item["error"]), None)
-    return {
-        "id": batch_id,
-        "kind": "edit",
-        "status": status,
-        "prompt": str(first_input.get("prompt") or ""),
-        "brand_name": None,
-        "platform_name": None,
-        "placement_name": None,
-        "canvas": {
-            "width": int((first_asset or {}).get("width") or 0),
-            "height": int((first_asset or {}).get("height") or 0),
-        },
-        "candidate_count": len(candidates),
-        "active_count": active_count,
-        "succeeded_count": succeeded_count,
-        "failed_count": failed_count,
-        "retryable_count": failed_count,
-        "representative_task_id": representative["id"],
-        "preview_url": representative["preview_url"],
-        "download_url": representative["download_url"],
-        "error_message": error_message,
-        "candidates": candidates,
-        "created_at": min(_as_utc(item.get("created_at")) for item in ordered),
-        "updated_at": max(_as_utc(item.get("updated_at")) for item in ordered),
-    }
-
-
-def _poster_groups(db: Any) -> list[dict[str, Any]]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for task in db.poster_edit_tasks.find({}).sort("created_at", -1):
-        batch_id = str(task.get("batch_id") or task["_id"])
-        grouped.setdefault(batch_id, []).append(task)
-    return [_poster_group(db, batch_id, tasks) for batch_id, tasks in grouped.items()]
-
-
 def _encode_cursor(item: dict[str, Any]) -> str:
     payload = json.dumps(
         {"created_at": _as_utc(item["created_at"]).isoformat(), "id": item["id"]},
@@ -134,11 +33,11 @@ def _encode_cursor(item: dict[str, Any]) -> str:
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _background_groups(db: Any) -> list[dict[str, Any]]:
-    from app.services.background_replace import task_out
+def _original_replacement_groups(db: Any) -> list[dict[str, Any]]:
+    from app.services.original_replacement_runner import task_out
 
     groups = []
-    for doc in db.background_replace_tasks.find({}).sort("created_at", -1):
+    for doc in db.background_replace_tasks.find({"whole_task_id": {"$type": "string", "$ne": ""}}).sort("created_at", -1):
         task = task_out(doc)
         active = task["status"] in {"queued", "running"}
         succeeded = task["status"] == "succeeded"
@@ -148,7 +47,7 @@ def _background_groups(db: Any) -> list[dict[str, Any]]:
                      "stage": task["stage"], "progress": task["progress"], "current_version": 0,
                      "preview_url": output.get("preview_url"), "download_url": output.get("download_url"),
                      "edit_status": "idle", "error": error, "created_at": task["created_at"], "updated_at": task["updated_at"]}
-        groups.append({"id": task["id"], "kind": "background_replace",
+        groups.append({"id": task["id"], "kind": "original_replace", "whole_task_id": task.get("whole_task_id"),
                        "status": "active" if active else "ready" if succeeded else "failed",
                        "prompt": "；".join(item["target"] for item in task["replacements"]),
                        "brand_name": None, "platform_name": None, "placement_name": None,
@@ -181,7 +80,7 @@ def list_task_center(
     if status not in STATUSES:
         raise HTTPException(status_code=422, detail="status 只支持 all、active、ready 或 failed")
     if kind not in KINDS:
-        raise HTTPException(status_code=422, detail="kind 只支持 all、generate、edit 或 background_replace")
+        raise HTTPException(status_code=422, detail="kind 只支持 all、generate 或 original_replace")
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
@@ -192,10 +91,8 @@ def list_task_center(
         for group in whole_routes._build_task_groups(whole_docs):
             group["kind"] = "generate"
             items.append(group)
-    if kind in {"all", "edit"}:
-        items.extend(_poster_groups(db))
-    if kind in {"all", "background_replace"}:
-        items.extend(_background_groups(db))
+    if kind in {"all", "original_replace"}:
+        items.extend(_original_replacement_groups(db))
 
     if status != "all":
         items = [item for item in items if item["status"] == status]

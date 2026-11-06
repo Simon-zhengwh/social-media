@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 
-export type AppView = 'whole' | 'tasks' | 'poster_edit' | 'background_replace' | 'assets' | 'brands'
+export type AppView = 'whole' | 'tasks' | 'assets' | 'brands' | 'agent-tests'
 
 type Props = {
   view: AppView
@@ -13,16 +13,6 @@ function WholeImageIcon() {
       <rect x="2.8" y="3.2" width="14.4" height="13.6" rx="2.2" />
       <path d="M5.2 13.8l3.2-3.4 2.4 2.3 1.7-1.8 2.5 2.7" />
       <path d="M6.2 6.4h7.6M6.2 8.8h4.8" />
-    </svg>
-  )
-}
-
-function PosterEditIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M4.2 3.4h8.1l3.5 3.4v9.8H4.2z" />
-      <path d="M12.2 3.6v3.5h3.3M7 11.1h5.8M7 13.5h3.8" />
-      <path d="M6.2 7.2h3.1" />
     </svg>
   )
 }
@@ -65,6 +55,12 @@ const NAV_ITEMS: Array<{
   icon: () => ReactElement
 }> = [
   {
+    key: 'agent-tests',
+    label: 'Agent 测试',
+    hint: '固定用例与运行过程',
+    icon: TasksIcon,
+  },
+  {
     key: 'whole',
     label: '海报设计',
     hint: '生成与改图',
@@ -75,18 +71,6 @@ const NAV_ITEMS: Array<{
     label: '任务中心',
     hint: '生成记录与候选',
     icon: TasksIcon,
-  },
-  {
-    key: 'poster_edit',
-    label: '修改海报',
-    hint: '参考图修改',
-    icon: PosterEditIcon,
-  },
-  {
-    key: 'background_replace',
-    label: '背景替换',
-    hint: '原照替换指定元素',
-    icon: WholeImageIcon,
   },
   {
     key: 'assets',

@@ -17,15 +17,13 @@ const FILTERS: Array<{ key: WholeImageTaskGroupFilter; label: string }> = [
 const KINDS = [
   { key: 'all', label: '全部类型' },
   { key: 'generate', label: '海报设计' },
-  { key: 'edit', label: '修改海报' },
-  { key: 'background_replace', label: '背景替换' },
+  { key: 'original_replace', label: '原照替换' },
 ] as const
 
 type Props = {
   onOpenTask: (taskId: string) => void
-  onOpenPosterBatch: (batchId: string) => void
-  onOpenReplacement: (taskId: string) => void
-  onCreate: (kind: 'generate' | 'edit' | 'background_replace') => void
+  onOpenReplacement: (taskId: string, wholeTaskId: string) => void
+  onCreate: () => void
 }
 
 function errorMessage(error: unknown): string {
@@ -54,7 +52,7 @@ function formatDate(value: string): string {
 
 function statusLabel(group: WholeImageTaskGroup): string {
   if (group.status === 'active') {
-    return group.kind === 'background_replace' ? '替换中' : '生成中'
+    return group.kind === 'original_replace' ? '替换中' : '生成中'
   }
   if (group.status === 'ready') {
     return '已完成'
@@ -65,19 +63,15 @@ function statusLabel(group: WholeImageTaskGroup): string {
 function TaskCard({
   group,
   onOpenTask,
-  onOpenPosterBatch,
   onOpenReplacement,
 }: {
   group: WholeImageTaskGroup
   onOpenTask: (taskId: string) => void
-  onOpenPosterBatch: (batchId: string) => void
-  onOpenReplacement: (taskId: string) => void
+  onOpenReplacement: (taskId: string, wholeTaskId: string) => void
 }) {
   const open = () => {
-    if (group.kind === 'background_replace') {
-      onOpenReplacement(group.id)
-    } else if (group.kind === 'edit') {
-      onOpenPosterBatch(group.id)
+    if (group.kind === 'original_replace' && group.whole_task_id) {
+      onOpenReplacement(group.id, group.whole_task_id)
     } else {
       onOpenTask(group.representative_task_id)
     }
@@ -95,7 +89,7 @@ function TaskCard({
             type="button"
             className="task-cover-button"
             onClick={open}
-            aria-label={group.kind === 'background_replace' ? '打开背景替换任务' : group.kind === 'edit' ? '打开修改批次' : '在工作台打开任务'}
+            aria-label={group.kind === 'original_replace' ? '打开原照替换任务' : '在工作台打开任务'}
           >
             <img src={group.preview_url} alt={group.prompt || '生成的海报'} />
           </button>
@@ -106,7 +100,7 @@ function TaskCard({
             onClick={open}
           >
             <span className="task-cover-mark" aria-hidden="true" />
-            <strong>{group.kind === 'background_replace' ? group.status === 'failed' ? '替换未完成' : '正在替换' : group.status === 'failed' ? '生成失败' : '正在生成'}</strong>
+            <strong>{group.kind === 'original_replace' ? group.status === 'failed' ? '替换未完成' : '正在替换' : group.status === 'failed' ? '生成失败' : '正在生成'}</strong>
             <span>
               {group.status === 'failed'
                 ? group.error_message || '可以在工作台重试这次生成。'
@@ -118,7 +112,7 @@ function TaskCard({
           {statusLabel(group)}
         </span>
         <span className="task-candidate-count tnum">
-          {group.candidate_count} {group.kind === 'edit' ? '个候选' : '张'}
+          {group.candidate_count} 张
         </span>
         {group.status === 'active' ? (
           <span className="task-progress" aria-hidden="true">
@@ -136,7 +130,7 @@ function TaskCard({
           {group.prompt || '未填写设计需求'}
         </strong>
         <div className="task-tags">
-          <span>{group.kind === 'background_replace' ? '背景替换' : group.kind === 'edit' ? '修改海报' : '海报设计'}</span>
+          <span>{group.kind === 'original_replace' ? '原照替换' : '海报设计'}</span>
           {group.brand_name ? <span>{group.brand_name}</span> : null}
           {group.platform_name ? (
             <span>
@@ -145,7 +139,7 @@ function TaskCard({
             </span>
           ) : null}
         </div>
-        {group.kind === 'background_replace' && group.download_url ? <a className="mp-btn-secondary mp-btn-small" href={group.download_url} download>下载 PNG</a> : null}
+        {group.kind === 'original_replace' && group.download_url ? <a className="mp-btn-secondary mp-btn-small" href={group.download_url} download>下载 PNG</a> : null}
         {group.failed_count > 0 && group.status !== 'failed' ? (
           <p className="task-card-warning">
             {group.failed_count} 张候选失败，可直接重试失败项。
@@ -157,9 +151,9 @@ function TaskCard({
   )
 }
 
-export default function TaskCenter({ onOpenTask, onOpenPosterBatch, onOpenReplacement, onCreate }: Props) {
+export default function TaskCenter({ onOpenTask, onOpenReplacement, onCreate }: Props) {
   const [filter, setFilter] = useState<WholeImageTaskGroupFilter>('all')
-  const [kind, setKind] = useState<'all' | 'generate' | 'edit' | 'background_replace'>('all')
+  const [kind, setKind] = useState<'all' | 'generate' | 'original_replace'>('all')
   const [groups, setGroups] = useState<WholeImageTaskGroup[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -178,7 +172,7 @@ export default function TaskCenter({ onOpenTask, onOpenPosterBatch, onOpenReplac
     setNextCursor(null)
   }
 
-  const handleKindChange = (next: 'all' | 'generate' | 'edit' | 'background_replace') => {
+  const handleKindChange = (next: 'all' | 'generate' | 'original_replace') => {
     if (next === kind) return
     setKind(next)
     setLoading(true)
@@ -281,8 +275,7 @@ export default function TaskCenter({ onOpenTask, onOpenPosterBatch, onOpenReplac
   }
 
   const filterLabel = FILTERS.find((item) => item.key === filter)?.label ?? '全部'
-  const createKind = kind === 'background_replace' ? 'background_replace' : kind === 'edit' ? 'edit' : 'generate'
-  const createName = createKind === 'background_replace' ? '背景替换' : createKind === 'edit' ? '修改海报' : '海报设计'
+  const createName = '海报设计'
   const createLabel = `去${createName}`
 
   return (
@@ -299,18 +292,10 @@ export default function TaskCenter({ onOpenTask, onOpenPosterBatch, onOpenReplac
           <button
             type="button"
             className="mp-btn-primary"
-            onClick={() => onCreate('generate')}
+            onClick={() => onCreate()}
           >
             ＋ 新建海报设计
           </button>
-          <button
-            type="button"
-            className="mp-btn-secondary"
-            onClick={() => onCreate('edit')}
-          >
-            ＋ 新建修改
-          </button>
-          <button type="button" className="mp-btn-secondary" onClick={() => onCreate('background_replace')}>＋ 背景替换</button>
         </div>
       </div>
 
@@ -378,7 +363,7 @@ export default function TaskCenter({ onOpenTask, onOpenPosterBatch, onOpenReplac
           <button
             type="button"
             className="mp-btn-primary mp-btn-small"
-            onClick={() => onCreate(createKind)}
+            onClick={() => onCreate()}
           >
             {createLabel}
           </button>
@@ -391,7 +376,6 @@ export default function TaskCenter({ onOpenTask, onOpenPosterBatch, onOpenReplac
                 key={group.id}
                 group={group}
                 onOpenTask={onOpenTask}
-                onOpenPosterBatch={onOpenPosterBatch}
                 onOpenReplacement={onOpenReplacement}
               />
             ))}
