@@ -17,3 +17,11 @@ local_media/
 *.log
 *.pid
 .superpowers/
+
+# Local material libraries and run artifacts (never part of the repo).
+output/
+backups/
+seejoy素材/
+万圣节素材/
+朵颐素材/
+测试用例/
