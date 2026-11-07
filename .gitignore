@@ -12,3 +12,8 @@ __pycache__/
 .pytest_cache/
 storage/
 local_media/
+
+# Local dev server logs and pid files.
+*.log
+*.pid
+.superpowers/
