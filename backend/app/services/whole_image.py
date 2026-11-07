@@ -16,7 +16,12 @@ from pymongo.database import Database
 from app.config import Settings
 from app.services import agent_image, brand_rules, platform_presets, storage
 from app.services.canvas import canvas_size, gateway_image_size
-from app.services.core_ai import CoreAIClient, CoreAIError
+from app.services.core_ai import (
+    AgentArtifact,
+    AgentRunResult,
+    CoreAIClient,
+    CoreAIError,
+)
 from app.services.image_ref import ImageRef, cleanup_image_refs, image_ref_from_asset
 from app.services.object_store import ObjectStore
 
@@ -399,7 +404,6 @@ def _version_document(
             "height": height,
             "selectable": True,
             "model_input": model_input,
-            "artifacts": [],
             "created_at": utcnow(),
         }
     ]
@@ -782,7 +786,7 @@ OUTPUT_ORDER = {"gateway_result": 0, "agent_result": 1, "agent_transparent": 2}
 def _output_sort_key(item: dict[str, Any]) -> int:
     if str(item.get("channel") or "gateway") == "gateway":
         return 0
-    return OUTPUT_ORDER.get(str(item.get("role") or "gateway_result"), 3)
+    return OUTPUT_ORDER.get(str(item.get("role") or ""), 3)
 
 
 def _save_agent_artifacts(
@@ -793,9 +797,9 @@ def _save_agent_artifacts(
     *,
     task_id: str,
     version: int,
-    result: Any,
+    result: AgentRunResult,
 ) -> list[dict[str, Any]]:
-    picks: list[Any] = []
+    picks: list[AgentArtifact] = []
     html = agent_image.pick_html_artifact(result)
     if html is not None:
         picks.append(html)
@@ -952,21 +956,38 @@ def _agent_edit_branch(
             result, excluded=final_urls
         )
         transparent_data: bytes | None = None
+        layer_source: str | None = None
         if transparent_url is not None:
             try:
                 candidate = client.download_image(transparent_url)
                 if agent_image.has_transparency(candidate):
                     transparent_data = candidate
+                    layer_source = transparent_url
             except CoreAIError:
                 logger.warning("could not download agent layer for %s", task_id)
+        candidates = final_urls[:4]
+        downloaded: dict[str, bytes | None] = {}
         final_saved: dict[str, Any] | None = None
         final_source: str | None = None
         last_error: CoreAIError | None = None
-        for url in final_urls[:4]:
-            data = client.download_image(url)
+        for url in candidates:
+            if url in downloaded:
+                data = downloaded[url]
+            else:
+                try:
+                    data = client.download_image(url)
+                except CoreAIError as exc:
+                    last_error = exc
+                    downloaded[url] = None
+                    data = None
+                else:
+                    downloaded[url] = data
+            if data is None:
+                continue
             if agent_image.has_transparency(data):
                 if transparent_data is None:
                     transparent_data = data
+                    layer_source = url
                 continue
             try:
                 saved = agent_image.save_png_asset(
@@ -989,6 +1010,22 @@ def _agent_edit_branch(
             raise last_error or CoreAIError(
                 "agent_image_missing", "Agent没有返回可用的最终海报", 502
             )
+        # The layer may be ordered after the poster, so keep looking when the
+        # poster was found before any transparent candidate.
+        if transparent_data is None:
+            for url in candidates:
+                if url == final_source:
+                    continue
+                if url not in downloaded:
+                    try:
+                        downloaded[url] = client.download_image(url)
+                    except CoreAIError:
+                        downloaded[url] = None
+                data = downloaded[url]
+                if data is not None and agent_image.has_transparency(data):
+                    transparent_data = data
+                    layer_source = url
+                    break
         saved_outputs: list[dict[str, Any]] = [
             {
                 "id": f"agent_result_{uuid.uuid4().hex}",
@@ -1027,7 +1064,7 @@ def _agent_edit_branch(
                     "height": layer["height"],
                     "selectable": False,
                     "model_input": model_input,
-                    "source_url": transparent_url,
+                    "source_url": layer_source,
                     "artifacts": [],
                     "created_at": utcnow(),
                 }

@@ -55,6 +55,10 @@ class FakeCoreAI:
         ]
         self.agent_downloads: list[str] = []
         self.agent_result_size: tuple[int, int] | None = None
+        self.agent_image_overrides: dict[str, bytes] = {}
+        self.agent_fail_downloads: set[str] = set()
+        self.agent_fail_artifacts: set[str] = set()
+        self.agent_output: str | None = None
 
     def _image(self, color: tuple[int, int, int]) -> bytes:
         buffer = io.BytesIO()
@@ -121,7 +125,9 @@ class FakeCoreAI:
         return AgentRunResult(
             run_id="run-agent-1",
             status="COMPLETED",
-            output=(
+            output=self.agent_output
+            if self.agent_output is not None
+            else (
                 "![透明层](https://example.com/agent-layer.png)\n"
                 "![成图](https://example.com/agent-result.png)"
             ),
@@ -130,6 +136,10 @@ class FakeCoreAI:
 
     def download_image(self, url: str) -> bytes:
         self.agent_downloads.append(url)
+        if url in self.agent_fail_downloads:
+            raise CoreAIError("download_failed", "模拟图片下载失败")
+        if url in self.agent_image_overrides:
+            return self.agent_image_overrides[url]
         if url.endswith("agent-layer.png"):
             return self._transparent_image()
         if url.endswith("agent-result.png"):
@@ -140,6 +150,8 @@ class FakeCoreAI:
 
     def download_agent_file(self, url: str, *, content_type: str) -> bytes:
         self.agent_downloads.append(url)
+        if url in self.agent_fail_artifacts:
+            raise CoreAIError("artifact_failed", "模拟附件下载失败")
         if content_type == "text/html":
             return b"<!doctype html><h1>Editor</h1>"
         return b"PK\x03\x04bundle"
@@ -1607,6 +1619,7 @@ def test_dual_edit_stores_three_outputs_and_requires_manual_selection(settings, 
     ]
     assert v2["outputs"][0]["artifacts"] == []
     assert sum(1 for output in v2["outputs"] if output["selectable"]) == 2
+    assert fake.agent_downloads
     assert fake.agent_calls[-2]["upload_bytes"]
     assert fake.agent_calls[-1]["agent_id"] == settings.core_ai_image_agent_id
     assert fake.agent_calls[-1]["timeout_seconds"] == 1800
@@ -1771,7 +1784,7 @@ def test_agent_branch_rejects_mismatched_aspect_after_trying_candidates(settings
     fake.fail_agent = False
     task_id, _ = _generate(db, settings, store, fake)
     v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
-    # The default fake returns a 640x320 poster while the source canvas is 640x640.
+    # Force the agent poster to 640x320 while the source canvas is 640x640.
     fake.agent_result_size = (640, 320)
 
     request = _request(db, settings, store, fake)
@@ -1787,3 +1800,121 @@ def test_agent_branch_rejects_mismatched_aspect_after_trying_candidates(settings
     assert task["edit"]["branches"]["agent"]["status"] == "failed"
     assert "画幅" in task["edit"]["branches"]["agent"]["error"]
     assert task["edit"]["outcome"] == "partial"
+
+
+def _agent_artifacts(*specs):
+    # specs: (file_name, content_type, url, title)
+    return [AgentArtifact(*spec) for spec in specs]
+
+
+def _run_agent_edit(db, settings, store, fake):
+    task_id, _ = _generate(db, settings, store, fake)
+    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    request = _request(db, settings, store, fake)
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(instruction="改背景", source_version_id=v1["_id"]),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(db, settings, store, fake, task_id, "改背景", v1["_id"])
+    task = db.whole_tasks.find_one({"_id": task_id})
+    v2 = db.whole_versions.find_one({"task_id": task_id, "version": 2})
+    return task, v2
+
+
+def test_agent_layer_source_url_prefers_transparent_candidate(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    transparent_url = "https://example.com/t-first.png"
+    opaque_url = "https://example.com/o-second.png"
+    pre_pick_url = "https://example.com/p-opaque.png"
+    fake.agent_artifacts = _agent_artifacts(
+        ("t-first.png", "image/png", transparent_url, "成图一"),
+        ("o-second.png", "image/png", opaque_url, "成图二"),
+        ("p-layer.png", "image/png", pre_pick_url, "透明层"),
+    )
+    # The transparent picker falls back to an opaque artifact, so only the
+    # validated candidate in the final list may be used as the layer.
+    fake.agent_image_overrides = {
+        transparent_url: fake._transparent_image(),
+        opaque_url: fake._sized_image((640, 640), (120, 40, 180)),
+        pre_pick_url: fake._sized_image((640, 640), (10, 20, 30)),
+    }
+    fake.agent_output = (
+        f"![一]({transparent_url})\n"
+        f"![二]({opaque_url})"
+    )
+
+    _, v2 = _run_agent_edit(db, settings, store, fake)
+    roles = [output["role"] for output in v2["outputs"]]
+    assert roles == ["gateway_result", "agent_result", "agent_transparent"]
+    layer = next(output for output in v2["outputs"] if output["role"] == "agent_transparent")
+    assert layer["source_url"] == transparent_url
+
+
+def test_agent_layer_found_after_poster_when_ordered_last(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    transparent_url = "https://example.com/t-last.png"
+    opaque_url = "https://example.com/o-first.png"
+    fake.agent_artifacts = _agent_artifacts(
+        ("o-first.png", "image/png", opaque_url, "成图一"),
+        ("t-last.png", "image/png", transparent_url, "成图二"),
+    )
+    fake.agent_image_overrides = {
+        opaque_url: fake._sized_image((640, 640), (120, 40, 180)),
+        transparent_url: fake._transparent_image(),
+    }
+    # Opaque poster first, transparent layer second.
+    fake.agent_output = (
+        f"![一]({opaque_url})\n"
+        f"![二]({transparent_url})"
+    )
+
+    _, v2 = _run_agent_edit(db, settings, store, fake)
+    poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
+    assert poster["source_url"] == opaque_url
+    layer = next(output for output in v2["outputs"] if output["role"] == "agent_transparent")
+    assert layer["source_url"] == transparent_url
+
+
+def test_artifact_download_failure_keeps_poster(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    fake.agent_fail_artifacts.add("https://example.com/editor.html")
+
+    task, v2 = _run_agent_edit(db, settings, store, fake)
+    assert task["edit"]["outcome"] == "success"
+    poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
+    assert [item["kind"] for item in poster["artifacts"]] == ["bundle"]
+    assert "Agent 2 张" in task["messages"][-1]["content"]
+    assert "附加 HTML/结果包" in task["messages"][-1]["content"]
+
+
+def test_dead_candidate_url_falls_back_to_next(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    dead_url = "https://example.com/dead-first.png"
+    good_url = "https://example.com/good-second.png"
+    fake.agent_artifacts = _agent_artifacts(
+        ("dead-first.png", "image/png", dead_url, "成图一"),
+        ("good-second.png", "image/png", good_url, "成图二"),
+    )
+    fake.agent_fail_downloads.add(dead_url)
+    fake.agent_image_overrides = {
+        good_url: fake._sized_image((640, 640), (120, 40, 180)),
+    }
+    fake.agent_output = (
+        f"![一]({dead_url})\n"
+        f"![二]({good_url})"
+    )
+
+    task, v2 = _run_agent_edit(db, settings, store, fake)
+    assert task["edit"]["branches"]["agent"]["status"] == "completed"
+    poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
+    assert poster["source_url"] == good_url
