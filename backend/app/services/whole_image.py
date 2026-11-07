@@ -814,7 +814,7 @@ def _save_agent_artifacts(
     task_id: str,
     version: int,
     result: AgentRunResult,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     picks: list[AgentArtifact] = []
     html = agent_image.pick_html_artifact(result)
     if html is not None:
