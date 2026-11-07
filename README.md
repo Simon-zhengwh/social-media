@@ -30,7 +30,10 @@
 - 优化 Agent 使用 `.agents/skills/image-gen-prompt/`：从官方 `imagegen` skill 抽取提示词编写原则、可选字段和示例，按任务需要组织提示词。
 - 图片默认保存在项目内 `local_media/objects/`；提示词优化按需把本地图片上传到自建图床，使用永久 443 公网直链供外部模型读取。
 - 接口返回 `{"prompt":"..."}`，保留非空和长度校验；不要求固定七段、独立事实数组或案例专用的设计规则。优化后的提示词直接交给生图模型。
-- 生成调用 core-ai `/images/generations`；自然语言改图并行调用 `/images/edits` 和图片 Agent，两个结果并存以便对比。
+- 生成调用 core-ai `/images/generations`；自然语言改图并行调用 `/images/edits`和图片 Agent（`image-editor`），两个结果并排对比。
+- 图片 Agent 使用 `CORE_AI_IMAGE_AGENT_ID`指定的 image-editor Agent，返回最终海报 PNG、可选透明层、离线 HTML编辑器和完整结果 ZIP；工作台内可在沙箱隔离的 iframe中内嵌预览 HTML并导出 PNG。
+- Agent 产物保存在对象存储 `artifacts/`前缀，元数据写入 MongoDB `whole_artifacts`；历史版本没有产物时继续只显示图片。
+- 改图 Agent 单次通常耗时10–30分钟，默认超时1800秒。
 - 图片 Agent 不使用 attachments：social-media 先把当前图上传到 Core AI blob 或使用 COS 签名 URL，再把 URL 拼进 Agent `input`，通过 `trigger + get` 获取产物。
 - Agent 返回图片时优先接收最终回复中明确引用的图片，避免把中间步骤和占位图当成最终结果；最终回复没有图片链接时，才兼容读取图片附件列表。
 - 接口改图继续发送本轮修改要求、原始内容素材（含选定 Logo）和选中版本的生成图；选中图明确作为编辑底图，原始素材仅用于核对主体细节，避免重新构建海报。
@@ -59,6 +62,8 @@
 | `GET /api/whole-image/tasks/{id}/versions` | 获取版本列表 |
 | `POST /api/whole-image/tasks/{id}/versions/{version_id}/select` | 选择继续编辑的版本 |
 | `GET /api/whole-image/tasks/{id}/download?version_id=...` | 下载指定版本 |
+| `GET /api/whole-image/artifacts/{artifact_id}/preview` |内嵌预览 Agent返回的 HTML编辑器（sandbox隔离） |
+| `GET /api/whole-image/artifacts/{artifact_id}/download` |下载 Agent返回的 HTML或结果 ZIP |
 | `GET /api/whole-image/batches/{batch_id}` | 获取候选批次 |
 | `POST /api/whole-image/tasks/{id}/versions/{version_id}/outputs/{output_id}/select` | 选择下一轮编辑源图 |
 | `GET /api/task-center?status=...&kind=...&limit=...&cursor=...` | 任务中心列表，类型支持 `all`、`generate`、`original_replace` |

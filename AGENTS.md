@@ -11,6 +11,7 @@
 - `.agents/skills/`：品牌视觉 skill 与运行时规范。
 - `storage/`：本地生成结果和对象存储回退目录。
 - `朵颐素材/`、`inspost素材/`、`seejoy素材/`：本地图片素材目录。
+- Agent改图产物位于对象存储 `artifacts/`前缀，元数据保存在 MongoDB `whole_artifacts`；HTML通过 `/api/whole-image/artifacts/{id}/preview`以 sandbox CSP内联预览。
 
 ## 常用命令
 
