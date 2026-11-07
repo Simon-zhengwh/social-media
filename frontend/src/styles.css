@@ -5811,6 +5811,33 @@
   line-height: 1.5;
 }
 
+.artifact-preview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(1180px, 94vw);
+  height: min(86vh, 900px);
+  padding: 14px;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 72px rgba(17, 24, 39, 0.28);
+}
+
+.artifact-preview-card iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.artifact-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .model-output-card {
   overflow: hidden;
   border: 1px solid var(--color-neutral-200);

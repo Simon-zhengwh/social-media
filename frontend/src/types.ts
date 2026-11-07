@@ -167,6 +167,17 @@ export type WholeImageTaskStatus =
   | 'failed'
   | 'interrupted'
 
+export type WholeImageArtifact = {
+  id: string
+  kind: 'html' | 'bundle' | 'file'
+  file_name: string
+  content_type: string
+  size: number
+  title: string
+  preview_url: string | null
+  download_url: string | null
+}
+
 export type WholeImageOutput = {
   id: string
   channel: 'gateway' | 'agent'
@@ -179,6 +190,7 @@ export type WholeImageOutput = {
   preview_url: string | null
   download_url: string | null
   model_input: WholeImageModelInput | null
+  artifacts?: WholeImageArtifact[]
 }
 
 export type WholeImageBranch = {

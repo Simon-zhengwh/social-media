@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import type { WholeImageBranch, WholeImageOutput, WholeImageTask } from '../types'
+import type { WholeImageArtifact, WholeImageBranch, WholeImageOutput, WholeImageTask } from '../types'
+import WholeArtifactPreview from './WholeArtifactPreview'
 
 type Props = {
   task: WholeImageTask | null
@@ -67,16 +68,21 @@ function BranchStatus({ branch, label }: { branch?: WholeImageBranch; label: str
 function OutputCard({
   output,
   task,
+  onPreviewArtifact,
   onSelectOutput,
   selectingOutput,
 }: {
   output: WholeImageOutput
   task: WholeImageTask
   onSelectOutput?: (versionId: string, outputId: string) => void
+  onPreviewArtifact: (artifact: WholeImageArtifact) => void
   selectingOutput: boolean
 }) {
   const selected = task.current_output_id === output.id
   const transparent = output.role === 'agent_transparent'
+  const artifacts = output.artifacts ?? []
+  const htmlArtifact = artifacts.find((artifact) => artifact.kind === 'html')
+  const bundleArtifact = artifacts.find((artifact) => artifact.kind === 'bundle')
   return (
     <article className={`comparison-card${transparent ? ' is-transparent' : ''}${selected ? ' is-selected' : ''}`}>
       <div className="comparison-card-head">
@@ -96,6 +102,20 @@ function OutputCard({
         <div className="comparison-image-missing">图片不可用</div>
       )}
       <div className="comparison-actions">
+        {htmlArtifact ? (
+          <button
+            type="button"
+            className="mp-btn-secondary mp-btn-small"
+            onClick={() => onPreviewArtifact(htmlArtifact)}
+          >
+            打开 HTML编辑器
+          </button>
+        ) : null}
+        {bundleArtifact?.download_url ? (
+          <a className="mp-btn-ghost mp-btn-small" href={bundleArtifact.download_url} download>
+            下载结果包
+          </a>
+        ) : null}
         {output.download_url ? (
           <a className="mp-btn-ghost mp-btn-small" href={output.download_url} download>
             下载 PNG
@@ -128,6 +148,7 @@ export default function WholeImageResultPanel({
   selectingOutput = false,
 }: Props) {
   const [candidatePreviewId, setCandidatePreviewId] = useState<string | null>(null)
+  const [artifactPreview, setArtifactPreview] = useState<WholeImageArtifact | null>(null)
   const previewCandidate =
     candidates.find((candidate) => candidate.id === candidatePreviewId) ??
     candidates.find((candidate) => candidate.id === confirmedTask?.id) ??
@@ -193,7 +214,7 @@ export default function WholeImageResultPanel({
           <div className="preview-edit-overlay">
             <span className="scanline" aria-hidden="true" />
             <strong>双路修改中</strong>
-            <span>接口与 Agent 正在并行生成，Agent 通常需要 5–15 分钟</span>
+            <span>接口与 Agent 正在并行生成，Agent 通常需要 10–30 分钟</span>
           </div>
         ) : null}
       </div>
@@ -260,6 +281,7 @@ export default function WholeImageResultPanel({
                   output={output}
                   task={task}
                   onSelectOutput={onSelectOutput}
+                  onPreviewArtifact={setArtifactPreview}
                   selectingOutput={selectingOutput}
                 />
               ))}
@@ -299,6 +321,10 @@ export default function WholeImageResultPanel({
 
       {busy && !task ? <p className="result-hint">正在创建任务…</p> : null}
       {!task && !busy ? <p className="result-hint">填写左侧需求后，点击「生成设计」开始。</p> : null}
+      <WholeArtifactPreview
+        artifact={artifactPreview}
+        onClose={() => setArtifactPreview(null)}
+      />
     </section>
   )
 }

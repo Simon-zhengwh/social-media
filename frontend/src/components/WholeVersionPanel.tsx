@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import type { WholeImageVersion } from '../types'
+import type { WholeImageArtifact, WholeImageVersion } from '../types'
 import { parseServerDate } from '../time'
+import WholeArtifactPreview from './WholeArtifactPreview'
 
 type Props = {
   versions: WholeImageVersion[]
@@ -29,6 +30,7 @@ export default function WholeVersionPanel({
   onSelect,
 }: Props) {
   const [preview, setPreview] = useState<WholeImageVersion | null>(null)
+  const [artifactPreview, setArtifactPreview] = useState<WholeImageArtifact | null>(null)
   const ordered = [...versions].sort((a, b) => b.version - a.version)
   const versionById = new Map(versions.map((item) => [item.id, item]))
 
@@ -110,6 +112,29 @@ export default function WholeVersionPanel({
           <div className="version-preview-card" onClick={(event) => event.stopPropagation()}>
             <div className="version-preview-head">
               <strong>v{preview.version} · {preview.instruction || '版本预览'}</strong>
+              {preview.outputs
+                .flatMap((output) => output.artifacts ?? [])
+                .map((artifact) =>
+                  artifact.preview_url ? (
+                    <button
+                      key={artifact.id}
+                      type="button"
+                      className="mp-btn-ghost mp-btn-small"
+                      onClick={() => setArtifactPreview(artifact)}
+                    >
+                      打开 {artifact.title || artifact.file_name}
+                    </button>
+                  ) : artifact.download_url ? (
+                    <a
+                      key={artifact.id}
+                      className="mp-btn-ghost mp-btn-small"
+                      href={artifact.download_url}
+                      download
+                    >
+                      下载 {artifact.title || artifact.file_name}
+                    </a>
+                  ) : null,
+                )}
               <button type="button" onClick={() => setPreview(null)}>
                 关闭
               </button>
@@ -129,6 +154,10 @@ export default function WholeVersionPanel({
           </div>
         </div>
       ) : null}
+      <WholeArtifactPreview
+        artifact={artifactPreview}
+        onClose={() => setArtifactPreview(null)}
+      />
     </div>
   )
 }
