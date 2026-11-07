@@ -321,7 +321,7 @@ class CoreAIClient:
                     total = 0
                     for chunk in response.iter_bytes():
                         total += len(chunk)
-                        if total > self.settings.max_download_bytes:
+                        if total > self.settings.max_agent_artifact_bytes:
                             raise CoreAIError(
                                 "artifact_too_large", "Agent产物超过体积限制", 413
                             )

@@ -144,7 +144,8 @@ def test_result_titles_are_picked_by_title_tier():
         ],
     )
 
-    assert agent_image.pick_final_image_urls(result) == [default_url, background_url]
+    #补背景 marks a raw intermediate render, so tier2 keeps only the composite.
+    assert agent_image.pick_final_image_urls(result) == [default_url]
 
 
 def test_final_tier_three_prefers_non_auxiliary_images():
@@ -193,3 +194,53 @@ def test_save_agent_artifact_keeps_zip_suffix(settings, store):
     assert saved["kind"] == "bundle"
     assert saved["file_name"] == "bundle.zip"
     assert db.whole_artifacts.find_one({"_id": saved["id"]})["path"].endswith(".zip")
+def test_tier_two_ranking_prefers_real_poster_over_model_repaint():
+    poster_url = "https://f.example.com/final-poster.png"
+    repaint_url = "https://f.example.com/generated-image.png"
+    result = _result(
+        "已完成，详情见附件",
+        [
+            AgentArtifact(
+                "generated-image.png",
+                "image/png",
+                repaint_url,
+                "模型原生补背景结果（gpt-image-2.5-sunburst / xhigh）",
+            ),
+            AgentArtifact(
+                "final-poster.png",
+                "image/png",
+                poster_url,
+                "卤鸡替换后成品海报（1086x1448）",
+            ),
+        ],
+    )
+
+    assert agent_image.pick_final_image_urls(result) == [poster_url]
+
+
+def test_tier_two_strength_orders_poster_before_weak_preview():
+    preview_url = "https://f.example.com/preview.png"
+    poster_url = "https://f.example.com/poster.png"
+    result = _result(
+        "",
+        [
+            AgentArtifact("preview.png", "image/png", preview_url, "替换效果预览"),
+            AgentArtifact("poster.png", "image/png", poster_url, "成品海报"),
+        ],
+    )
+
+    assert agent_image.pick_final_image_urls(result) == [poster_url, preview_url]
+
+
+def test_intermediate_repaint_is_excluded_from_tier_two_but_kept_in_tier_three():
+    repaint_url = "https://f.example.com/repaint.png"
+    result = _result(
+        "已完成",
+        [
+            AgentArtifact(
+                "generated-image.png", "image/png", repaint_url, "模型原生补背景结果"
+            ),
+        ],
+    )
+
+    assert agent_image.pick_final_image_urls(result) == [repaint_url]

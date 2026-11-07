@@ -2070,3 +2070,48 @@ def test_outputs_without_artifacts_serialize_as_empty_list(settings, store):
         {"status": "completed", "outputs": [{"role": "agent_result"}]},
     )
     assert branch["outputs"][0]["artifacts"] == []
+def test_oversized_artifact_keeps_poster_and_reports_missing_title(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    original = fake.download_agent_file
+
+    def download_agent_file(url, *, content_type):
+        if url == "https://example.com/editor.html":
+            raise CoreAIError("artifact_too_large", "Agent产物超过体积限制", 413)
+        return original(url, content_type=content_type)
+
+    fake.download_agent_file = download_agent_file
+
+    task, v2 = _run_agent_edit(db, settings, store, fake)
+    assert task["edit"]["branches"]["agent"]["status"] == "completed"
+    assert task["edit"]["outcome"] == "success"
+    poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
+    assert [item["kind"] for item in poster["artifacts"]] == ["bundle"]
+    assert "未取得产物" in task["messages"][-1]["content"]
+    assert "离线编辑器" in task["messages"][-1]["content"]
+
+
+def test_poster_failure_cleans_up_saved_artifacts(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    # Force every final candidate to fail the aspect gate so the poster never commits.
+    fake.agent_result_size = (640, 320)
+
+    task_id, _ = _generate(db, settings, store, fake)
+    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    request = _request(db, settings, store, fake)
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(instruction="改背景", source_version_id=v1["_id"]),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(db, settings, store, fake, task_id, "改背景", v1["_id"])
+
+    task = db.whole_tasks.find_one({"_id": task_id})
+    assert task["edit"]["branches"]["agent"]["status"] == "failed"
+    assert db.whole_artifacts.count_documents({}) == 0
+    artifact_dir = settings.storage_path / "objects" / "social-media" / "artifacts"
+    assert not list(artifact_dir.glob("**/*")) if artifact_dir.exists() else True

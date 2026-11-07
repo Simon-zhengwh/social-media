@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { WholeImageArtifact } from '../types'
 
 type Props = {
@@ -8,6 +8,11 @@ type Props = {
 
 export default function WholeArtifactPreview({ artifact, onClose }: Props) {
   const open = Boolean(artifact?.preview_url)
+  const onCloseRef = useRef(onClose)
+
+  useEffect(() => {
+    onCloseRef.current = onClose
+  })
 
   useEffect(() => {
     if (!open) {
@@ -20,7 +25,8 @@ export default function WholeArtifactPreview({ artifact, onClose }: Props) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault()
-        onClose()
+        event.stopPropagation()
+        onCloseRef.current()
       }
     }
 
@@ -29,7 +35,7 @@ export default function WholeArtifactPreview({ artifact, onClose }: Props) {
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!artifact?.preview_url) {
     return null

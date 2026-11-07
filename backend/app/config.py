@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     image_downscale_pixel_threshold: int = 25_000_000
     max_image_pixels: int = 60_000_000
     max_download_bytes: int = 30_000_000
+    # Sized for self-contained HTML editors and result bundles.
+    max_agent_artifact_bytes: int = 200_000_000
 
     image_host_base_url: str = "https://43.139.235.133:5002"
     image_host_upload_token: str = ""

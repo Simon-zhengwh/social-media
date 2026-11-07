@@ -592,7 +592,7 @@ def test_download_agent_file_rejects_images_and_oversize(settings, monkeypatch):
 
     client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
     monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
-    original_limit = settings.max_download_bytes
+    original_limit = settings.max_agent_artifact_bytes
     try:
         with pytest.raises(CoreAIError) as unsupported:
             client.download_agent_file(
@@ -600,14 +600,14 @@ def test_download_agent_file_rejects_images_and_oversize(settings, monkeypatch):
             )
         assert unsupported.value.code == "invalid_artifact"
 
-        settings.max_download_bytes = 16
+        settings.max_agent_artifact_bytes = 16
         with pytest.raises(CoreAIError) as too_large:
             client.download_agent_file(
                 "https://files.example.com/editor.html", content_type="text/html"
             )
         assert too_large.value.code == "artifact_too_large"
     finally:
-        settings.max_download_bytes = original_limit
+        settings.max_agent_artifact_bytes = original_limit
         client.close()
 
 
@@ -674,3 +674,21 @@ def test_wait_agent_detail_includes_html_and_zip_but_poll_keeps_images_only(
         "/api/runs/run-files",
         "/poster.png",
     ]
+
+
+def test_download_agent_file_accepts_large_editor_under_artifact_limit(settings, monkeypatch):
+    # Real self-contained editors measure ~32 MB; the 200 MB cap must accept them.
+    body = b"x" * 40_000_000
+
+    def handler(request):
+        return httpx.Response(200, content=body, headers={"Content-Type": "text/html"})
+
+    client = CoreAIClient(settings, transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(client, "_validate_public_url", lambda url: None)
+    try:
+        data = client.download_agent_file(
+            "https://files.example.com/editor.html", content_type="text/html"
+        )
+    finally:
+        client.close()
+    assert len(data) == 40_000_000

@@ -789,6 +789,22 @@ def _output_sort_key(item: dict[str, Any]) -> int:
     return OUTPUT_ORDER.get(str(item.get("role") or ""), 3)
 
 
+def _delete_agent_artifacts(
+    db: Database, store: ObjectStore, artifact_meta: list[dict[str, Any]]
+) -> None:
+    for meta in artifact_meta:
+        artifact_id = str(meta.get("id") or "")
+        if not artifact_id:
+            continue
+        doc = db.whole_artifacts.find_one({"_id": artifact_id})
+        if doc:
+            try:
+                store.delete(str(doc.get("path") or ""))
+            except Exception:  # noqa: BLE001 - cleanup must not mask the original failure
+                logger.warning("could not delete artifact object %s", doc.get("path"))
+        db.whole_artifacts.delete_one({"_id": artifact_id})
+
+
 def _save_agent_artifacts(
     db: Database,
     settings: Settings,
@@ -809,6 +825,7 @@ def _save_agent_artifacts(
     }:
         picks.append(bundle)
     saved: list[dict[str, Any]] = []
+    failed_titles: list[str] = []
     for artifact in picks:
         try:
             data = client.download_agent_file(
@@ -827,7 +844,8 @@ def _save_agent_artifacts(
             )
         except Exception:  # noqa: BLE001 - poster delivery must survive artifact failures
             logger.exception("failed to store agent artifact for %s", task_id)
-    return saved
+            failed_titles.append(artifact.title or artifact.file_name)
+    return saved, failed_titles
 
 
 def _agent_edit_branch(
@@ -845,6 +863,7 @@ def _agent_edit_branch(
     reference_asset_ids: list[str],
     canvas_ratio: str,
 ) -> list[dict[str, Any]]:
+    artifact_meta: list[dict[str, Any]] = []
     try:
         expires = max(
             settings.cos_presign_expiry_seconds,
@@ -949,7 +968,7 @@ def _agent_edit_branch(
         final_urls = agent_image.pick_final_image_urls(result)
         if not final_urls:
             raise CoreAIError("agent_image_missing", "Agent已完成，但没有返回海报图片", 502)
-        artifact_meta = _save_agent_artifacts(
+        artifact_meta, failed_artifact_titles = _save_agent_artifacts(
             db, settings, store, client, task_id=task_id, version=version, result=result
         )
         transparent_url = agent_image.pick_transparent_image_url(
@@ -1078,6 +1097,7 @@ def _agent_edit_branch(
                 "outputs": saved_outputs,
                 "run_id": result.run_id,
                 "agent_output": result.output,
+                "missing_artifacts": failed_artifact_titles,
                 "completed_at": utcnow(),
                 "updated_at": utcnow(),
                 "error": None,
@@ -1086,6 +1106,10 @@ def _agent_edit_branch(
         return saved_outputs
     except Exception as exc:  # noqa: BLE001 - keep gateway result available
         logger.exception("agent edit branch failed for %s", task_id)
+        try:
+            _delete_agent_artifacts(db, store, artifact_meta)
+        except Exception:  # noqa: BLE001 - cleanup must not mask the real error
+            logger.warning("could not clean up agent artifacts for %s", task_id)
         _set_edit_branch(
             db,
             task_id,
@@ -1338,6 +1362,13 @@ def run_edit(
         )
         if artifact_count:
             message += f"附加 HTML/结果包 {artifact_count}个。"
+        missing_titles = [
+            str(title).strip()
+            for title in (branches.get("agent") or {}).get("missing_artifacts") or []
+            if str(title).strip()
+        ]
+        if missing_titles:
+            message += "；未取得产物：" + "、".join(missing_titles)
         if outcome == "partial":
             message += " 有一条链路失败，已保留成功结果。"
         document = _version_document(

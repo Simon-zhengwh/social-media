@@ -149,6 +149,17 @@ FINAL_HINT = re.compile(
     re.I,
 )
 TRANSPARENT_HINT = re.compile(r"(?<!不)透明|前景|foreground|layer|alpha", re.I)
+# Tier-2 strength ranking: a real poster title beats a generic preview, and
+# raw intermediate renders (e.g. a background repaint) are never tier-2 finals.
+STRONG_FINAL_HINT = re.compile(
+    r"海报|poster|成图|成品|最终|final|result|替换后|修改后|改字后",
+    re.I,
+)
+WEAK_FINAL_HINT = re.compile(r"预览|preview|结果|合成", re.I)
+INTERMEDIATE_HINT = re.compile(
+    r"补背景|背景结果|repaint|空背景|中间|intermediate|生成结果",
+    re.I,
+)
 MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(<?([^\s)>]+)>?(?:\s+\"[^\"]*\")?\)")
 
 ARTIFACT_KINDS = {"text/html": "html", "application/zip": "bundle"}
@@ -208,6 +219,17 @@ def _is_auxiliary(artifact: AgentArtifact) -> bool:
     }
 
 
+def _final_strength(artifact: AgentArtifact) -> int:
+    described = _describe(artifact)
+    if INTERMEDIATE_HINT.search(described):
+        return 0
+    if STRONG_FINAL_HINT.search(described):
+        return 2
+    if WEAK_FINAL_HINT.search(described):
+        return 1
+    return 0
+
+
 def pick_final_image_urls(result: AgentRunResult) -> list[str]:
     images = _image_artifacts(result)
     by_url = {artifact.download_url: artifact for artifact in images}
@@ -220,10 +242,19 @@ def pick_final_image_urls(result: AgentRunResult) -> list[str]:
             ordered.append(url)
     if ordered:
         return ordered
-    for artifact in images:
-        if not _is_auxiliary(artifact) and FINAL_HINT.search(_describe(artifact)):
-            if artifact.download_url not in ordered:
-                ordered.append(artifact.download_url)
+    tier_two = [
+        artifact
+        for artifact in images
+        if not _is_auxiliary(artifact)
+        and FINAL_HINT.search(_describe(artifact))
+        and _final_strength(artifact) > 0
+    ]
+    # Descending strength; Python's sort is stable, so equal scores keep the
+    # Agent's artifact order.
+    tier_two.sort(key=lambda artifact: -_final_strength(artifact))
+    for artifact in tier_two:
+        if artifact.download_url not in ordered:
+            ordered.append(artifact.download_url)
     if ordered:
         return ordered
     candidates = [artifact for artifact in images if not _is_auxiliary(artifact)]

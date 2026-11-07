@@ -65,6 +65,37 @@ function BranchStatus({ branch, label }: { branch?: WholeImageBranch; label: str
   )
 }
 
+function ArtifactActions({
+  output,
+  onPreview,
+}: {
+  output: WholeImageOutput
+  onPreview: (artifact: WholeImageArtifact) => void
+}) {
+  const artifacts = output.artifacts ?? []
+  const htmlArtifact = artifacts.find((artifact) => artifact.kind === 'html')
+  const bundleArtifact = artifacts.find((artifact) => artifact.kind === 'bundle')
+  if (!htmlArtifact && !bundleArtifact?.download_url) return null
+  return (
+    <>
+      {htmlArtifact ? (
+        <button
+          type="button"
+          className="mp-btn-secondary mp-btn-small"
+          onClick={() => onPreview(htmlArtifact)}
+        >
+          打开 HTML编辑器
+        </button>
+      ) : null}
+      {bundleArtifact?.download_url ? (
+        <a className="mp-btn-ghost mp-btn-small" href={bundleArtifact.download_url} download>
+          下载结果包
+        </a>
+      ) : null}
+    </>
+  )
+}
+
 function OutputCard({
   output,
   task,
@@ -80,9 +111,6 @@ function OutputCard({
 }) {
   const selected = task.current_output_id === output.id
   const transparent = output.role === 'agent_transparent'
-  const artifacts = output.artifacts ?? []
-  const htmlArtifact = artifacts.find((artifact) => artifact.kind === 'html')
-  const bundleArtifact = artifacts.find((artifact) => artifact.kind === 'bundle')
   return (
     <article className={`comparison-card${transparent ? ' is-transparent' : ''}${selected ? ' is-selected' : ''}`}>
       <div className="comparison-card-head">
@@ -102,20 +130,7 @@ function OutputCard({
         <div className="comparison-image-missing">图片不可用</div>
       )}
       <div className="comparison-actions">
-        {htmlArtifact ? (
-          <button
-            type="button"
-            className="mp-btn-secondary mp-btn-small"
-            onClick={() => onPreviewArtifact(htmlArtifact)}
-          >
-            打开 HTML编辑器
-          </button>
-        ) : null}
-        {bundleArtifact?.download_url ? (
-          <a className="mp-btn-ghost mp-btn-small" href={bundleArtifact.download_url} download>
-            下载结果包
-          </a>
-        ) : null}
+        <ArtifactActions output={output} onPreview={onPreviewArtifact} />
         {output.download_url ? (
           <a className="mp-btn-ghost mp-btn-small" href={output.download_url} download>
             下载 PNG
@@ -305,6 +320,9 @@ export default function WholeImageResultPanel({
               </svg>
               下载 PNG
             </a>
+            {currentOutput ? (
+              <ArtifactActions output={currentOutput} onPreview={setArtifactPreview} />
+            ) : null}
           </div>
         </div>
       ) : null}
