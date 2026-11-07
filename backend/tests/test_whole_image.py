@@ -1918,3 +1918,155 @@ def test_dead_candidate_url_falls_back_to_next(settings, store):
     assert task["edit"]["branches"]["agent"]["status"] == "completed"
     poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
     assert poster["source_url"] == good_url
+
+
+def test_agent_artifacts_are_exposed_with_preview_and_download(settings, store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    fake.fail_agent = False
+    task_id, _ = _generate(db, settings, store, fake)
+    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    request = _request(db, settings, store, fake)
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(instruction="换背景", source_version_id=v1["_id"]),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(db, settings, store, fake, task_id, "换背景", v1["_id"])
+
+    task = whole_routes.get_task(task_id, request)
+    agent_output = next(
+        output for output in task["outputs"] if output["role"] == "agent_result"
+    )
+    assert [item["kind"] for item in agent_output["artifacts"]] == ["html", "bundle"]
+    html = agent_output["artifacts"][0]
+    assert html["preview_url"] == f"/api/whole-image/artifacts/{html['id']}/preview"
+    assert html["download_url"] == f"/api/whole-image/artifacts/{html['id']}/download"
+    assert html["file_name"] == "editor.html"
+    assert html["content_type"] == "text/html"
+    assert html["size"] == len(b"<!doctype html><h1>Editor</h1>")
+    assert html["title"] == "离线编辑器"
+    assert agent_output["artifacts"][1]["preview_url"] is None
+    gateway_output = next(
+        output for output in task["outputs"] if output["role"] == "gateway_result"
+    )
+    assert gateway_output["artifacts"] == []
+    branch_output = next(
+        output
+        for output in task["edit"]["branches"]["agent"]["outputs"]
+        if output["role"] == "agent_result"
+    )
+    assert [item["kind"] for item in branch_output["artifacts"]] == ["html", "bundle"]
+
+    web = FastAPI()
+    web.include_router(whole_routes.router)
+    web.state.db, web.state.settings, web.state.store = db, settings, store
+    with TestClient(web) as client:
+        preview = client.get(html["preview_url"])
+        assert preview.status_code == 200
+        csp = preview.headers["content-security-policy"]
+        assert "sandbox allow-scripts allow-downloads;" in csp
+        assert "allow-same-origin" not in csp
+        assert "connect-src 'none'" in csp
+        assert preview.headers["content-disposition"] == "inline"
+        assert preview.headers["cache-control"] == "private, no-store"
+        assert preview.headers["x-content-type-options"] == "nosniff"
+        assert preview.headers["content-type"].startswith("text/html")
+        assert b"Editor" in preview.content
+
+        download = client.get(html["download_url"])
+        assert download.status_code == 200
+        assert download.headers["content-disposition"].startswith("attachment;")
+        assert download.headers["content-type"].startswith("text/html")
+        assert download.content == b"<!doctype html><h1>Editor</h1>"
+
+        bundle = client.get(agent_output["artifacts"][1]["download_url"])
+        assert bundle.status_code == 200
+        assert bundle.content == b"PK\x03\x04bundle"
+        assert bundle.headers["content-type"].startswith("application/zip")
+
+        # Only HTML artifacts can be previewed; unknown ids are missing.
+        missing_preview = client.get(
+            "/api/whole-image/artifacts/wart_missing/preview"
+        )
+        assert missing_preview.status_code == 404
+        missing_download = client.get(
+            "/api/whole-image/artifacts/wart_missing/download"
+        )
+        assert missing_download.status_code == 404
+        bundle_preview = client.get(
+            f"/api/whole-image/artifacts/{agent_output['artifacts'][1]['id']}/preview"
+        )
+        assert bundle_preview.status_code == 422
+
+
+def test_artifact_download_keeps_non_ascii_name_safe(settings, store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    db = mongomock.MongoClient().db
+    key = storage.object_key(settings, "artifacts", "wtask_cn_v2_wart_cn.zip")
+    store.put_bytes(key, b"PK\x03\x04bundle", "application/zip")
+    db.whole_artifacts.insert_one(
+        {
+            "_id": "wart_cn",
+            "task_id": "wtask_cn",
+            "version": 2,
+            "kind": "bundle",
+            "file_name": "海报结果包.zip",
+            "content_type": "application/zip",
+            "path": key,
+            "bytes": 12,
+            "sha256": "",
+            "title": "完整结果包",
+            "source_url": "https://example.com/result.zip",
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
+    web = FastAPI()
+    web.include_router(whole_routes.router)
+    web.state.db, web.state.settings, web.state.store = db, settings, store
+    with TestClient(web) as client:
+        response = client.get("/api/whole-image/artifacts/wart_cn/download")
+
+    assert response.status_code == 200
+    assert response.content == b"PK\x03\x04bundle"
+    assert response.headers["content-type"].startswith("application/zip")
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("attachment;")
+    assert "filename*=UTF-8''" in disposition
+    assert "%E6%B5%B7%E6%8A%A5" in disposition
+    fallback = disposition.split('filename="',1)[1].split('"',1)[0]
+    assert fallback.isascii()
+    assert fallback.endswith(".zip")
+
+
+def test_outputs_without_artifacts_serialize_as_empty_list(settings, store):
+    db = mongomock.MongoClient().db
+    version = {
+        "_id": "wver_legacy",
+        "task_id": "wtask_legacy",
+        "version": 1,
+        "created_at": datetime.now(timezone.utc),
+        "outputs": [
+            {
+                "id": "gateway_result",
+                "channel": "gateway",
+                "role": "gateway_result",
+                "selectable": True,
+            }
+        ],
+    }
+    out = whole_routes._version_out(db, version)
+    assert out["outputs"][0]["artifacts"] == []
+    branch = whole_routes._branch_out(
+        db,
+        "wtask_legacy",
+        {"status": "completed", "outputs": [{"role": "agent_result"}]},
+    )
+    assert branch["outputs"][0]["artifacts"] == []

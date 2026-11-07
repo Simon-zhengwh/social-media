@@ -5,6 +5,7 @@ import binascii
 import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -14,6 +15,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from app.schemas import (WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
 from app.services import original_replacement_runner, brand_rules, brand_style, original_replacement, platform_presets, whole_image
+from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
 from app.time_utils import utc_iso
 from app.services.canvas import canvas_size
@@ -281,6 +283,34 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
     }
 
 
+def _artifacts_out(output: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in output.get("artifacts") or []:
+        if not isinstance(item, dict):
+            continue
+        artifact_id = str(item.get("id") or "")
+        if not artifact_id:
+            continue
+        kind = str(item.get("kind") or "file")
+        items.append(
+            {
+                "id": artifact_id,
+                "kind": kind,
+                "file_name": str(item.get("file_name") or ""),
+                "content_type": str(item.get("content_type") or ""),
+                "size": int(item.get("size") or 0),
+                "title": str(item.get("title") or ""),
+                "preview_url": (
+                    f"/api/whole-image/artifacts/{artifact_id}/preview"
+                    if kind == "html"
+                    else None
+                ),
+                "download_url": f"/api/whole-image/artifacts/{artifact_id}/download",
+            }
+        )
+    return items
+
+
 def _output_out(
     db: Any,
     *,
@@ -310,6 +340,7 @@ def _output_out(
             else None
         ),
         "model_input": _model_input_out(db, output.get("model_input")),
+        "artifacts": _artifacts_out(output),
     }
 
 
@@ -1028,3 +1059,80 @@ def download_task(
         download_name=filename,
     )
     return RedirectResponse(url, status_code=302)
+
+
+_ARTIFACT_PREVIEW_CSP = (
+    "sandbox allow-scripts allow-downloads; default-src 'none'; "
+    "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+    "img-src data: blob:; connect-src 'none'; base-uri 'none'; "
+    "form-action 'none'; frame-ancestors 'self'"
+)
+ARTIFACT_PREVIEW_HEADERS = {
+    "Content-Disposition": "inline",
+    "Cache-Control": "private, no-store",
+    "Content-Security-Policy": _ARTIFACT_PREVIEW_CSP,
+    "X-Content-Type-Options": "nosniff",
+}
+_ARTIFACT_UNSAFE_CHARS = frozenset('"\\')
+
+
+def _artifact_ascii_char(ch: str) -> str:
+    if ch not in _ARTIFACT_UNSAFE_CHARS and ord(ch) >= 32 and ord(ch) < 127:
+        return ch
+    return "_"
+
+
+def _artifact_doc(db: Any, artifact_id: str) -> dict[str, Any]:
+    doc = db.whole_artifacts.find_one({"_id": artifact_id})
+    if doc is None:
+        raise HTTPException(status_code=404, detail="产物不存在")
+    return doc
+
+
+def _artifact_bytes(store: Any, doc: dict[str, Any]) -> bytes:
+    key = str(doc.get("path") or "")
+    if not key:
+        raise HTTPException(status_code=404, detail="产物文件不存在")
+    try:
+        return store.get_bytes(key)
+    except ObjectStoreError as exc:
+        raise HTTPException(status_code=404, detail="产物文件不存在") from exc
+
+
+def _artifact_content_disposition(file_name: str) -> str:
+    # ASCII-only fallback plus RFC5987 filename* so Chinese artifact names survive.
+    safe_name = Path(file_name).name or "artifact.bin"
+    fallback = "".join(_artifact_ascii_char(ch) for ch in safe_name)
+    if not fallback.strip("_"):
+        fallback = "artifact.bin"
+    value = f'attachment; filename="{fallback}"'
+    if fallback != safe_name:
+        value += f"; filename*=UTF-8''{quote(safe_name, safe='')}"
+    return value
+
+
+@router.get("/artifacts/{artifact_id}/preview")
+def preview_artifact(artifact_id: str, request: Request) -> Response:
+    doc = _artifact_doc(request.app.state.db, artifact_id)
+    if doc.get("kind") != "html":
+        raise HTTPException(status_code=422, detail="该产物不是 HTML")
+    data = _artifact_bytes(request.app.state.store, doc)
+    return Response(
+        content=data, media_type="text/html", headers=ARTIFACT_PREVIEW_HEADERS
+    )
+
+
+@router.get("/artifacts/{artifact_id}/download")
+def download_artifact(artifact_id: str, request: Request) -> Response:
+    doc = _artifact_doc(request.app.state.db, artifact_id)
+    data = _artifact_bytes(request.app.state.store, doc)
+    filename = str(doc.get("file_name") or f"{artifact_id}.bin")
+    return Response(
+        content=data,
+        media_type=str(doc.get("content_type") or "application/octet-stream"),
+        headers={
+            "Content-Disposition": _artifact_content_disposition(filename),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
