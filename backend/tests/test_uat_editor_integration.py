@@ -135,8 +135,10 @@ def test_startup_recovers_work_using_each_merchants_database(settings, store, mo
 
     raw = mongomock.MongoClient().db
     for merchant_id in ("m1", "m2"):
-        raw.background_replace_tasks.insert_one({"merchant_id": merchant_id, "whole_task_id": "task"})
-        raw.agent_test_runs.insert_one({"merchant_id": merchant_id})
+        raw.background_replace_tasks.insert_one({"merchant_id": merchant_id, "whole_task_id": "task", "status": "running"})
+        raw.agent_test_runs.insert_one({"merchant_id": merchant_id, "status": "running"})
+    raw.background_replace_tasks.insert_one({"merchant_id": "finished", "whole_task_id": "old", "status": "succeeded"})
+    raw.agent_test_runs.insert_one({"merchant_id": "finished", "status": "completed"})
     app = SimpleNamespace(state=SimpleNamespace(raw_db=raw, settings=settings, local_store=store, core_ai=object()))
     workers = []
     monkeypatch.setattr(main.threading, "Thread", lambda **values: SimpleNamespace(start=lambda: workers.append(values)))
@@ -146,6 +148,15 @@ def test_startup_recovers_work_using_each_merchants_database(settings, store, mo
     main._resume_agent_tests(app)
     assert len(workers) == 4
     assert sorted(worker["args"][0].merchant_id for worker in workers) == ["m1", "m1", "m2", "m2"]
+
+
+def test_agent_status_index_supports_global_maintenance_without_table_scans():
+    from app import main
+
+    raw = mongomock.MongoClient().db
+    main._initialize_indexes(raw)
+    indexes = [list(index["key"].keys()) for index in raw.agent_test_runs.list_indexes()]
+    assert any(keys[:1] == ["status"] for keys in indexes)
 
 
 def test_editor_endpoints_are_only_mounted_under_merchant_authentication():

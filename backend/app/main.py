@@ -62,6 +62,7 @@ def _initialize_indexes(db) -> None:
     db.media_objects.create_index([("merchant_id", 1), ("status", 1)])
     db.whole_artifacts.create_index([("merchant_id", 1), ("task_id", 1)])
     db.agent_test_runs.create_index([("merchant_id", 1), ("batch_id", 1)])
+    db.agent_test_runs.create_index([("status", 1), ("merchant_id", 1)])
     db.agent_test_batches.create_index([("merchant_id", 1), ("created_at", -1)])
     db.app_control.create_index([("enabled", 1)])
 
@@ -75,7 +76,8 @@ def _scoped_store(app: FastAPI, merchant_id: str, db):
 def _resume_original_replacements(app: FastAPI) -> None:
     raw = app.state.raw_db
     merchant_ids = raw.background_replace_tasks.distinct(
-        "merchant_id", {"whole_task_id": {"$type": "string", "$ne": ""}}
+        "merchant_id", {"whole_task_id": {"$type": "string", "$ne": ""},
+                        "status": {"$in": ["queued", "running"]}}
     )
     for merchant_id in sorted(str(value) for value in merchant_ids if value):
         db = ScopedDatabase(raw, merchant_id)
@@ -89,7 +91,10 @@ def _resume_original_replacements(app: FastAPI) -> None:
 
 def _resume_agent_tests(app: FastAPI) -> None:
     raw = app.state.raw_db
-    for merchant_id in sorted(str(value) for value in raw.agent_test_runs.distinct("merchant_id") if value):
+    merchant_ids = raw.agent_test_runs.distinct(
+        "merchant_id", {"status": {"$in": ["queued", "preparing", "triggering", "running"]}}
+    )
+    for merchant_id in sorted(str(value) for value in merchant_ids if value):
         db = ScopedDatabase(raw, merchant_id)
         for batch_id in agent_test_service.recover(db):
             threading.Thread(target=agent_test_service.run_batch,
