@@ -132,6 +132,7 @@ def _optimize(db, settings, store, client, **overrides):
         "placement_id": None,
     }
     revision_guidance = overrides.pop("revision_guidance", None)
+    profile = overrides.pop("profile", None)
     payload.update(overrides)
     return prompt_optimizer.optimize_prompt(
         db,
@@ -140,6 +141,7 @@ def _optimize(db, settings, store, client, **overrides):
         client,
         request=PromptOptimizeRequest(**payload),
         revision_guidance=revision_guidance,
+        profile=profile,
     )
 
 
@@ -172,7 +174,9 @@ def test_optimizer_common_rules_and_notes_exclude_hidden_fields(settings, store,
 
 @pytest.mark.parametrize("brand_mode", ["preset", "none", "reference"])
 def test_optimizer_uses_only_displayed_merchant_background(settings, store, optimizer_db, brand_mode):
+    from types import SimpleNamespace
     from app.routes.brands import _brand_detail
+    from app.services.merchant_profile import project_profile
 
     db, products, reference_id = optimizer_db
     db.brands.update_one({"_id": "seejoy"}, {"$set": {"merchant_id": "merchant", "note": "NOTE_TAKES_PRIORITY"}})
@@ -190,12 +194,20 @@ def test_optimizer_uses_only_displayed_merchant_background(settings, store, opti
         ],
     }
     db.merchant_profiles.insert_one(profile)
+    am_profile = project_profile({
+        "merchant_id": "merchant", "brand": {"canonical_name": "MERCHANT_NAME", "positioning": "POSITIONING",
+        "voice": {"description": "VOICE_DESCRIPTION"}, "personality": "HIDDEN_PERSONALITY"},
+        "locations": [{"core_highlights": "CORE_HIGHLIGHTS", "competitive_context": {"target_customers": "TARGET_CUSTOMERS"},
+                       "nap": {"address": "HIDDEN_ADDRESS", "phone": "HIDDEN_PHONE"}}],
+    })
     client = FakeCoreAI()
     _optimize(db, settings, store, client, brand_mode=brand_mode,
               brand_id="seejoy" if brand_mode == "preset" else None,
+              profile=am_profile,
               product_asset_ids=products, style_reference_asset_ids=[reference_id] if brand_mode == "reference" else [])
     text = client.calls[0]["input"]
-    displayed = _brand_detail(db, db.brands.find_one({"_id": "seejoy"}))["merchant_profile"]
+    req = SimpleNamespace(state=SimpleNamespace(merchant_id="merchant", merchant_profile=am_profile))
+    displayed = _brand_detail(req, db, db.brands.find_one({"_id": "seejoy"}))["merchant_profile"]
     assert len(displayed["prompt_sections"]) == 4
     for section in displayed["prompt_sections"]:
         assert text.count(section["text"]) == (1 if brand_mode == "preset" else 0)

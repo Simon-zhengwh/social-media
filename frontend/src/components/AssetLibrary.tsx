@@ -6,80 +6,71 @@ type Props = {
   assets: Asset[]
   loading: boolean
   error: string | null
+  total: number
+  query: string
+  onSearch: (keyword: string) => void
+  onLoadMore: () => void
+  loadingMore: boolean
   uploading: boolean
   onUpload: (file: File) => Promise<boolean>
-  onDelete: (asset: Asset) => Promise<boolean>
 }
 
 function formatDate(value: string) {
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-  return date.toLocaleDateString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-  })
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
 export default function AssetLibrary({
   assets,
   loading,
   error,
+  total,
+  query,
+  onSearch,
+  onLoadMore,
+  loadingMore,
   uploading,
   onUpload,
-  onDelete,
 }: Props) {
-  const [notice, setNotice] = useState<string | null>(null)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
-  const [confirmingId, setConfirmingId] = useState<string | null>(null)
-
-  const handleFile = async (file: File) => {
-    setNotice(null)
-    const ok = await onUpload(file)
-    if (ok) {
-      setNotice('图片已上传')
-    }
-  }
-
-  const handleDelete = async (asset: Asset) => {
-    setDeletingId(asset.id)
-    setConfirmingId(null)
-    setNotice(null)
-    try {
-      const ok = await onDelete(asset)
-      if (ok) {
-        setNotice('素材已删除')
-      }
-    } finally {
-      setDeletingId(null)
-    }
-  }
-
-  const disabled = uploading
+  const [draft, setDraft] = useState(query)
 
   return (
     <section className="asset-page">
-      <div className="asset-toolbar">
-        <label className={`mp-btn-secondary mp-btn-small upload-trigger${disabled ? ' is-disabled' : ''}`}>
+      <form
+        className="asset-toolbar"
+        onSubmit={(event) => {
+          event.preventDefault()
+          onSearch(draft.trim())
+        }}
+      >
+        <input
+          className="mp-input"
+          type="search"
+          value={draft}
+          aria-label="搜索 AM 素材"
+          placeholder="搜索 AM 素材或临时上传文件名"
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <button type="submit" className="mp-btn-secondary mp-btn-small">
+          搜索
+        </button>
+        <label className={`mp-btn-secondary mp-btn-small upload-trigger${uploading ? ' is-disabled' : ''}`}>
           <input
             type="file"
-            accept="image/jpeg,image/png,image/apng,image/webp,image/gif,image/bmp,image/tiff,image/avif,image/heic,image/heif,image/jp2,image/x-icon,image/x-tga,.jpg,.jpeg,.jfif,.png,.apng,.webp,.gif,.bmp,.dib,.tif,.tiff,.avif,.avifs,.heic,.heif,.jp2,.j2k,.jpf,.jpx,.ico,.tga,.vda,.vst"
-            disabled={disabled}
+            accept="image/*"
+            disabled={uploading}
             onChange={(event) => {
               const file = event.target.files?.[0]
-              if (file) {
-                void handleFile(file)
-              }
+              if (file) void onUpload(file)
               event.target.value = ''
             }}
           />
-          上传图片
+          {uploading ? '上传中…' : '上传临时图片'}
         </label>
-        {uploading ? <span className="asset-busy">上传中…</span> : null}
-      </div>
+        <span className="asset-busy">AM 资源库 + 临时上传{total > 0 ? ` · ${total} 张` : ''}</span>
+      </form>
 
-      {notice ? <div className="asset-notice">{notice}</div> : null}
       {error ? <div className="asset-notice asset-notice-error">{error}</div> : null}
 
       {loading ? (
@@ -94,13 +85,13 @@ export default function AssetLibrary({
         </div>
       ) : assets.length === 0 ? (
         <div className="asset-empty">
-          <strong>还没有素材</strong>
-          <span>上传图片后开始生成。</span>
+          <strong>{query ? '没有匹配的素材' : '暂无可用图片'}</strong>
+          <span>{query ? '清空或更换搜索词后重试。' : '请先上传临时图片或在 AM Console 资源库中添加素材。'}</span>
         </div>
       ) : (
-        <div className="asset-grid">
-          {assets.map((asset) => {
-            return (
+        <>
+          <div className="asset-grid">
+            {assets.map((asset) => (
               <article className="asset-card" key={asset.id}>
                 <div className="asset-thumb">
                   <ZoomableImage
@@ -112,48 +103,25 @@ export default function AssetLibrary({
                 </div>
                 <div className="asset-card-head">
                   <span className="asset-date">{formatDate(asset.created_at)}</span>
+                  <span className="asset-date">{asset.source === 'am' ? 'AM 只读' : '临时上传'}</span>
                 </div>
                 <strong className="asset-name" title={asset.original_name}>
                   {asset.original_name}
                 </strong>
                 <span className="asset-dims tnum">
-                  {asset.width} × {asset.height}
+                  {asset.width > 0 && asset.height > 0 ? `${asset.width} × ${asset.height}` : '尺寸由 AM/模型读取'}
                 </span>
-                <div className="asset-actions">
-                  {confirmingId === asset.id ? (
-                    <span className="asset-confirm">
-                      <span>删除后历史记录中的图片将无法显示，确定删除？</span>
-                      <button
-                        type="button"
-                        className="asset-confirm-cancel"
-                        onClick={() => setConfirmingId(null)}
-                      >
-                        取消
-                      </button>
-                      <button
-                        type="button"
-                        className="asset-confirm-delete"
-                        onClick={() => void handleDelete(asset)}
-                        disabled={deletingId === asset.id}
-                      >
-                        {deletingId === asset.id ? '删除中…' : '确认'}
-                      </button>
-                    </span>
-                  ) : (
-                    <button
-                      type="button"
-                      className="asset-delete"
-                      onClick={() => setConfirmingId(asset.id)}
-                      disabled={deletingId === asset.id}
-                    >
-                      删除
-                    </button>
-                  )}
-                </div>
               </article>
-            )
-          })}
-        </div>
+            ))}
+          </div>
+          {assets.length < total ? (
+            <div className="asset-toolbar">
+              <button type="button" className="mp-btn-secondary mp-btn-small" onClick={onLoadMore} disabled={loadingMore}>
+                {loadingMore ? '加载中…' : '加载更多'}
+              </button>
+            </div>
+          ) : null}
+        </>
       )}
     </section>
   )

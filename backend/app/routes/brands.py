@@ -8,10 +8,12 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from PIL import Image, ImageOps
 
+from app.api_paths import asset_url, brand_cover_url
+from app.request_context import request_db, request_merchant_id, request_profile, request_store
 from app.schemas import BrandUpdate, DuplicateBrandRequest
-from app.services import asset_records, brand_rules, brand_style, merchant_profile, platform_presets
+from app.services import asset_records, brand_rules, brand_style, merchant_profile, platform_presets, request_assets
 
-router = APIRouter(prefix="/api/brands", tags=["brands"])
+router = APIRouter(prefix="/brands", tags=["brands"])
 
 
 def _brand_document(db: Any, brand_id: str) -> dict[str, Any]:
@@ -21,7 +23,8 @@ def _brand_document(db: Any, brand_id: str) -> dict[str, Any]:
     return document
 
 
-def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
+def _brand_detail(request: Request, db: Any, document: dict[str, Any]) -> dict[str, Any]:
+    merchant_id = str(document.get("merchant_id") or request_merchant_id(request))
     brand = brand_style.brand_from_document(document)
     reference_ids = list(brand.reference_asset_ids)
     cover_asset_id = brand.cover_asset_id or (reference_ids[0] if reference_ids else None)
@@ -33,7 +36,7 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         references.append({
             "asset_id": asset_id,
             "original_name": asset.get("original_name") or "",
-            "url": f"/api/assets/{asset_id}/file",
+            "url": asset.get("prepared_url") or asset.get("url") or asset_url(merchant_id, asset_id),
             "width": int(asset.get("width") or 0),
             "height": int(asset.get("height") or 0),
             "is_cover": asset_id == cover_asset_id,
@@ -46,13 +49,13 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         logo_images.append({
             "asset_id": asset_id,
             "original_name": asset.get("original_name") or "",
-            "url": f"/api/assets/{asset_id}/file",
+            "url": asset.get("prepared_url") or asset.get("url") or asset_url(merchant_id, asset_id),
             "width": int(asset.get("width") or 0),
             "height": int(asset.get("height") or 0),
         })
     return {
         "id": brand.id,
-        "merchant_profile": merchant_profile.get_profile(db, brand.merchant_id),
+        "merchant_profile": (request_profile(request) if getattr(getattr(request, "state", None), "merchant_id", None) else merchant_profile.get_profile(db, brand.merchant_id)),
         "name": brand.name,
         "short_name": brand.short_name,
         "summary": brand.summary,
@@ -65,7 +68,7 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
         "purpose": brand.purpose,
         "note": brand.note,
         "is_default": brand.is_default,
-        "cover_url": f"/api/brands/{brand.id}/cover" if cover_asset_id else None,
+        "cover_url": brand_cover_url(merchant_id, brand.id) if cover_asset_id else None,
         "cover_asset_id": cover_asset_id,
         "layout_guide": brand.layout_guide,
         "background_guide": brand.background_guide,
@@ -79,12 +82,13 @@ def _brand_detail(db: Any, document: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("")
 def list_brands(request: Request) -> list[dict[str, Any]]:
-    db = request.app.state.db
+    db = request_db(request)
+    merchant_id = request_merchant_id(request)
     items: list[dict[str, Any]] = []
     for brand in brand_style.list_brands(db):
         item = brand.public_dict(
             cover_url=(
-                f"/api/brands/{brand.id}/cover"
+                brand_cover_url(merchant_id, brand.id)
                 if brand.cover_asset_id or brand.reference_asset_ids
                 else None
             )
@@ -93,7 +97,7 @@ def list_brands(request: Request) -> list[dict[str, Any]]:
             {
                 "asset_id": asset_id,
                 "original_name": (asset or {}).get("original_name") or "",
-                "url": f"/api/assets/{asset_id}/file",
+                "url": asset.get("prepared_url") or asset.get("url") or asset_url(merchant_id, asset_id),
                 "width": int((asset or {}).get("width") or 0),
                 "height": int((asset or {}).get("height") or 0),
             }
@@ -107,14 +111,14 @@ def list_brands(request: Request) -> list[dict[str, Any]]:
 @router.post("/preview")
 def preview_brand(payload: BrandUpdate, request: Request) -> dict[str, str]:
     try:
-        return {"prompt": brand_rules.compile_brand_preview(request.app.state.db, payload.model_dump())}
+        return {"prompt": brand_rules.compile_brand_preview(request_db(request), payload.model_dump())}
     except platform_presets.PlatformError as exc:
         raise HTTPException(422, exc.message) from exc
 
 
 @router.post("", status_code=201)
 def create_brand(payload: BrandUpdate, request: Request) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     brand_id = f"brand-{uuid.uuid4().hex}"
     # Reuse update validation; remove the provisional record if validation fails.
     if payload.cover_asset_id:
@@ -132,7 +136,8 @@ def create_brand(payload: BrandUpdate, request: Request) -> dict[str, Any]:
 @router.get("/{brand_id}")
 def get_brand(brand_id: str, request: Request) -> dict[str, Any]:
     try:
-        return _brand_detail(request.app.state.db, _brand_document(request.app.state.db, brand_id))
+        db = request_db(request)
+        return _brand_detail(request, db, _brand_document(db, brand_id))
     except brand_style.BrandError as exc:
         raise HTTPException(status_code=422, detail=exc.message) from exc
 
@@ -143,7 +148,7 @@ def update_brand(
     payload: BrandUpdate,
     request: Request,
 ) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     document = _brand_document(db, brand_id)
     reference_ids = list(document.get("reference_asset_ids") or [])[:brand_style.MAX_BRAND_REFERENCES]
     if payload.cover_asset_id and payload.cover_asset_id not in reference_ids:
@@ -172,6 +177,7 @@ def update_brand(
         if "logo_asset_ids" in payload.model_fields_set
         else list(document.get("logo_asset_ids") or [])
     )[:brand_style.MAX_BRAND_LOGOS]
+    logo_ids = request_assets.resolve_asset_ids(request, logo_ids)
     for logo_id in logo_ids:
         asset = db.assets.find_one({"_id": logo_id})
         if asset is None:
@@ -225,12 +231,12 @@ def update_brand(
             },
         },
     )
-    return _brand_detail(db, _brand_document(db, brand_id))
+    return _brand_detail(request, db, _brand_document(db, brand_id))
 
 
 @router.delete("/{brand_id}", status_code=204)
 def delete_brand(brand_id: str, request: Request) -> Response:
-    db = request.app.state.db
+    db = request_db(request)
     document = _brand_document(db, brand_id)
     was_default = bool(document.get("is_default"))
     db.brands.delete_one({"_id": brand_id})
@@ -255,7 +261,7 @@ def duplicate_brand(
     payload: DuplicateBrandRequest,
     request: Request,
 ) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     source = _brand_document(db, brand_id)
     requested_platform = payload.platform_id or str(
         source.get("platform_id") or source.get("platform") or ""
@@ -283,7 +289,7 @@ def duplicate_brand(
         "updated_at": now,
     })
     db.brands.insert_one(document)
-    return _brand_detail(db, document)
+    return _brand_detail(request, db, document)
 
 
 def _persist_uploaded_asset(
@@ -310,7 +316,7 @@ def upload_logos(
     request: Request,
     files: list[UploadFile] = File(...),
 ) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     document = _brand_document(db, brand_id)
     logo_ids = list(document.get("logo_asset_ids") or [])[:brand_style.MAX_BRAND_LOGOS]
     remaining = brand_style.MAX_BRAND_LOGOS - len(logo_ids)
@@ -320,7 +326,7 @@ def upload_logos(
         asset = _persist_uploaded_asset(
             db,
             request.app.state.settings,
-            request.app.state.store,
+            request_store(request),
             file,
         )
         asset_id = str(asset["_id"])
@@ -330,12 +336,12 @@ def upload_logos(
         {"_id": brand_id},
         {"$set": {"logo_asset_ids": logo_ids, "updated_at": datetime.now(timezone.utc)}},
     )
-    return _brand_detail(db, _brand_document(db, brand_id))
+    return _brand_detail(request, db, _brand_document(db, brand_id))
 
 
 @router.delete("/{brand_id}/logos/{asset_id}")
 def delete_logo(brand_id: str, asset_id: str, request: Request) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     document = _brand_document(db, brand_id)
     logo_ids = list(document.get("logo_asset_ids") or [])
     if asset_id not in logo_ids:
@@ -349,7 +355,7 @@ def delete_logo(brand_id: str, asset_id: str, request: Request) -> dict[str, Any
             }
         },
     )
-    return _brand_detail(db, _brand_document(db, brand_id))
+    return _brand_detail(request, db, _brand_document(db, brand_id))
 
 
 @router.post("/{brand_id}/references")
@@ -358,9 +364,9 @@ def upload_reference(
     request: Request,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     settings = request.app.state.settings
-    store = request.app.state.store
+    store = request_store(request)
     document = _brand_document(db, brand_id)
     reference_ids = list(document.get("reference_asset_ids") or [])[:brand_style.MAX_BRAND_REFERENCES]
     if len(reference_ids) >= brand_style.MAX_BRAND_REFERENCES:
@@ -380,12 +386,12 @@ def upload_reference(
             },
         },
     )
-    return _brand_detail(db, _brand_document(db, brand_id))
+    return _brand_detail(request, db, _brand_document(db, brand_id))
 
 
 @router.delete("/{brand_id}/references/{asset_id}")
 def delete_reference(brand_id: str, asset_id: str, request: Request) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     document = _brand_document(db, brand_id)
     reference_ids = list(document.get("reference_asset_ids") or [])
     if asset_id not in reference_ids:
@@ -404,13 +410,13 @@ def delete_reference(brand_id: str, asset_id: str, request: Request) -> dict[str
             },
         },
     )
-    return _brand_detail(db, _brand_document(db, brand_id))
+    return _brand_detail(request, db, _brand_document(db, brand_id))
 
 
 @router.get("/{brand_id}/cover")
 def brand_cover(brand_id: str, request: Request) -> Response:
-    db = request.app.state.db
-    store = request.app.state.store
+    db = request_db(request)
+    store = request_store(request)
     try:
         brand = brand_style.get_brand(db, brand_id)
     except brand_style.BrandError as exc:

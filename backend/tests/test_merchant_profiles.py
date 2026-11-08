@@ -1,79 +1,89 @@
-import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import mongomock
 
 from app.routes.brands import _brand_detail, duplicate_brand, update_brand
 from app.schemas import BrandUpdate, DuplicateBrandRequest
+from app.services.merchant_profile import project_profile
+from app.services.scoped_db import ScopedDatabase
 
 
-def seed(db, brand_id, merchant_id=None):
+def request(db, merchant_id="merchant", profile=None):
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(db=db, store=None)),
+        state=SimpleNamespace(
+            merchant_id=merchant_id,
+            merchant_profile=profile,
+            db=ScopedDatabase(db, merchant_id),
+            store=None,
+        ),
+        path_params={"merchant_id": merchant_id},
+    )
+
+
+def seed(db, brand_id):
     doc = {"_id": brand_id, "name": brand_id, "platform_id": "xiaohongshu", "placement_id": "note", "layout_guide": "existing", "background_guide": "existing"}
-    if merchant_id:
-        doc["merchant_id"] = merchant_id
     db.brands.insert_one(doc)
-    return doc
+    return db.brands.find_one({"_id": brand_id})
 
 
-def request(db):
-    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=db)))
-
-
-def test_unlinked_brand_does_not_guess_merchant_from_name():
-    db = mongomock.MongoClient().db
+def test_am_profile_is_the_only_merchant_profile_source_and_ignores_local_legacy_collection():
+    db = ScopedDatabase(mongomock.MongoClient().db, "merchant")
     doc = seed(db, "seejoy")
-    db.merchant_profiles.insert_one({"_id": "merchant", "name": "SEE JOY"})
-    assert _brand_detail(db, doc)["merchant_profile"] is None
+    db.merchant_profiles.insert_one({"_id": "merchant", "name": "LOCAL SEED MUST NOT BE USED"})
+    req = request(db.raw, profile=None)
+    assert _brand_detail(req, db, doc)["merchant_profile"] is None
 
 
-def test_shared_profile_only_returns_model_background_and_preserves_original():
+def test_projected_am_profile_is_shared_by_styles_and_keeps_source_paths():
+    db = ScopedDatabase(mongomock.MongoClient().db, "merchant")
+    profile = project_profile({
+        "merchant_id": "merchant",
+        "brand": {"canonical_name": "GEORGE", "positioning": "gathering", "personality": "warm", "voice": {"description": "friendly"}},
+        "locations": [{"place_id": "place-1", "name": "One", "core_highlights": ["hot pot"]}],
+    })
+    req = request(db.raw, profile=profile)
+    for brand_id in ("xhs-style", "ig-style"):
+        result = _brand_detail(req, db, seed(db, brand_id))["merchant_profile"]
+        assert result["source_record_id"] == "merchant"
+        assert result["sections"][1]["source_path"] == "brand.positioning"
+        assert result["location_place_ids"] == ["place-1"]
+
+
+def test_style_save_and_duplicate_preserve_merchant_scope():
+    raw = mongomock.MongoClient().db
+    profile = {"id": "merchant", "name": "GEORGE", "source_label": "AM Console", "source_record_id": "merchant", "sections": []}
+    req = request(raw, profile=profile)
+    seed(req.state.db, "linked")
+    updated = update_brand("linked", BrandUpdate(name="Changed style", layout_guide="layout", background_guide="background"), req)
+    assert updated["merchant_profile"]["id"] == "merchant"
+    copied = duplicate_brand("linked", DuplicateBrandRequest(platform_id="instagram", placement_id="story"), req)
+    assert copied["merchant_profile"]["id"] == "merchant"
+    assert copied["layout_guide"] == "layout"
+    assert req.state.db.brands.find_one({"_id": "linked"})["merchant_id"] == "merchant"
+    assert req.state.db.brands.find_one({"_id": copied["id"]})["merchant_id"] == "merchant"
+
+
+def test_offline_profile_projection_preserves_original_and_selected_background():
+    import json
+    from pathlib import Path
+    from app.services.merchant_profile import get_profile
+
     db = mongomock.MongoClient().db
     profile = json.loads((Path(__file__).parents[1] / "data/merchant_profiles/seejoy.json").read_text(encoding="utf-8"))
     profile["_id"] = "merchant"
     db.merchant_profiles.insert_one(profile)
-    for brand_id in ("xhs-style", "ig-style"):
-        result = _brand_detail(db, seed(db, brand_id, "merchant"))["merchant_profile"]
-        assert result["id"] == "merchant"
-        assert [section["title"] for section in result["prompt_sections"]] == ["商户定位", "核心卖点", "目标客群", "表达语气"]
-        assert [section["text"] for section in result["prompt_sections"]] == [profile["sections"][index]["text"] for index in (0, 1, 2, 4)]
-        assert all(set(section) == {"title", "text"} for section in result["prompt_sections"])
-        assert result["sections"] == profile["sections"]
-        assert result["source_record_id"] == profile["source_record_id"]
-        assert "source" not in result
+    projected = get_profile(db, "merchant")
+    assert [section["title"] for section in projected["prompt_sections"]] == ["商户定位", "核心卖点", "目标客群", "表达语气"]
+    assert [section["text"] for section in projected["prompt_sections"]] == [profile["sections"][index]["text"] for index in (0, 1, 2, 4)]
+    assert projected["sections"] == profile["sections"]
     assert db.merchant_profiles.find_one({"_id": "merchant"}) == profile
-
-
-def test_empty_or_missing_merchant_background_is_not_displayed():
-    db = mongomock.MongoClient().db
-    doc = seed(db, "linked", "merchant")
-    assert _brand_detail(db, doc)["merchant_profile"] is None
-    db.merchant_profiles.insert_one({"_id": "merchant", "sections": [
-        {"source_path": "brand.positioning", "text": "  "},
-        {"source_path": "locations.0.nap.address", "text": "ADDRESS_NOT_FOR_MODEL"},
-    ]})
-    assert _brand_detail(db, doc)["merchant_profile"]["prompt_sections"] == []
-
-
-def test_style_save_and_duplicate_preserve_merchant_link():
-    db = mongomock.MongoClient().db
-    seed(db, "linked", "merchant")
-    db.merchant_profiles.insert_one({"_id": "merchant", "name": "SEE JOY", "sections": [
-        {"source_path": "brand.positioning", "text": "单人火锅"},
-    ]})
-    updated = update_brand("linked", BrandUpdate(name="Changed style", layout_guide="layout", background_guide="background"), request(db))
-    assert updated["merchant_profile"]["id"] == "merchant"
-    copied = duplicate_brand("linked", DuplicateBrandRequest(platform_id="instagram", placement_id="story"), request(db))
-    assert copied["merchant_profile"]["id"] == "merchant"
-    assert copied["layout_guide"] == "layout"
 
 
 def test_seed_profile_preserves_source_and_rejects_mismatched_original():
     import json
     from pathlib import Path
-
     import pytest
-
     from scripts.import_merchant_profile import validate_profile
 
     profile = json.loads((Path(__file__).parents[1] / "data/merchant_profiles/seejoy.json").read_text(encoding="utf-8"))

@@ -12,15 +12,17 @@ from urllib.parse import quote
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 
+from app.api_paths import asset_url, whole_download_url, merchant_base
+from app.request_context import request_db, request_merchant_id, request_store, request_profile
 from app.schemas import (WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
-from app.services import original_replacement_runner, brand_rules, brand_style, original_replacement, platform_presets, whole_image
+from app.services import original_replacement_runner, brand_rules, brand_style, original_replacement, platform_presets, request_assets, whole_image
 from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
 from app.time_utils import utc_iso
 from app.services.canvas import canvas_size
 
-router = APIRouter(prefix="/api/whole-image", tags=["whole-image"])
+router = APIRouter(prefix="/whole-image", tags=["whole-image"])
 
 TASK_GROUP_STATUSES = {"all", "active", "ready", "failed"}
 
@@ -89,6 +91,7 @@ def _candidate_summary(doc: dict[str, Any]) -> dict[str, Any]:
     version_id = doc.get("selected_version_id") or doc.get("current_version_id")
     edit = doc.get("edit")
     edit_status = edit.get("status") if isinstance(edit, dict) else None
+    merchant_id = str(doc.get("merchant_id") or "")
     return {
         "id": doc["_id"],
         "candidate_index": int(input_data.get("candidate_index") or 0),
@@ -96,12 +99,9 @@ def _candidate_summary(doc: dict[str, Any]) -> dict[str, Any]:
         "stage": str(doc.get("stage") or "failed"),
         "progress": int(doc.get("progress") or 0),
         "current_version": version,
-        "preview_url": (
-            f"/api/assets/{output_id}/file?v={version}" if output_id else None
-        ),
+        "preview_url": asset_url(merchant_id, str(output_id), version=version) if output_id else None,
         "download_url": (
-            f"/api/whole-image/tasks/{quote(str(doc['_id']))}/download"
-            f"?version_id={quote(str(version_id))}"
+            whole_download_url(merchant_id, str(doc["_id"]), str(version_id))
             if output_id and version_id
             else None
         ),
@@ -266,7 +266,7 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
             "asset_id": asset_id,
             "name": str(image.get("name") or "参考图片"),
             "role": str(image.get("role") or image.get("kind") or "reference"),
-            "preview_url": f"/api/assets/{asset_id}/file" if asset else None,
+            "preview_url": asset_url(str(asset.get("merchant_id") or ""), asset_id) if asset else None,
         }
         if image.get("kind"):
             item["kind"] = image.get("kind")
@@ -283,7 +283,8 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
     }
 
 
-def _artifacts_out(output: dict[str, Any]) -> list[dict[str, Any]]:
+def _artifacts_out(output: dict[str, Any], merchant_id: str = "") -> list[dict[str, Any]]:
+    base = merchant_base(merchant_id) if merchant_id else "/api"
     items: list[dict[str, Any]] = []
     for item in output.get("artifacts") or []:
         if not isinstance(item, dict):
@@ -301,11 +302,11 @@ def _artifacts_out(output: dict[str, Any]) -> list[dict[str, Any]]:
                 "size": int(item.get("size") or 0),
                 "title": str(item.get("title") or ""),
                 "preview_url": (
-                    f"/api/whole-image/artifacts/{artifact_id}/preview"
+                    f"{base}/whole-image/artifacts/{artifact_id}/preview"
                     if kind == "html"
                     else None
                 ),
-                "download_url": f"/api/whole-image/artifacts/{artifact_id}/download",
+                "download_url": f"{base}/whole-image/artifacts/{artifact_id}/download",
             }
         )
     return items
@@ -322,6 +323,7 @@ def _output_out(
     asset_id = str(output.get("asset_id") or "")
     asset = db.assets.find_one({"_id": asset_id}) if asset_id else None
     output_id = str(output.get("id") or "")
+    merchant_id = str((asset or {}).get("merchant_id") or "")
     return {
         "id": output_id,
         "channel": str(output.get("channel") or "gateway"),
@@ -331,16 +333,14 @@ def _output_out(
         "width": int(output.get("width") or (asset or {}).get("width") or 0),
         "height": int(output.get("height") or (asset or {}).get("height") or 0),
         "selectable": bool(output.get("selectable")),
-        "preview_url": (
-            f"/api/assets/{asset_id}/file?v={version_number}" if asset_id and asset else None
-        ),
+        "preview_url": asset_url(merchant_id, asset_id, version=version_number) if asset_id and asset else None,
         "download_url": (
-            f"/api/whole-image/tasks/{task_id}/download?version_id={version_id}&output_id={output_id}"
+            whole_download_url(merchant_id, task_id, version_id, output_id)
             if asset_id and asset and version_id and output_id
             else None
         ),
         "model_input": _model_input_out(db, output.get("model_input")),
-        "artifacts": _artifacts_out(output),
+        "artifacts": _artifacts_out(output, merchant_id),
     }
 
 
@@ -533,12 +533,13 @@ def create_task(
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
     _require_configured(request)
-    db = request.app.state.db
+    db = request_db(request)
     settings = request.app.state.settings
 
     product_ids = list(dict.fromkeys(payload.product_asset_ids))
     if len(product_ids) != len(payload.product_asset_ids):
         raise HTTPException(status_code=422, detail="素材图不能重复")
+    product_ids = request_assets.resolve_asset_ids(request, product_ids)
     for product_id in product_ids:
         product = db.assets.find_one({"_id": product_id})
         if product is None:
@@ -553,7 +554,7 @@ def create_task(
         try:
             brand = brand_style.get_brand(db, payload.brand_id)
             brand_snapshot = brand_style.snapshot_brand(
-                brand, db, request.app.state.store, settings
+                brand, db, request_store(request), settings, profile=request_profile(request)
             )
         except brand_style.BrandError as exc:
             raise HTTPException(status_code=422, detail=exc.message) from exc
@@ -561,6 +562,7 @@ def create_task(
         style_reference_ids = list(dict.fromkeys(payload.style_reference_asset_ids))
         if len(style_reference_ids) != len(payload.style_reference_asset_ids):
             raise HTTPException(status_code=422, detail="风格参考图不能重复")
+        style_reference_ids = request_assets.resolve_asset_ids(request, style_reference_ids)
         for asset_id in style_reference_ids:
             asset = db.assets.find_one({"_id": asset_id})
             if asset is None:
@@ -568,6 +570,7 @@ def create_task(
 
     logo_asset_id = payload.logo_asset_id
     if logo_asset_id:
+        logo_asset_id = request_assets.resolve_asset_id(request, logo_asset_id)
         logo_asset = db.assets.find_one({"_id": logo_asset_id})
         if logo_asset is None:
             raise HTTPException(status_code=422, detail="Logo 不存在")
@@ -660,7 +663,7 @@ def create_task(
         whole_image.run_generation,
         db,
         settings,
-        request.app.state.store,
+        request_store(request),
         request.app.state.core_ai,
         task_id,
     )
@@ -682,7 +685,7 @@ def list_tasks(
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
-    db = request.app.state.db
+    db = request_db(request)
     docs = list(db.whole_tasks.find({}).sort("created_at", -1))
     items = _build_task_groups(docs)
     if status != "all":
@@ -716,7 +719,7 @@ def list_tasks(
 
 @router.get("/batches/{batch_id}")
 def get_task_batch(batch_id: str, request: Request) -> list[dict[str, Any]]:
-    db = request.app.state.db
+    db = request_db(request)
     docs = list(
         db.whole_tasks.find({"input.candidate_batch_id": batch_id}).sort(
             "input.candidate_index", 1
@@ -729,7 +732,7 @@ def get_task_batch(batch_id: str, request: Request) -> list[dict[str, Any]]:
 
 @router.get("/tasks/{task_id}")
 def get_task(task_id: str, request: Request) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     return task_out(db, _get_task_or_404(db, task_id))
 
 
@@ -740,7 +743,7 @@ def retry_task(
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
     _require_configured(request)
-    db = request.app.state.db
+    db = request_db(request)
 
     retried_generation = db.whole_tasks.find_one_and_update(
         {"_id": task_id, "status": "failed"},
@@ -765,7 +768,7 @@ def retry_task(
             whole_image.run_generation,
             db,
             request.app.state.settings,
-            request.app.state.store,
+            request_store(request),
             request.app.state.core_ai,
             task_id,
         )
@@ -811,7 +814,7 @@ def retry_task(
         whole_image.run_edit,
         db,
         request.app.state.settings,
-        request.app.state.store,
+        request_store(request),
         request.app.state.core_ai,
         task_id,
         instruction,
@@ -830,17 +833,18 @@ def create_edit(
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
     _require_configured(request)
-    db = request.app.state.db
+    db = request_db(request)
     doc = _get_task_or_404(db, task_id)
     if doc.get("status") != "succeeded":
         raise HTTPException(status_code=409, detail="任务尚未生成可编辑的图片")
+    reference_asset_ids = request_assets.resolve_asset_ids(request, payload.reference_asset_ids)
     source = db.whole_versions.find_one(
         {"_id": payload.source_version_id, "task_id": task_id}
     )
     if source is None:
         raise HTTPException(status_code=422, detail="来源版本不属于当前任务")
     reference_attachments: list[dict[str, str]] = []
-    for asset_id in payload.reference_asset_ids:
+    for asset_id in reference_asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:
             raise HTTPException(status_code=422, detail="参考图片不存在")
@@ -848,7 +852,7 @@ def create_edit(
             {
                 "asset_id": asset_id,
                 "name": str(asset.get("original_name") or "参考图片"),
-                "url": f"/api/assets/{asset_id}/file",
+                "url": asset.get("prepared_url") or asset.get("url") or asset_url(str(asset.get("merchant_id") or ""), asset_id),
             }
         )
     claimed = db.whole_tasks.find_one_and_update(
@@ -864,7 +868,7 @@ def create_edit(
                     "instruction": payload.instruction,
                     "source_version_id": payload.source_version_id,
                     "source_output_id": payload.source_output_id,
-                    "reference_asset_ids": payload.reference_asset_ids,
+                    "reference_asset_ids": reference_asset_ids,
                     "error": None,
                 },
                 "stage": "editing",
@@ -887,13 +891,13 @@ def create_edit(
         whole_image.run_edit,
         db,
         request.app.state.settings,
-        request.app.state.store,
+        request_store(request),
         request.app.state.core_ai,
         task_id,
         payload.instruction,
         payload.source_version_id,
         payload.source_output_id,
-        payload.reference_asset_ids,
+        reference_asset_ids,
     )
     return task_out(db, _get_task_or_404(db, task_id))
 
@@ -903,18 +907,24 @@ def create_original_replacement(task_id: str, payload: WholeImageOriginalReplace
                                 request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     _require_configured(request)
     state = request.app.state
+    db = request_db(request)
+    store = request_store(request)
     try:
-        doc = original_replacement.create(state.db, task_id, **payload.model_dump())
+        _get_task_or_404(db, task_id)
+        values = payload.model_dump()
+        values["replacements"] = [dict(item, asset_id=request_assets.resolve_asset_id(request, item["asset_id"]))
+                                  for item in values["replacements"]]
+        doc = original_replacement.create(db, task_id, **values)
     except (whole_image.StudioError, original_replacement_runner.OriginalReplacementError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    background_tasks.add_task(original_replacement_runner.run_task, state.db, state.settings, state.store, state.core_ai, doc["_id"])
+    background_tasks.add_task(original_replacement_runner.run_task, db, state.settings, store, state.core_ai, doc["_id"])
     return original_replacement_runner.task_out(doc)
 
 
 @router.get("/tasks/{task_id}/original-replacements")
 def list_original_replacements(task_id: str, request: Request) -> list[dict[str, Any]]:
     try:
-        return [original_replacement_runner.task_out(doc) for doc in original_replacement.list_tasks(request.app.state.db, task_id)]
+        return [original_replacement_runner.task_out(doc) for doc in original_replacement.list_tasks(request_db(request), task_id)]
     except whole_image.StudioError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -923,10 +933,10 @@ def list_original_replacements(task_id: str, request: Request) -> list[dict[str,
 def apply_original_replacement(task_id: str, replacement_id: str, payload: WholeImageOriginalReplacementApplyRequest,
                                request: Request) -> dict[str, Any]:
     try:
-        doc = original_replacement.apply(request.app.state.db, task_id, replacement_id, **payload.model_dump())
+        doc = original_replacement.apply(request_db(request), task_id, replacement_id, **payload.model_dump())
     except whole_image.StudioError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    return task_out(request.app.state.db, doc)
+    return task_out(request_db(request), doc)
 
 
 @router.post("/tasks/{task_id}/original-replacements/{replacement_id}/refresh-result", status_code=202)
@@ -934,38 +944,42 @@ def refresh_original_replacement(task_id: str, replacement_id: str, request: Req
                                  background_tasks: BackgroundTasks) -> dict[str, Any]:
     _require_configured(request)
     state = request.app.state
+    db = request_db(request)
+    store = request_store(request)
     try:
-        original_replacement.get_task(state.db, task_id, replacement_id)
-        doc = original_replacement_runner.queue_refresh(state.db, replacement_id)
+        original_replacement.get_task(db, task_id, replacement_id)
+        doc = original_replacement_runner.queue_refresh(db, replacement_id)
     except (whole_image.StudioError, original_replacement_runner.OriginalReplacementError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     if doc["status"] == "queued":
-        background_tasks.add_task(original_replacement_runner.run_task, state.db, state.settings,
-                                  state.store, state.core_ai, replacement_id, refresh=True)
+        background_tasks.add_task(original_replacement_runner.run_task, db, state.settings,
+                                  store, state.core_ai, replacement_id, refresh=True)
     return original_replacement_runner.task_out(doc)
 
 
 @router.get("/tasks/{task_id}/original-replacements/{replacement_id}/download")
 def download_original_replacement(task_id: str, replacement_id: str, request: Request) -> Response:
     state = request.app.state
+    db = request_db(request)
+    store = request_store(request)
     try:
-        doc = original_replacement.get_task(state.db, task_id, replacement_id)
+        doc = original_replacement.get_task(db, task_id, replacement_id)
     except whole_image.StudioError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     output = doc.get("output")
     if doc["status"] != "succeeded" or not output:
         raise HTTPException(status_code=404, detail="最终结果尚未就绪")
     name = f"original-replace-{replacement_id}.png"
-    local = state.store.local_path(output["path"])
+    local = store.local_path(output["path"])
     if local is not None:
         return FileResponse(local, media_type="image/png", filename=name)
-    return RedirectResponse(state.store.presign(output["path"], expires=state.settings.cos_presign_expiry_seconds,
+    return RedirectResponse(store.presign(output["path"], expires=state.settings.cos_presign_expiry_seconds,
                                                download_name=name), status_code=302)
 
 
 @router.get("/tasks/{task_id}/versions")
 def list_versions(task_id: str, request: Request) -> list[dict[str, Any]]:
-    db = request.app.state.db
+    db = request_db(request)
     _get_task_or_404(db, task_id)
     docs = db.whole_versions.find({"task_id": task_id}).sort("version", 1).limit(100)
     return [_version_out(db, doc) for doc in docs]
@@ -977,7 +991,7 @@ def select_task_version(
     version_id: str,
     request: Request,
 ) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     _get_task_or_404(db, task_id)
     try:
         doc = whole_image.select_version(db, task_id, version_id)
@@ -993,7 +1007,7 @@ def select_task_output(
     output_id: str,
     request: Request,
 ) -> dict[str, Any]:
-    db = request.app.state.db
+    db = request_db(request)
     _get_task_or_404(db, task_id)
     try:
         doc = whole_image.select_output(db, task_id, version_id, output_id)
@@ -1009,7 +1023,7 @@ def download_task(
     version_id: str | None = None,
     output_id: str | None = None,
 ) -> Response:
-    db = request.app.state.db
+    db = request_db(request)
     _get_task_or_404(db, task_id)
     selected = _version_for_task(db, task_id, version_id=version_id)
     selected_output: dict[str, Any] | None = None
@@ -1034,7 +1048,7 @@ def download_task(
     if not output_asset_id:
         raise HTTPException(status_code=409, detail="任务尚未生成可下载的成品")
     settings = request.app.state.settings
-    store = request.app.state.store
+    store = request_store(request)
     asset = db.assets.find_one({"_id": output_asset_id})
     if asset is None:
         raise HTTPException(status_code=404, detail="成品不存在")
@@ -1113,10 +1127,10 @@ def _artifact_content_disposition(file_name: str) -> str:
 
 @router.get("/artifacts/{artifact_id}/preview")
 def preview_artifact(artifact_id: str, request: Request) -> Response:
-    doc = _artifact_doc(request.app.state.db, artifact_id)
+    doc = _artifact_doc(request_db(request), artifact_id)
     if doc.get("kind") != "html":
         raise HTTPException(status_code=422, detail="该产物不是 HTML")
-    data = _artifact_bytes(request.app.state.store, doc)
+    data = _artifact_bytes(request_store(request), doc)
     return Response(
         content=data, media_type="text/html", headers=ARTIFACT_PREVIEW_HEADERS
     )
@@ -1124,8 +1138,8 @@ def preview_artifact(artifact_id: str, request: Request) -> Response:
 
 @router.get("/artifacts/{artifact_id}/download")
 def download_artifact(artifact_id: str, request: Request) -> Response:
-    doc = _artifact_doc(request.app.state.db, artifact_id)
-    data = _artifact_bytes(request.app.state.store, doc)
+    doc = _artifact_doc(request_db(request), artifact_id)
+    data = _artifact_bytes(request_store(request), doc)
     filename = str(doc.get("file_name") or f"{artifact_id}.bin")
     return Response(
         content=data,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services import platform_presets
+from app.services.scoped_db import ScopedCollection
 
 ASSET_PRESERVATION_RULE = (
     "输入素材保真：输入的菜品、摄影场景及其他内容素材只允许基于原图进行整体裁切、等比缩放、平移和画面内旋转（调整方向）；"
@@ -27,7 +28,9 @@ STYLE_LABELS = {
 
 
 def get_rules(db: Any) -> dict[str, Any]:
-    document = db.brand_rules.find_one({"_id": "default"}) if db is not None else None
+    collection = db.brand_rules if db is not None else None
+    merchant_id = collection.merchant_id if isinstance(collection, ScopedCollection) else None
+    document = collection.find_one({"_id": merchant_id or "default"}) if collection is not None else None
     source = document or DEFAULT_RULES
     return {key: source.get(key, value) for key, value in DEFAULT_RULES.items()}
 

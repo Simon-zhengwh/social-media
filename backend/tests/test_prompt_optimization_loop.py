@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 
 import mongomock
+import pytest
 from PIL import Image
 
+from app.config import PROJECT_DIR
 from scripts import prompt_optimization_loop as loop
 
 
@@ -38,6 +40,8 @@ def _score(workflow: str, round_number: int, total: float = 81) -> dict:
 
 
 def test_dry_run_records_reasons_and_completes(tmp_path, monkeypatch, settings):
+    if not (PROJECT_DIR / ".agents/skills/seejoy-brand-poster/brand.json").is_file():
+        pytest.skip("brand seed skills were removed from the repository")
     run_dir = tmp_path / "run"
     baseline = _png(tmp_path / "baseline.png", (120, 50, 30), (600, 800))
     asset1 = _png(tmp_path / "person.png", (80, 120, 60))

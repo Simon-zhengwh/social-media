@@ -4,10 +4,11 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.request_context import request_db, request_merchant_id
 from app.services import agent_tests as service
 from app.services.core_ai import CoreAIError
 
-router = APIRouter(prefix='/api/agent-tests', tags=['agent-tests'])
+router = APIRouter(prefix='/agent-tests', tags=['agent-tests'])
 
 
 class CreateBatch(BaseModel):
@@ -27,7 +28,7 @@ def fail(error):
 @router.get('/cases')
 def cases(request: Request):
     try:
-        return service.list_cases(request.app.state.settings)
+        return service.list_cases(request.app.state.settings, request_merchant_id(request))
     except CoreAIError as error:
         fail(error)
 
@@ -43,13 +44,13 @@ def image(case_id: str, index: int, request: Request, preview: bool = False):
 
 @router.get('/batches')
 def batches(request: Request, include_hidden: bool = False):
-    return service.list_batches(request.app.state.db, include_hidden=include_hidden)
+    return service.list_batches(request_db(request), include_hidden=include_hidden)
 
 
 @router.patch('/batches/{batch_id}/visibility')
 def visibility(batch_id: str, payload: BatchVisibility, request: Request):
     try:
-        return service.set_batch_hidden(request.app.state.db, batch_id, payload.hidden)
+        return service.set_batch_hidden(request_db(request), batch_id, payload.hidden)
     except CoreAIError as error:
         fail(error)
 
@@ -60,17 +61,17 @@ def create(payload: CreateBatch, request: Request, background: BackgroundTasks):
     if not state.settings.core_ai_api_key:
         raise HTTPException(status_code=503, detail='未配置 CORE_AI_API_KEY')
     try:
-        result = service.create_batch(state.db, state.settings, str(payload.request_id), payload.case_ids, payload.note)
+        result = service.create_batch(request_db(request), state.settings, str(payload.request_id), payload.case_ids, payload.note)
     except CoreAIError as error:
         fail(error)
-    background.add_task(service.run_batch, state.db, state.settings, state.core_ai, result['id'])
+    background.add_task(service.run_batch, request_db(request), state.settings, state.core_ai, result['id'])
     return result
 
 
 @router.get('/batches/{batch_id}')
 def batch(batch_id: str, request: Request):
     try:
-        return service.get_batch(request.app.state.db, batch_id)
+        return service.get_batch(request_db(request), batch_id)
     except CoreAIError as error:
         fail(error)
 
@@ -79,23 +80,22 @@ def batch(batch_id: str, request: Request):
 def resume(batch_id: str, request: Request, background: BackgroundTasks):
     state = request.app.state
     try:
-        result = service.get_batch(state.db, batch_id)
+        result = service.get_batch(request_db(request), batch_id)
     except CoreAIError as error:
         fail(error)
     if any(r['status'] == 'trigger_unknown' for r in result['runs']):
         raise HTTPException(status_code=409, detail='存在结果未知的触发请求，请先在平台确认，不能自动重发')
-    background.add_task(service.run_batch, state.db, state.settings, state.core_ai, batch_id)
+    background.add_task(service.run_batch, request_db(request), state.settings, state.core_ai, batch_id)
     return result
 
 
 @router.get('/runs/{local_run_id}/report')
 def report(local_run_id: str, request: Request):
     try:
-        path = service.report_path(request.app.state.settings, local_run_id)
+        state = request.app.state
+        path = service.report_file(request_db(request), state.settings, state.core_ai, local_run_id)
     except CoreAIError as error:
         fail(error)
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail='平台尚未返回运行详情')
     return FileResponse(path, media_type='application/json', filename=local_run_id+'-run.json')
 
 
@@ -103,7 +103,7 @@ def report(local_run_id: str, request: Request):
 def preview(local_run_id: str, index: int, request: Request):
     state = request.app.state
     try:
-        path = service.html_preview(state.db, state.settings, state.core_ai, local_run_id, index)
+        path = service.html_preview(request_db(request), state.settings, state.core_ai, local_run_id, index)
     except CoreAIError as error:
         fail(error)
     return FileResponse(path, media_type='text/html', headers={

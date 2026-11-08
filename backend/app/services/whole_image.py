@@ -160,6 +160,8 @@ def _save_output_asset(
             "original_name": f"{task_id}-v{version}{suffix}.png",
             "path": relative,
             "prepared_path": relative,
+            "url": getattr(store, "public_url", lambda _: None)(relative),
+            "prepared_url": getattr(store, "public_url", lambda _: None)(relative),
             "mime_type": "image/png",
             "width": width,
             "height": height,
@@ -630,6 +632,10 @@ def run_generation(
             task_id=task_id,
             version=1,
             data=data,
+            target_size=(
+                int(canvas.get("width") or 1024),
+                int(canvas.get("height") or 1024),
+            ),
         )
         asset_id = saved["asset_id"]
         document = _version_document(

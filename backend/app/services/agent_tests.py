@@ -9,11 +9,13 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+from urllib.parse import quote
 import uuid
 
 from pymongo import ReturnDocument
 
 from app.config import Settings
+from app.api_paths import merchant_base
 from app.services.core_ai import CoreAIClient, CoreAIError
 
 TERMINAL = {'completed', 'failed', 'cancelled', 'timeout'}
@@ -47,14 +49,15 @@ def image_path(settings: Settings, case_id: str, index: int, *, preview=False) -
     return path.with_suffix('.jpg') if preview and path.with_suffix('.jpg').is_file() else path
 
 
-def list_cases(settings: Settings) -> dict:
+def list_cases(settings: Settings, merchant_id: str = '') -> dict:
     catalog = _catalog(settings)
+    base = merchant_base(merchant_id) if merchant_id else '/api'
     return {'version': catalog['version'], 'agent_id': settings.core_ai_test_agent_id,
             'server_url': settings.core_ai_server_base_url.rstrip('/'),
             'cases': [{**{k: c[k] for k in ['id', 'label', 'prompt']},
                        'images': [{**{k: im[k] for k in ['name', 'sha256', 'size']},
-                                   'preview_url': f'/api/agent-tests/cases/{c["id"]}/images/{i}?preview=true',
-                                   'original_url': f'/api/agent-tests/cases/{c["id"]}/images/{i}'}
+                                   'preview_url': f'{base}/agent-tests/cases/{quote(c["id"], safe="")}/images/{i}?preview=true',
+                                   'original_url': f'{base}/agent-tests/cases/{quote(c["id"], safe="")}/images/{i}'}
                                   for i, im in enumerate(c['images'])]} for c in catalog['cases']]}
 
 
@@ -62,6 +65,16 @@ def _validate_case(settings, case):
     for i, image in enumerate(case['images']):
         if hashlib.sha256(image_path(settings, case['id'], i).read_bytes()).hexdigest() != image['sha256']:
             raise CoreAIError('benchmark_changed', '基准图片发生变化，已阻止请求：'+image['name'], 409)
+
+
+def _merchant_id(db) -> str:
+    merchant_id = getattr(db, 'merchant_id', None)
+    return merchant_id if isinstance(merchant_id, str) else ''
+
+
+def _batch_key(db, batch_id: str) -> str:
+    merchant_id = _merchant_id(db)
+    return hashlib.sha256(merchant_id.encode()).hexdigest() + ':' + batch_id if merchant_id else batch_id
 
 
 def create_batch(db: Any, settings: Settings, request_id: str, case_ids: list[str], note: str) -> dict:
@@ -73,17 +86,20 @@ def create_batch(db: Any, settings: Settings, request_id: str, case_ids: list[st
     lookup = {c['id']: c for c in catalog['cases']}
     if not case_ids or len(case_ids) > 5 or len(set(case_ids)) != len(case_ids) or any(c not in lookup for c in case_ids):
         raise CoreAIError('invalid_case', '请选择有效且不重复的基准用例', 422)
-    existing = db.agent_test_batches.find_one({'_id': request_id})
+    batch_key = _batch_key(db, request_id)
+    existing = db.agent_test_batches.find_one({'_id': batch_key})
     if existing and (existing['case_ids'] != case_ids or existing['note'] != note):
         raise CoreAIError('request_conflict', '同一请求标识不能用于另一组测试', 409)
     for cid in case_ids:
         _validate_case(settings, lookup[cid])
-    db.agent_test_batches.update_one({'_id': request_id}, {'$setOnInsert': {
+    db.agent_test_batches.update_one({'_id': batch_key}, {'$setOnInsert': {
+        'request_id': request_id,
         'case_ids': case_ids, 'note': note, 'version': catalog['version'], 'created_at': _now(),
         'agent_id': settings.core_ai_test_agent_id,
         'server_url': settings.core_ai_server_base_url.rstrip('/')}}, upsert=True)
     for order, cid in enumerate(case_ids):
-        run_id = uuid.uuid5(uuid.UUID(request_id), cid).hex
+        merchant_id = _merchant_id(db)
+        run_id = uuid.uuid5(uuid.UUID(request_id), merchant_id + '\0' + cid if merchant_id else cid).hex
         db.agent_test_runs.update_one({'_id': run_id}, {'$setOnInsert': {
             'batch_id': request_id, 'order': order, 'case_id': cid, 'label': lookup[cid]['label'],
             'prompt': lookup[cid]['prompt'], 'input_sha256': [im['sha256'] for im in lookup[cid]['images']],
@@ -99,7 +115,7 @@ def _public_run(doc: dict) -> dict:
 
 
 def get_batch(db, batch_id: str) -> dict:
-    batch = db.agent_test_batches.find_one({'_id': batch_id})
+    batch = db.agent_test_batches.find_one({'_id': _batch_key(db, batch_id)})
     if batch is None:
         raise CoreAIError('not_found', '测试批次不存在', 404)
     runs = [_public_run(d) for d in db.agent_test_runs.find({'batch_id': batch_id}).sort('order', 1)]
@@ -110,14 +126,14 @@ def get_batch(db, batch_id: str) -> dict:
 
 def list_batches(db, *, include_hidden: bool = False) -> list[dict]:
     query = {} if include_hidden else {'hidden': {'$ne': True}}
-    return [{'id': x['_id'], 'created_at': x['created_at'], 'note': x['note'],
+    return [{'id': x.get('request_id', x['_id']), 'created_at': x['created_at'], 'note': x['note'],
              'case_ids': x['case_ids'], 'hidden': x.get('hidden', False)}
-            for x in db.agent_test_batches.find(query, {'created_at': 1, 'note': 1, 'case_ids': 1, 'hidden': 1})
+            for x in db.agent_test_batches.find(query, {'request_id': 1, 'created_at': 1, 'note': 1, 'case_ids': 1, 'hidden': 1})
             .sort('created_at', -1)]
 
 
 def set_batch_hidden(db, batch_id: str, hidden: bool) -> dict:
-    result = db.agent_test_batches.update_one({'_id': batch_id}, {'$set': {'hidden': hidden}})
+    result = db.agent_test_batches.update_one({'_id': _batch_key(db, batch_id)}, {'$set': {'hidden': hidden}})
     if not result.matched_count:
         raise CoreAIError('not_found', '测试批次不存在', 404)
     return get_batch(db, batch_id)
@@ -134,7 +150,7 @@ def _safe(value, settings):
 def _media_urls(db, settings, client, case):
     urls = []
     for index, image in enumerate(case['images']):
-        cache_id = hashlib.sha256((settings.core_ai_server_base_url+'|'+image['sha256']).encode()).hexdigest()
+        cache_id = hashlib.sha256((_merchant_id(db)+'|'+settings.core_ai_server_base_url+'|'+image['sha256']).encode()).hexdigest()
         cached = db.agent_test_media.find_one({'_id': cache_id})
         if cached is None:
             data = image_path(settings, case['id'], index).read_bytes()
@@ -148,10 +164,25 @@ def _media_urls(db, settings, client, case):
     return urls
 
 
-def report_path(settings, local_run_id):
+def report_path(settings, local_run_id, merchant_id: str = ''):
     if not re.fullmatch(r'[a-f0-9]{32}', local_run_id):
         raise CoreAIError('not_found', '测试记录不存在', 404)
-    return settings.storage_path / 'agent-tests' / local_run_id / 'run-detail.json'
+    root = settings.storage_path / 'agent-tests'
+    if merchant_id:
+        root = root / hashlib.sha256(merchant_id.encode()).hexdigest()[:16]
+    return root / local_run_id / 'run-detail.json'
+
+
+def report_file(db, settings, client, local_run_id):
+    doc = db.agent_test_runs.find_one({'_id': local_run_id})
+    if doc is None:
+        raise CoreAIError('not_found', '测试记录不存在', 404)
+    path = report_path(settings, local_run_id, _merchant_id(db))
+    if not path.is_file():
+        if not doc.get('run_id'):
+            raise CoreAIError('not_found', '平台尚未返回运行详情', 404)
+        _save_detail(db, settings, local_run_id, client.get_agent_run(doc['run_id']))
+    return path
 
 
 def html_preview(db, settings, client, local_run_id, index):
@@ -165,7 +196,7 @@ def html_preview(db, settings, client, local_run_id, index):
     url = artifact.get('download_url')
     if not isinstance(url, str):
         raise CoreAIError('invalid_preview', 'HTML 产物缺少下载地址', 422)
-    target = report_path(settings, local_run_id).parent / ('preview-'+hashlib.sha256(url.encode()).hexdigest()[:32]+'.html')
+    target = report_path(settings, local_run_id, _merchant_id(db)).parent / ('preview-'+hashlib.sha256(url.encode()).hexdigest()[:32]+'.html')
     if not target.is_file():
         data = client.read_agent_html(url)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -177,9 +208,9 @@ def html_preview(db, settings, client, local_run_id, index):
 
 def _save_detail(db, settings, local_id, raw):
     detail = _safe(raw, settings)
-    path = report_path(settings, local_id)
+    path = report_path(settings, local_id, _merchant_id(db))
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix('.json.tmp')
+    temporary = path.parent / ('detail-' + uuid.uuid4().hex + '.tmp')
     temporary.write_text(json.dumps(detail, ensure_ascii=False, indent=2), encoding='utf-8')
     temporary.replace(path)
     transcript = []
@@ -193,7 +224,8 @@ def _save_detail(db, settings, local_id, raw):
         'remote_input': detail.get('input'), 'transcript': transcript, 'output': str(detail.get('output') or ''),
         'artifacts': detail.get('artifacts') or [], 'token_usage': detail.get('token_usage') or {},
         'remote_started_at': detail.get('started_at'), 'remote_completed_at': detail.get('completed_at'),
-        'last_observed_at': _now(), 'report_url': '/api/agent-tests/runs/'+local_id+'/report'}})
+        'last_observed_at': _now(),
+        'report_url': (merchant_base(_merchant_id(db)) if _merchant_id(db) else '/api') + '/agent-tests/runs/'+local_id+'/report'}})
     return detail
 
 
@@ -262,5 +294,5 @@ def run_batch(db, settings, client: CoreAIClient, batch_id):
 def recover(db):
     db.agent_test_runs.update_many({'status': {'$in': ['preparing', 'triggering']}, 'run_id': None},
         {'$set': {'status': 'trigger_unknown', 'error': '服务曾中断且没有runId；请在平台确认，禁止自动重发'}})
-    return [b['_id'] for b in db.agent_test_batches.find()
-            if db.agent_test_runs.find_one({'batch_id': b['_id'], 'status': {'$in': ['queued', 'running']}})]
+    return [b.get('request_id', b['_id']) for b in db.agent_test_batches.find()
+            if db.agent_test_runs.find_one({'batch_id': b.get('request_id', b['_id']), 'status': {'$in': ['queued', 'running']}})]

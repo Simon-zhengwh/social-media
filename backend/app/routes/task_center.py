@@ -8,10 +8,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.request_context import request_db
 from app.routes import whole_image as whole_routes
 from app.time_utils import utc_iso
 
-router = APIRouter(prefix="/api/task-center", tags=["task-center"])
+router = APIRouter(prefix="/task-center", tags=["task-center"])
 
 STATUSES = {"all", "active", "ready", "failed"}
 KINDS = {"all", "generate", "original_replace"}
@@ -84,7 +85,7 @@ def list_task_center(
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
-    db = request.app.state.db
+    db = request_db(request)
     items: list[dict[str, Any]] = []
     if kind in {"all", "generate"}:
         whole_docs = list(db.whole_tasks.find({}).sort("created_at", -1))

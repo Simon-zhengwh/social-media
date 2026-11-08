@@ -13,6 +13,7 @@ import httpx
 from PIL import Image, ImageOps
 from pymongo import ReturnDocument
 
+from app.api_paths import asset_url, original_replacement_download_url
 from app.config import Settings
 from app.schemas import OriginalReplacementInput
 from app.services import agent_image
@@ -43,7 +44,7 @@ def _asset(db: Any, asset_id: str) -> dict[str, Any]:
     if not str(asset.get("mime_type") or "").startswith("image/"):
         raise OriginalReplacementError("reference_invalid", "原图和替换素材必须是图片", 422)
     return {"asset_id": asset_id, "name": asset.get("original_name") or "图片",
-            "preview_url": f"/api/assets/{asset_id}/file",
+            "preview_url": asset_url(str(asset.get("merchant_id") or ""), asset_id),
             "width": int(asset.get("width") or 0), "height": int(asset.get("height") or 0)}
 
 
@@ -65,7 +66,7 @@ def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacemen
            "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now}
     # Keep the existing collection so linked replacement history survives retirement.
     db.background_replace_tasks.insert_one(doc)
-    return doc
+    return db.background_replace_tasks.find_one({"_id": doc["_id"]})
 
 
 def _update(db: Any, task_id: str, **values: Any) -> None:
@@ -250,9 +251,10 @@ def task_out(doc: dict[str, Any]) -> dict[str, Any]:
     output = doc.get("output")
     task_id = str(doc["_id"])
     if output:
+        merchant_id = str(doc.get("merchant_id") or "")
         output = {"asset_id": output["asset_id"], "width": output["width"], "height": output["height"],
-                  "preview_url": f"/api/assets/{output['asset_id']}/file",
-                  "download_url": f"/api/whole-image/tasks/{doc['whole_task_id']}/original-replacements/{task_id}/download"}
+                  "preview_url": asset_url(merchant_id, str(output["asset_id"])),
+                  "download_url": original_replacement_download_url(merchant_id, str(doc["whole_task_id"]), task_id)}
     return {"id": task_id, **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements",
             "agent_id", "run_id", "agent_input", "agent_output", "error", "whole_task_id", "source_version_id",
             "source_output_id", "source_version", "applied_version_id", "applied_version"]}, "output": output,

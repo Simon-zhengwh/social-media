@@ -119,6 +119,8 @@ def save_png_asset(
             "original_name": f"{original_stem}-{safe_role}.png",
             "path": relative,
             "prepared_path": relative,
+            "url": getattr(store, "public_url", lambda _: None)(relative),
+            "prepared_url": getattr(store, "public_url", lambda _: None)(relative),
             "mime_type": "image/png",
             "width": width,
             "height": height,

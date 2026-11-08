@@ -30,6 +30,8 @@ class ObjectStore(Protocol):
 
     def presign(self, key: str, expires: int, download_name: str | None = None) -> str: ...
 
+    def public_url(self, key: str) -> str | None: ...
+
     def download_to_temp(self, key: str, suffix: str = "") -> Path: ...
 
     def local_path(self, key: str) -> Path | None: ...
@@ -108,6 +110,10 @@ class CosObjectStore:
                 logger.warning("COS delete failed; local mirror was removed for %s: %s", key, exc)
         except Exception as exc:  # noqa: BLE001
             logger.warning("COS delete failed; local mirror was removed for %s: %s", key, exc)
+
+    def public_url(self, key: str) -> str | None:
+        del key
+        return None
 
     def presign(
         self,
@@ -205,6 +211,10 @@ class LocalObjectStore:
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
+
+    def public_url(self, key: str) -> str | None:
+        del key
+        return None
 
     def presign(
         self,

@@ -67,11 +67,14 @@ def image_ref_from_asset(
     asset = db.assets.find_one({"_id": asset_id})
     if asset is None:
         raise FileNotFoundError(f"素材不存在：{asset_id}")
+    public_url = str(asset.get("prepared_url") or asset.get("url") or "").strip()
     relative = asset.get("prepared_path") or asset.get("path")
+    name = str(asset.get("original_name") or Path(relative or "").name)
+    digest = str(asset.get("sha256") or "")
+    if _is_public_url(public_url):
+        return ImageRef(url=public_url, name=name, sha256=digest)
     if not relative:
         raise FileNotFoundError(f"素材缺少对象路径：{asset_id}")
-    name = str(asset.get("original_name") or Path(relative).name)
-    digest = str(asset.get("sha256") or "")
     local_path = store.local_path(relative)
     if local_path is not None:
         return ImageRef(path=local_path, name=name, sha256=digest)

@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     core_ai_image_timeout_seconds: int = 300
     llm_timeout_seconds: int = 120
 
+    am_base_url: str = "https://am.connexup-uat.net"
+    am_timeout_seconds: int = 30
+    am_media_storage_service_key: str = ""
+    am_media_storage_base_path: str = "/fbr-uat/product"
+    social_media_origin: str = "https://social-media.connexup-uat.net"
+    social_media_url: str = "https://social-media.connexup-uat.net"
+
     max_upload_bytes: int = 20_000_000
     image_compress_threshold_bytes: int = 10_000_000
     image_downscale_pixel_threshold: int = 25_000_000

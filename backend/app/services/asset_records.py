@@ -38,6 +38,8 @@ def asset_document(prepared: storage.PreparedUpload) -> dict[str, Any]:
         "height": prepared.height,
         "bytes": prepared.bytes,
         "sha256": prepared.sha256,
+        "url": prepared.url,
+        "prepared_url": prepared.prepared_url,
         "created_at": datetime.now(timezone.utc),
     }
 
@@ -63,5 +65,13 @@ def persist_upload(
 
     prepared = storage.prepare_upload(settings, store, data, original_name)
     document = asset_document(prepared)
-    db.assets.insert_one(document)
+    try:
+        db.assets.insert_one(document)
+    except Exception:
+        for key in (prepared.prepared_path, prepared.path):
+            try:
+                store.delete(key)
+            except Exception:  # noqa: BLE001 - preserve the original database failure
+                pass
+        raise
     return document, True

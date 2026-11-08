@@ -12,6 +12,7 @@ import pytest
 from app.config import Settings
 from app.services import agent_tests
 from app.services.core_ai import CoreAIClient, CoreAIError
+from app.services.scoped_db import ScopedDatabase
 from tests.conftest import png_bytes
 
 
@@ -168,20 +169,21 @@ def test_resume_reads_same_run_and_details_redact_local_key(env):
 
 
 def test_raw_report_route_and_case_images_are_available(env):
+    env.db = ScopedDatabase(env.db, 'merchant')
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.routes.agent_tests import router
     web = FastAPI()
-    web.include_router(router)
+    web.include_router(router, prefix='/api/merchants/merchant')
     web.state.settings, web.state.db, web.state.core_ai = env.settings, env.db, FakeClient()
     with TestClient(web) as client:
-        cases = client.get('/api/agent-tests/cases').json()
+        cases = client.get('/api/merchants/merchant/agent-tests/cases').json()
         assert cases['cases'][0]['prompt'] == env.case['prompt']
-        assert client.get('/api/agent-tests/cases/text/images/0').content == png_bytes()
-        response = client.post('/api/agent-tests/batches', json={'request_id': str(uuid.uuid4()), 'case_ids': ['text']})
+        assert client.get('/api/merchants/merchant/agent-tests/cases/text/images/0').content == png_bytes()
+        response = client.post('/api/merchants/merchant/agent-tests/batches', json={'request_id': str(uuid.uuid4()), 'case_ids': ['text']})
         assert response.status_code == 202
         batch_id = response.json()['id']
-        done = client.get('/api/agent-tests/batches/'+batch_id).json()
+        done = client.get('/api/merchants/merchant/agent-tests/batches/'+batch_id).json()
         assert done['runs'][0]['trace_url'].endswith('/traces/actual-trace')
         assert client.get(done['runs'][0]['report_url']).json()['trace_id'] == 'actual-trace'
 
@@ -201,6 +203,7 @@ def test_history_returns_all_batches_in_newest_first_order(env):
 
 
 def test_batch_can_be_hidden_found_and_restored_without_changing_runs(env):
+    env.db = ScopedDatabase(env.db, 'merchant')
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.routes.agent_tests import router
@@ -211,9 +214,9 @@ def test_batch_can_be_hidden_found_and_restored_without_changing_runs(env):
     completed = agent_tests.get_batch(env.db, batch['id'])
     original_runs = list(env.db.agent_test_runs.find())
     web = FastAPI()
-    web.include_router(router)
+    web.include_router(router, prefix='/api/merchants/merchant')
     web.state.db = env.db
-    url = '/api/agent-tests/batches'
+    url = '/api/merchants/merchant/agent-tests/batches'
     with TestClient(web) as client:
         for _ in range(2):
             response = client.patch(f'{url}/{batch["id"]}/visibility', json={'hidden': True})
@@ -233,14 +236,15 @@ def test_batch_can_be_hidden_found_and_restored_without_changing_runs(env):
 
 
 def test_visibility_rejects_invalid_or_missing_batches_without_creating_records(env):
+    env.db = ScopedDatabase(env.db, 'merchant')
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.routes.agent_tests import router
 
     web = FastAPI()
-    web.include_router(router)
+    web.include_router(router, prefix='/api/merchants/merchant')
     web.state.db = env.db
-    url = '/api/agent-tests/batches/missing/visibility'
+    url = '/api/merchants/merchant/agent-tests/batches/missing/visibility'
     with TestClient(web) as client:
         assert client.patch(url, json={'hidden': True}).status_code == 404
         assert client.patch(url, json={}).status_code == 422
@@ -249,11 +253,12 @@ def test_visibility_rejects_invalid_or_missing_batches_without_creating_records(
 
 
 def test_html_preview_is_inline_isolated_and_cached(env):
+    env.db = ScopedDatabase(env.db, 'merchant')
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.routes.agent_tests import router
     web = FastAPI()
-    web.include_router(router)
+    web.include_router(router, prefix='/api/merchants/merchant')
     class HtmlClient(FakeClient):
         html_reads = 0
         def read_agent_html(self, url):
@@ -265,7 +270,7 @@ def test_html_preview_is_inline_isolated_and_cached(env):
     agent_tests.run_batch(env.db, env.settings, remote, batch['id'])
     local_id = batch['runs'][0]['id']
     with TestClient(web) as client:
-        url = '/api/agent-tests/runs/'+local_id+'/artifacts/0/preview'
+        url = '/api/merchants/merchant/agent-tests/runs/'+local_id+'/artifacts/0/preview'
         response = client.get(url)
         assert response.status_code == 200
         assert response.headers['content-disposition'] == 'inline'
@@ -304,3 +309,71 @@ def test_edit_agent_defaults_match_the_benchmark_agent():
     assert (
         Settings.model_fields["core_ai_image_agent_timeout_seconds"].default == 1800
     )
+
+
+def test_same_request_uuid_is_independent_for_each_merchant(env):
+    raw = env.db
+    first, second = ScopedDatabase(raw, 'merchant-a'), ScopedDatabase(raw, 'merchant-b')
+    request_id = str(uuid.uuid4())
+    a = agent_tests.create_batch(first, env.settings, request_id, ['text'], 'a')
+    b = agent_tests.create_batch(second, env.settings, request_id, ['text'], 'b')
+    assert a['id'] == b['id'] == request_id
+    assert a['runs'][0]['id'] != b['runs'][0]['id']
+    agent_tests.run_batch(first, env.settings, FakeClient(), request_id)
+    assert agent_tests.get_batch(first, request_id)['runs'][0]['status'] == 'completed'
+    assert agent_tests.get_batch(second, request_id)['runs'][0]['status'] == 'queued'
+    assert agent_tests.list_batches(first)[0]['id'] == request_id
+    assert agent_tests.recover(second) == [request_id]
+
+
+def test_benchmark_media_upload_cache_is_merchant_scoped(env):
+    first, second = ScopedDatabase(env.db, 'merchant-a'), ScopedDatabase(env.db, 'merchant-b')
+    client_a, client_b = FakeClient(), FakeClient()
+    agent_tests._media_urls(first, env.settings, client_a, env.case)
+    agent_tests._media_urls(first, env.settings, client_a, env.case)
+    agent_tests._media_urls(second, env.settings, client_b, env.case)
+    assert len(client_a.uploads) == len(client_b.uploads) == 1
+    assert env.db.agent_test_media.count_documents({}) == 2
+
+
+def scoped_request(env, merchant_id, remote):
+    return SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(settings=env.settings, db=env.db, core_ai=remote)),
+        state=SimpleNamespace(db=ScopedDatabase(env.db, merchant_id), merchant_id=merchant_id),
+    )
+
+
+def test_report_does_not_serve_another_merchants_cached_file(env):
+    from fastapi import HTTPException
+    from app.routes import agent_tests as routes
+
+    run_id = 'a' * 32
+    env.db.agent_test_runs.insert_one({'_id': run_id, 'merchant_id': 'merchant-a', 'run_id': 'already-started'})
+    agent_tests._save_detail(ScopedDatabase(env.db, 'merchant-a'), env.settings, run_id, {'status': 'COMPLETED', 'output': 'private'})
+    with pytest.raises(HTTPException) as rejected:
+        routes.report(run_id, scoped_request(env, 'merchant-b', FakeClient()))
+    assert rejected.value.status_code == 404
+
+
+def test_missing_report_cache_reads_the_saved_remote_run_without_triggering(env):
+    from app.routes import agent_tests as routes
+
+    run_id = 'b' * 32
+    env.db.agent_test_runs.insert_one({'_id': run_id, 'merchant_id': 'merchant-a', 'run_id': 'already-started'})
+    remote = FakeClient()
+    response = routes.report(run_id, scoped_request(env, 'merchant-a', remote))
+    assert json.loads(Path(response.path).read_text(encoding='utf-8'))['trace_id'] == 'actual-trace'
+    assert remote.reads == ['already-started'] and remote.triggers == []
+    assert env.db.agent_test_runs.find_one({'_id': run_id})['report_url'] == f'/api/merchants/merchant-a/agent-tests/runs/{run_id}/report'
+    cached = routes.report(run_id, scoped_request(env, 'merchant-a', remote))
+    assert cached.path == response.path
+    assert remote.reads == ['already-started']
+
+
+def test_fixed_case_image_urls_use_the_authenticated_merchant_path(env):
+    from app.routes import agent_tests as routes
+
+    catalog = routes.cases(scoped_request(env, 'merchant/a', FakeClient()))
+    image = catalog['cases'][0]['images'][0]
+    assert image['preview_url'] == '/api/merchants/merchant%2Fa/agent-tests/cases/text/images/0?preview=true'
+    assert image['original_url'] == '/api/merchants/merchant%2Fa/agent-tests/cases/text/images/0'

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { duration } from './agentTestTiming'
+import { apiFetch, merchantIdFromLocation, merchantPath } from '../api'
 import './AgentTestPage.css'
 
 type CaseImage = { name: string; sha256: string; size: number[]; preview_url: string; original_url: string }
@@ -29,11 +30,13 @@ const LABELS: Record<string, string> = {
 }
 
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`/api/agent-tests${path}`, options)
+  const response = await apiFetch(`/api/agent-tests${path}`, options)
   const body = await response.json()
   if (!response.ok) throw new RequestError(typeof body.detail === 'string' ? body.detail : body.error?.message || `请求失败（${response.status}）`, response.status)
   return body as T
 }
+
+const storageKey = (key: string) => `agent-test:${merchantIdFromLocation()}:${key}`
 
 function localTime(value?: string) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—'
@@ -57,7 +60,7 @@ export default function AgentTestPage() {
   const [note, setNote] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
-  const [pendingId, setPendingId] = useState<string | null>(() => localStorage.getItem('agent-test-pending'))
+  const [pendingId, setPendingId] = useState<string | null>(() => localStorage.getItem(storageKey('pending')))
   const [now, setNow] = useState(() => Date.now())
   const [copied, setCopied] = useState(false)
   const [previewArtifact, setPreviewArtifact] = useState(0)
@@ -68,9 +71,9 @@ export default function AgentTestPage() {
     const value = await api<Batch>(`/batches/${encodeURIComponent(id)}`)
     if (sequence !== loadSequence.current) return value
     setBatch(value)
-    localStorage.setItem('agent-test-last-batch', value.id)
-    if (localStorage.getItem('agent-test-pending') === value.id) {
-      localStorage.removeItem('agent-test-pending')
+    localStorage.setItem(storageKey('last-batch'), value.id)
+    if (localStorage.getItem(storageKey('pending')) === value.id) {
+      localStorage.removeItem(storageKey('pending'))
       setPendingId(null)
     }
     setRunId(current => value.runs.some(r => r.id === current) ? current : value.runs[0]?.id || null)
@@ -85,7 +88,7 @@ export default function AgentTestPage() {
       setHistory(batches)
       setSelectedCase(current => cases.cases.some(c => c.id === current) ? current : cases.cases[0]?.id || '')
     }).catch(reason => { if (active) setError(String(reason.message)) })
-    const saved = localStorage.getItem('agent-test-pending') || localStorage.getItem('agent-test-last-batch')
+    const saved = localStorage.getItem(storageKey('pending')) || localStorage.getItem(storageKey('last-batch'))
     if (saved) void Promise.resolve().then(() => loadBatch(saved)).catch(reason => { if (active) setError(reason.message) })
     return () => { active = false }
   }, [loadBatch])
@@ -111,7 +114,7 @@ export default function AgentTestPage() {
   const start = async (all: boolean) => {
     if (!catalog) return
     const requestId = crypto.randomUUID()
-    localStorage.setItem('agent-test-pending', requestId)
+    localStorage.setItem(storageKey('pending'), requestId)
     setPendingId(requestId)
     setSubmitting(true)
     setError(null)
@@ -120,13 +123,13 @@ export default function AgentTestPage() {
         body: JSON.stringify({ request_id: requestId, case_ids: all ? catalog.cases.map(c => c.id) : [selectedCase], note }) })
       setBatch(value)
       setRunId(value.runs[0]?.id || null)
-      localStorage.removeItem('agent-test-pending')
-      localStorage.setItem('agent-test-last-batch', value.id)
+      localStorage.removeItem(storageKey('pending'))
+      localStorage.setItem(storageKey('last-batch'), value.id)
       setPendingId(null)
       setHistory(await api<History[]>('/batches?include_hidden=true'))
     } catch (reason) {
       const rejected = reason instanceof RequestError && (reason.status < 500 || reason.message.startsWith('未配置') || reason.message.startsWith('固定测试素材'))
-      if (rejected) { localStorage.removeItem('agent-test-pending'); setPendingId(null) }
+      if (rejected) { localStorage.removeItem(storageKey('pending')); setPendingId(null) }
       setError(`${reason instanceof Error ? reason.message : '提交失败'}${rejected ? '' : '。请先查询刚才批次，避免重复触发。'}`)
     } finally { setSubmitting(false) }
   }
@@ -135,7 +138,7 @@ export default function AgentTestPage() {
     ++loadSequence.current
     setBatch(null)
     setRunId(null)
-    localStorage.removeItem('agent-test-last-batch')
+    localStorage.removeItem(storageKey('last-batch'))
   }
 
   const toggleBatchVisibility = async () => {
@@ -221,8 +224,8 @@ export default function AgentTestPage() {
             <h3>结果与产物</h3>
             {htmlPreview && <section className="agent-test-html-preview">
               <div><strong>HTML 编辑器预览</strong>{htmlArtifacts.length > 1 && <select aria-label="选择 HTML 预览" value={htmlPreview.index} onChange={e => setPreviewArtifact(Number(e.target.value))}>{htmlArtifacts.map(file => <option key={file.index} value={file.index}>{file.title || file.file_name}</option>)}</select>}
-                <a href={`/api/agent-tests/runs/${selectedRun.id}/artifacts/${htmlPreview.index}/preview`} target="_blank" rel="noreferrer">放大查看 ↗</a></div>
-              <iframe key={`${selectedRun.id}-${htmlPreview.index}`} title={`${selectedRun.label} HTML 编辑器`} src={`/api/agent-tests/runs/${selectedRun.id}/artifacts/${htmlPreview.index}/preview`} sandbox="allow-scripts allow-downloads" />
+                <a href={merchantPath(`/api/agent-tests/runs/${encodeURIComponent(selectedRun.id)}/artifacts/${htmlPreview.index}/preview`)} target="_blank" rel="noreferrer">放大查看 ↗</a></div>
+              <iframe key={`${selectedRun.id}-${htmlPreview.index}`} title={`${selectedRun.label} HTML 编辑器`} src={merchantPath(`/api/agent-tests/runs/${encodeURIComponent(selectedRun.id)}/artifacts/${htmlPreview.index}/preview`)} sandbox="allow-scripts allow-downloads" />
               <p className="agent-test-muted">可以在预览中调整原照并导出 PNG。原始 HTML 与完整包见下方下载链接。</p>
             </section>}
             {selectedRun.artifacts.length > 0 && <div className="agent-test-artifacts">{selectedRun.artifacts.filter(file => safeUrl(file.download_url)).map((file, index) => <article key={`${file.download_url}-${index}`}>

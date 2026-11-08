@@ -91,6 +91,14 @@
 
 ## 环境
 
+### UAT 集成
+
+UAT 使用 `/api/merchants/{merchant_id}/...`，页面需携带 AM Console 的商户上下文和会话。原照替换、Agent 测试和 HTML/ZIP 产物接口同样受商户授权、CSRF 与维护模式保护；商户资料从 AM 读取，四项中文摘要用于界面、提示词优化和任务快照。
+
+UAT 图片及 HTML/ZIP 产物通过 AM 媒体服务保存到 Azure，逻辑 `artifacts/` 对应 AM 的 `OUTPUTS`，继续保留原扩展名。发布时需同步 ConfigMap 中的 `CORE_AI_IMAGE_AGENT_ID=5a162c34-f333-453f-9835-de6a4f96e3fb` 和 `CORE_AI_IMAGE_AGENT_TIMEOUT_SECONDS=1800`，以免旧环境配置覆盖新默认值。
+
+Agent 测试页的固定素材不随 Git 或镜像发布；未准备 `agent-test-cases/manifest.json` 的 UAT 环境会返回 `benchmark_missing`，不影响海报生成和编辑。测试报告缓存丢失时按已保存 run ID 重新读取结果，不重新触发付费任务。
+
 - Node.js 22.x
 - Python 3.12
 - Docker Desktop + Docker Compose

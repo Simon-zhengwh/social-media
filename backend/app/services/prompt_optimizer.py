@@ -76,6 +76,16 @@ def _reference_url(
     if asset is None:
         raise PromptOptimizerError("reference_unavailable", f"参考图不存在：{asset_id}", 422)
 
+    stable_url = str(asset.get("prepared_url") or asset.get("url") or "").strip()
+    if stable_url.startswith("https://"):
+        return stable_url
+    public_url = getattr(store, "public_url", None)
+    if callable(public_url):
+        key = asset.get("prepared_path") or asset.get("path")
+        resolved = public_url(key) if key else None
+        if isinstance(resolved, str) and resolved.startswith("https://"):
+            return resolved
+
     if settings.image_host_base_url.strip() and settings.image_host_upload_token.strip():
         try:
             return image_host.upload_asset(db, store, settings, asset_id)
@@ -113,6 +123,7 @@ def optimize_prompt(
     *,
     request: PromptOptimizeRequest,
     revision_guidance: str | None = None,
+    profile: dict[str, Any] | None = None,
 ) -> str:
     product_ids = _unique_ids(request.product_asset_ids, "素材图")
     _validate_products(db, product_ids)
@@ -162,7 +173,7 @@ def optimize_prompt(
             f"品牌用途：{brand.purpose or '未指定'}\n"
         )
         merchant_text = merchant_profile.prompt_context(
-            merchant_profile.get_profile(db, brand.merchant_id)
+            profile if profile is not None else merchant_profile.get_profile(db, brand.merchant_id)
         )
 
     current_prompt = request.prompt.strip()

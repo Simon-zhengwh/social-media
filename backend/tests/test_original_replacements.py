@@ -55,10 +55,10 @@ def apply(env, task, **overrides):
 
 def test_original_replacement_routes_exist():
     paths = app.openapi()["paths"]
-    assert "/api/whole-image/tasks/{task_id}/original-replacements" in paths
-    assert "/api/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/apply" in paths
-    assert "/api/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/refresh-result" in paths
-    assert "/api/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/download" in paths
+    assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/original-replacements" in paths
+    assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/apply" in paths
+    assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/refresh-result" in paths
+    assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/download" in paths
 
 
 def test_linked_replacement_refresh_reuses_run_and_scopes_to_parent(env):

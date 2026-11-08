@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, applyOriginalReplacement, createOriginalReplacement, listOriginalReplacements, refreshOriginalReplacement, uploadAsset } from '../api'
+import { ApiError, applyOriginalReplacement, createOriginalReplacement, listOriginalReplacements, merchantPath, refreshOriginalReplacement, uploadAsset } from '../api'
 import type { Asset, OriginalReplacementTask, WholeImageTask } from '../types'
 import { parseServerDate } from '../time'
 import AssetPicker from './AssetPicker'
@@ -23,7 +23,7 @@ const message = (error: unknown) => error instanceof Error ? error.message : '�
 function candidates(task: WholeImageTask, assets: Asset[]): Row[] {
   return (task.input.product_asset_ids ?? []).map((id) => row(assets.find((asset) => asset.id === id) ?? {
     id, original_name: task.model_input?.images.find((item) => item.asset_id === id)?.name ?? '原始内容素材',
-    url: `/api/assets/${id}/file`, width: 0, height: 0, mime_type: 'image/png', created_at: task.created_at,
+    url: merchantPath(`/api/assets/${encodeURIComponent(id)}/file`), width: 0, height: 0, mime_type: 'image/png', created_at: task.created_at,
   }))
 }
 
