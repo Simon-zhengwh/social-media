@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.config import Settings
+from app.routes.whole_image import _artifacts_out
 from app.services import agent_image
 from app.services.core_ai import CoreAIClient
 from app.services.object_store import ObjectStore
@@ -226,6 +227,52 @@ def _run_candidate(db: Any, settings: Settings, store: ObjectStore, client: Core
         _fail_tasks(db, [task_id], exc)
 
 
+def _save_agent_artifacts(
+    db: Any,
+    settings: Settings,
+    store: ObjectStore,
+    client: CoreAIClient,
+    *,
+    task_id: str,
+    result: Any,
+) -> list[dict[str, Any]]:
+    """Persist the HTML editor and result bundle the image-editor Agent returns.
+
+    Mirrors the edit branch: same pickers, same storage subdir, same
+    whole_artifacts collection, so the existing artifact preview and download
+    routes serve these files without poster-edit specific plumbing.
+    """
+    picks = []
+    html = agent_image.pick_html_artifact(result)
+    if html is not None:
+        picks.append(html)
+    bundle = agent_image.pick_bundle_artifact(result)
+    if bundle is not None and bundle.download_url not in {
+        item.download_url for item in picks
+    }:
+        picks.append(bundle)
+    saved: list[dict[str, Any]] = []
+    for artifact in picks:
+        try:
+            data = client.download_agent_file(
+                artifact.download_url, content_type=artifact.content_type
+            )
+            saved.append(
+                agent_image.save_agent_artifact(
+                 db,
+                 settings,
+                 store,
+                 task_id=task_id,
+                 version=0,
+                 artifact=artifact,
+                 data=data,
+                )
+            )
+        except Exception: # noqa: BLE001 - the poster must survive artifact failures
+            logger.exception("failed to store poster-edit artifact for %s", task_id)
+    return saved
+
+
 def _save_outputs(
     db: Any,
     settings: Settings,
@@ -257,6 +304,7 @@ def _save_outputs(
         except Exception: # noqa: BLE001 - a missing layer must not lose the poster
             logger.warning("could not download poster-edit layer for %s", task_id)
 
+    artifact_meta = _save_agent_artifacts(db, settings, store, client, task_id=task_id, result=result)
     saved_outputs: list[dict[str, Any]] = []
     poster_source: str | None = None
     last_error: Exception | None = None
@@ -296,6 +344,7 @@ def _save_outputs(
             "selectable": True,
             "source_url": poster_source,
             "model_input": agent_input,
+            "artifacts": artifact_meta,
             "created_at": utcnow(),
         })
         break
@@ -323,6 +372,7 @@ def _save_outputs(
             "selectable": False,
             "source_url": layer_source,
             "model_input": agent_input,
+            "artifacts": [],
             "created_at": utcnow(),
         })
 
@@ -353,7 +403,22 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
     for output in doc.get("outputs") or []:
         output_id = str(output.get("id") or "")
         asset_id = str(output.get("asset_id") or "")
-        outputs.append({"id": output_id, "role": output.get("role") or "agent_result", "label": output.get("label") or "修改结果", "asset_id": asset_id, "width": int(output.get("width") or 0), "height": int(output.get("height") or 0), "selectable": bool(output.get("selectable")), "preview_url": f"/api/assets/{asset_id}/file" if asset_id else None, "download_url": f"/api/poster-edits/{task_id}/download?output_id={output_id}" if asset_id and output_id else None, "model_input": output.get("model_input")})
+        outputs.append({
+            "id": output_id,
+            "role": output.get("role") or "agent_result",
+            "label": output.get("label") or "修改结果",
+            "asset_id": asset_id,
+            "width": int(output.get("width") or 0),
+            "height": int(output.get("height") or 0),
+            "selectable": bool(output.get("selectable")),
+            "preview_url": f"/api/assets/{asset_id}/file" if asset_id else None,
+            "download_url": (
+                f"/api/poster-edits/{task_id}/download?output_id={output_id}"
+                if asset_id and output_id else None
+            ),
+            "model_input": output.get("model_input"),
+            "artifacts": _artifacts_out(output),
+        })
     batch_id = str(doc.get("batch_id") or task_id)
     return {"id": task_id, "batch_id": batch_id, "candidate_index": int(doc.get("candidate_index") or 0), "candidate_count": int(doc.get("candidate_count") or 1), "status": doc.get("status") or "queued", "stage": doc.get("stage") or "queued", "progress": int(doc.get("progress") or 0), "prompt": str(input_data.get("prompt") or ""), "references": references, "outputs": outputs, "agent_id": doc.get("agent_id") or "", "agent_input": doc.get("agent_input"), "run_id": doc.get("run_id"), "error": doc.get("error"), "created_at": utc_iso(doc["created_at"]), "updated_at": utc_iso(doc["updated_at"])}
 

@@ -403,6 +403,7 @@ export type PosterEditOutput = {
  preview_url: string | null
  download_url: string | null
  model_input: string | null
+ artifacts?: WholeImageArtifact[]
 }
 
 export type PosterEditTask = {

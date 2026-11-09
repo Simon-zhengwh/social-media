@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, createPosterEditBatch, getPosterEdit, getPosterEditBatch, uploadAsset } from '../api'
-import type { Asset, PosterEditOutput, PosterEditTask } from '../types'
+import type { Asset, PosterEditOutput, PosterEditTask, WholeImageArtifact } from '../types'
 import { parseServerDate } from '../time'
 import AssetPicker from './AssetPicker'
 import CandidateCountSelector from './CandidateCountSelector'
 import { ZoomableImage } from './ImageLightbox'
+import WholeArtifactPreview from './WholeArtifactPreview'
 
 type Props = { assets: Asset[]; assetsLoading: boolean; onLoadAssets: () => void; onGoAssets: () => void }
 
@@ -30,6 +31,7 @@ export default function PosterEditStudio({ assets, assetsLoading, onLoadAssets, 
   const [tasks, setTasks] = useState<PosterEditTask[]>([])
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [artifactPreview, setArtifactPreview] = useState<WholeImageArtifact | null>(null)
   const [, forceTick] = useState(0)
   const submitLock = useRef(false)
   const active = tasks.some((task) => task.status === 'queued' || task.status === 'running')
@@ -118,14 +120,53 @@ export default function PosterEditStudio({ assets, assetsLoading, onLoadAssets, 
             </div>
             {selectedTask && (selectedTask.status === 'queued' || selectedTask.status === 'running') ? <div className="poster-edit-running" role="status" aria-live="polite"><span className="generating-dots" aria-hidden="true"><span /><span /><span /></span><strong>正在修改候选 {selectedTask.candidate_index + 1}</strong><span>已等待 {elapsedText(selectedTask.created_at)}</span><div className="poster-edit-progress"><span style={{ width: `${Math.max(8, selectedTask.progress)}%` }} /></div></div> : null}
             {selectedTask?.error ? <div className="poster-edit-error" role="alert"><strong>候选修改失败</strong><span>{selectedTask.error.message}</span></div> : null}
-            {selectedTask?.outputs.length ? <div className="poster-edit-output-grid">{selectedTask.outputs.map((output) => <article className={`poster-edit-output${output.role === 'agent_transparent' ? ' is-transparent' : ''}`} key={output.id}><div className="poster-edit-output-head"><strong>{outputTitle(output)}</strong><span>{output.width} × {output.height}</span></div>{output.preview_url ? <ZoomableImage className="poster-edit-output-image" src={output.preview_url} alt={outputTitle(output)} title={outputTitle(output)} /> : null}{output.download_url ? <a className="mp-btn-secondary mp-btn-small" href={output.download_url} download>下载 PNG</a> : null}</article>)}</div> : null}
+            {selectedTask?.outputs.length ? <div className="poster-edit-output-grid">{selectedTask.outputs.map((output) => <article className={`poster-edit-output${output.role === 'agent_transparent' ? ' is-transparent' : ''}`} key={output.id}><div className="poster-edit-output-head"><strong>{outputTitle(output)}</strong><span>{output.width} × {output.height}</span></div>{output.preview_url ? <ZoomableImage className="poster-edit-output-image" src={output.preview_url} alt={outputTitle(output)} title={outputTitle(output)} /> : null}{output.download_url ? <a className="mp-btn-secondary mp-btn-small" href={output.download_url} download>下载 PNG</a> : null}<OutputArtifacts output={output} onPreview={setArtifactPreview} /></article>)}</div> : null}
             {selectedOutput ? <p className="poster-edit-selected-note">当前候选结果：候选 {(selectedTask?.candidate_index ?? 0) + 1}</p> : null}
             {selectedTask?.agent_input ? <details className="poster-edit-agent-input"><summary>查看修改参数</summary><pre>{selectedTask.agent_input}</pre></details> : null}
           </>}
         </section>
       </div>
       {error ? <div className="global-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError(null)}>关闭</button></div> : null}
-      <AssetPicker key={pickerOpen ? 'poster-edit-picker' : 'poster-edit-closed'} open={pickerOpen} purpose="product" assets={assets} loading={assetsLoading} multi selectedIds={references.map((item) => item.id)} max={5} onClose={() => setPickerOpen(false)} onConfirm={(selected) => { setReferences(selected.slice(0, 5)); setPickerOpen(false) }} onGoAssets={() => { setPickerOpen(false); onGoAssets() }} />
+      <WholeArtifactPreview artifact={artifactPreview} onClose={() => setArtifactPreview(null)} />
+ <AssetPicker key={pickerOpen ? 'poster-edit-picker' : 'poster-edit-closed'} open={pickerOpen} purpose="product" assets={assets} loading={assetsLoading} multi selectedIds={references.map((item) => item.id)} max={5} onClose={() => setPickerOpen(false)} onConfirm={(selected) => { setReferences(selected.slice(0, 5)); setPickerOpen(false) }} onGoAssets={() => { setPickerOpen(false); onGoAssets() }} />
     </main>
   )
+}
+
+function OutputArtifacts({
+ output,
+ onPreview,
+}: {
+ output: PosterEditOutput
+ onPreview: (artifact: WholeImageArtifact) => void
+}) {
+ const artifacts = output.artifacts ?? []
+ if (!artifacts.length) {
+ return null
+ }
+ return (
+ <div className="poster-edit-output-artifacts">
+ {artifacts.map((artifact) => (
+ artifact.preview_url ? (
+ <button
+ key={artifact.id}
+ type="button"
+ className="mp-btn-ghost mp-btn-small"
+ onClick={() => onPreview(artifact)}
+ >
+打开 {artifact.title || artifact.file_name}
+ </button>
+ ) : artifact.download_url ? (
+ <a
+ key={artifact.id}
+ className="mp-btn-ghost mp-btn-small"
+ href={artifact.download_url}
+ download
+ >
+下载 {artifact.title || artifact.file_name}
+ </a>
+ ) : null
+ ))}
+ </div>
+ )
 }

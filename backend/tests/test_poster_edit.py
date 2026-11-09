@@ -30,6 +30,7 @@ class FakeAgent:
         self.on_run_id_hook = None
         self._lock = threading.Lock()
         self.downloads: list[str] = []
+        self.artifact_downloads: list[str] = []
         self.artifacts = [
             AgentArtifact("final.png", "image/png", "https://example.com/final.png", "修改结果"),
             AgentArtifact("layer.png", "image/png", "https://example.com/layer.png", "Agent透明层"),
@@ -89,6 +90,11 @@ class FakeAgent:
         if "layer" in url:
             return self.layer_bytes
         return self.final_bytes
+    def download_agent_file(self, url: str, *, content_type: str) -> bytes:
+        self.artifact_downloads.append(url)
+        if content_type == "text/html":
+            return b"<!doctype html><h1>Editor</h1>"
+        return b"PK bundle"
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -350,3 +356,33 @@ def test_poster_edit_batch_request_rejects_invalid_candidate_count():
             pass
         else:
             raise AssertionError(f"expected validation error for {value!r}")
+
+
+def test_poster_edit_exposes_html_and_bundle_artifacts(tmp_path):
+ settings = _settings(tmp_path)
+ store = LocalObjectStore(settings.storage_path / "objects")
+ db = mongomock.MongoClient().db
+ asset_id = _seed(db, settings, store, "poster.png", (30,60,90))
+ fake = FakeAgent()
+ fake.artifacts = [
+ AgentArtifact("final.png", "image/png", "https://example.com/final.png", "修改结果"),
+ AgentArtifact("editor.html", "text/html", "https://example.com/editor.html", "离线编辑器"),
+ AgentArtifact("bundle.zip", "application/zip", "https://example.com/bundle.zip", "完整结果包"),
+ ]
+
+ task = poster_edit.create_task(db, prompt="改背景", asset_ids=[asset_id])
+ poster_edit.run_task(db, settings, store, fake, task["_id"])
+
+ stored = db.poster_edit_tasks.find_one({"_id": task["_id"]})
+ poster = next(item for item in stored["outputs"] if item["role"] == "agent_result")
+ assert [item["kind"] for item in poster["artifacts"]] == ["html", "bundle"]
+ assert db.whole_artifacts.count_documents({"task_id": task["_id"]}) ==2
+
+ out = routes.get_poster_edit(task["_id"], type("Request", (), {"app": type("App", (), {"state": type("State", (), {"db": db})()})()})())
+ out_poster = next(item for item in out["outputs"] if item["role"] == "agent_result")
+ html = out_poster["artifacts"][0]
+ assert html["kind"] == "html"
+ assert html["preview_url"] == f"/api/whole-image/artifacts/{html['id']}/preview"
+ assert html["download_url"] == f"/api/whole-image/artifacts/{html['id']}/download"
+ assert html["file_name"] == "editor.html"
+ assert out_poster["artifacts"][1]["preview_url"] is None

@@ -7117,3 +7117,10 @@
     grid-template-columns: 1fr 1fr;
   }
 }
+
+.poster-edit-output-artifacts {
+  display: flex;
+  flex-wrap: wrap;
+  gap:8px;
+  margin-top:8px;
+}
