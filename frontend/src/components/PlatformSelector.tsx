@@ -76,30 +76,23 @@ export default function PlatformSelector({
 
           </label>
 
-          {!selectedPlatform ? (
-            <div className="ratio-field">
-              <span className="platform-sub-label">画幅比例</span>
-              <div className="ratio-options" role="radiogroup" aria-label="画幅比例">
-                {FREE_RATIOS.map((ratio) => (
-                  <button
-                    key={ratio.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={selectedRatio === ratio.value}
-                    className={`ratio-option${selectedRatio === ratio.value ? ' is-active' : ''}`}
-                    onClick={() => onRatioChange(ratio.value)}
-                    disabled={busy}
-                  >
-                    <strong>{ratio.value}</strong>
-                    <span>{ratio.label}</span>
-                  </button>
-                ))}
-              </div>
-              <p className="platform-ratio-note">
-                未选择平台时使用此比例；选择平台后由发布用途决定。
-              </p>
-            </div>
-          ) : null}
+      {!selectedPlatform ? (
+        <label className="platform-select-field ratio-select-field">
+          <span>画幅比例</span>
+          <select
+            value={selectedRatio}
+            onChange={(event) => onRatioChange(event.target.value as Ratio)}
+            disabled={busy}
+            aria-label="选择画幅比例"
+          >
+            {FREE_RATIOS.map((ratio) => (
+              <option key={ratio.value} value={ratio.value}>
+                {ratio.value} · {ratio.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
 
           {selectedPlatform ? (
             <label className="platform-select-field placement-select-field">
