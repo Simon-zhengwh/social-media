@@ -345,3 +345,38 @@ def save_agent_artifact(
         "size": len(data),
         "title": artifact.title,
     }
+
+
+
+def artifacts_out(output: dict[str, Any], merchant_id: str = "") -> list[dict[str, Any]]:
+    """Describe an output's stored agent artifacts for API responses.
+
+    Lives here rather than in a route module so services that serialize their
+    own task output (whole-image edits, poster edit) do not import routes.
+    URLs honour the merchant path prefix when one is supplied, matching every
+    other download link the UAT build returns.
+    """
+    base = f"/api/merchants/{merchant_id}" if merchant_id else "/api"
+    items: list[dict[str, Any]] = []
+    for item in output.get("artifacts") or []:
+        if not isinstance(item, dict):
+            continue
+        artifact_id = str(item.get("id") or "")
+        if not artifact_id:
+            continue
+        kind = str(item.get("kind") or "file")
+        items.append({
+            "id": artifact_id,
+            "kind": kind,
+            "file_name": str(item.get("file_name") or ""),
+            "content_type": str(item.get("content_type") or ""),
+            "size": int(item.get("size") or 0),
+            "title": str(item.get("title") or ""),
+            "preview_url": (
+                f"{base}/whole-image/artifacts/{artifact_id}/preview"
+                if kind == "html"
+                else None
+            ),
+            "download_url": f"{base}/whole-image/artifacts/{artifact_id}/download",
+        })
+    return items

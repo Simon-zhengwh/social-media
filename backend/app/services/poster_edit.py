@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.config import Settings
-from app.routes.whole_image import _artifacts_out
 from app.services import agent_image
 from app.services.core_ai import CoreAIClient
 from app.services.object_store import ObjectStore
@@ -417,7 +416,7 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
                 if asset_id and output_id else None
             ),
             "model_input": output.get("model_input"),
-            "artifacts": _artifacts_out(output),
+            "artifacts": agent_image.artifacts_out(output),
         })
     batch_id = str(doc.get("batch_id") or task_id)
     return {"id": task_id, "batch_id": batch_id, "candidate_index": int(doc.get("candidate_index") or 0), "candidate_count": int(doc.get("candidate_count") or 1), "status": doc.get("status") or "queued", "stage": doc.get("stage") or "queued", "progress": int(doc.get("progress") or 0), "prompt": str(input_data.get("prompt") or ""), "references": references, "outputs": outputs, "agent_id": doc.get("agent_id") or "", "agent_input": doc.get("agent_input"), "run_id": doc.get("run_id"), "error": doc.get("error"), "created_at": utc_iso(doc["created_at"]), "updated_at": utc_iso(doc["updated_at"])}

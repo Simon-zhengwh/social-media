@@ -17,6 +17,7 @@ from app.request_context import request_db, request_merchant_id, request_store, 
 from app.schemas import (WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
 from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
+from app.services.agent_image import artifacts_out as _artifacts_out
 from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
 from app.time_utils import utc_iso
@@ -281,35 +282,6 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
         "parameters": snapshot.get("parameters") or {},
         "images": images,
     }
-
-
-def _artifacts_out(output: dict[str, Any], merchant_id: str = "") -> list[dict[str, Any]]:
-    base = merchant_base(merchant_id) if merchant_id else "/api"
-    items: list[dict[str, Any]] = []
-    for item in output.get("artifacts") or []:
-        if not isinstance(item, dict):
-            continue
-        artifact_id = str(item.get("id") or "")
-        if not artifact_id:
-            continue
-        kind = str(item.get("kind") or "file")
-        items.append(
-            {
-                "id": artifact_id,
-                "kind": kind,
-                "file_name": str(item.get("file_name") or ""),
-                "content_type": str(item.get("content_type") or ""),
-                "size": int(item.get("size") or 0),
-                "title": str(item.get("title") or ""),
-                "preview_url": (
-                    f"{base}/whole-image/artifacts/{artifact_id}/preview"
-                    if kind == "html"
-                    else None
-                ),
-                "download_url": f"{base}/whole-image/artifacts/{artifact_id}/download",
-            }
-        )
-    return items
 
 
 def _output_out(
