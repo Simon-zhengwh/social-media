@@ -23,7 +23,16 @@ export function merchantIdFromLocation(): string {
 }
 
 export function merchantPath(path: string): string {
-  if (path === '/api/platforms' || path === '/api/health' || path.startsWith('/api/merchants/')) return path
+  if (
+    path === '/api/platforms' ||
+    path === '/api/health' ||
+    // The merchant list has no merchant yet: it is what picks one.
+    path === '/api/merchants' ||
+    path.startsWith('/api/merchants/') ||
+    path.startsWith('/api/merchants?')
+  ) {
+    return path
+  }
   if (!path.startsWith('/api/')) throw new ApiError('API 路径缺少 /api 前缀', 'invalid_api_path')
   const merchantId = merchantIdFromLocation()
   if (!merchantId) throw new ApiError('缺少商家上下文，请从 AM Console 重新进入', 'merchant_context_missing')
