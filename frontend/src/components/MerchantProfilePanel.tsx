@@ -10,17 +10,20 @@ function storeLine(store: MerchantStore): string {
 /**
  * Brand facts the operator needs to see but the model must not be told.
  *
- * The year is brand-wide; address and phone belong to each store, so a multi-store merchant
- * lists every store instead of pretending the first one speaks for the brand.
+ * Year is brand-wide; address and phone belong to each store, so a multi-store merchant lists
+ * every store instead of letting the first one speak for the brand. Rendered as its own card
+ * above the profile because it is the first thing a reader checks, not an appendix.
  */
-function BrandInfoCard({ info }: { info: MerchantBrandInfo }) {
+export function MerchantBrandInfoCard({ info }: { info: MerchantBrandInfo }) {
   const year = info.year_established
   const stores = info.stores ?? []
   return (
-    <section className="merchant-info-card" aria-label="品牌信息">
-      <div className="merchant-info-head">
-        <span className="eyebrow">BRAND INFO</span>
-        <h3>品牌信息</h3>
+    <section className="brand-form-section merchant-info-card" aria-label="品牌信息">
+      <div className="brand-section-head">
+        <div>
+          <span className="eyebrow">BRAND INFO</span>
+          <h2>品牌信息</h2>
+        </div>
       </div>
       <dl className="merchant-info-list">
         <div>
@@ -47,33 +50,25 @@ function BrandInfoCard({ info }: { info: MerchantBrandInfo }) {
 }
 
 export default function MerchantProfilePanel({ profile }: { profile: MerchantProfile | null }) {
-  if (!profile) return null
-  const hasPrompt = Boolean(profile.prompt_sections?.length)
-  const info = profile.brand_info
-  if (!hasPrompt && !info) return null
+  if (!profile?.prompt_sections?.length) return null
   return (
     <aside className="brand-form-section merchant-profile-panel" aria-label="商户特点">
-      {hasPrompt ? (
-        <>
-          <div className="brand-section-head">
-            <div>
-              <span className="eyebrow">MERCHANT PROFILE</span>
-              <h2>商户特点</h2>
-            </div>
-            <span className="merchant-profile-badge">用于提示词优化</span>
+      <div className="brand-section-head">
+        <div>
+          <span className="eyebrow">MERCHANT PROFILE</span>
+          <h2>商户特点</h2>
+        </div>
+        <span className="merchant-profile-badge">用于提示词优化</span>
+      </div>
+      <p className="merchant-profile-source">以下商户背景来自 AM商户资料，会用于提示词优化，按本次要求选取相关信息。</p>
+      <dl className="merchant-profile-fields">
+        {profile.prompt_sections.map((section, index) => (
+          <div className={index === 0 ? 'merchant-profile-intro' : ''} key={section.title}>
+            <dt>{section.title}</dt>
+            <dd>{section.text}</dd>
           </div>
-          <p className="merchant-profile-source">以下商户背景来自 AM 商户资料，会用于提示词优化，按本次要求选取相关信息。</p>
-          <dl className="merchant-profile-fields">
-            {profile.prompt_sections.map((section, index) => (
-              <div className={index === 0 ? 'merchant-profile-intro' : ''} key={section.title}>
-                <dt>{section.title}</dt>
-                <dd>{section.text}</dd>
-              </div>
-            ))}
-          </dl>
-        </>
-      ) : null}
-      {info ? <BrandInfoCard info={info} /> : null}
+        ))}
+      </dl>
     </aside>
   )
 }

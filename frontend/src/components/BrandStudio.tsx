@@ -24,7 +24,7 @@ import type {
   PlatformPreset,
 } from '../types'
 import { ZoomableImage } from './ImageLightbox'
-import MerchantProfilePanel from './MerchantProfilePanel'
+import MerchantProfilePanel, { MerchantBrandInfoCard } from './MerchantProfilePanel'
 
 type Props = {
   brands: BrandStyle[]
@@ -227,6 +227,12 @@ export default function BrandStudio({
     panel already shows, so this only saves the operator a blank form — the visual fields still
     need their own review against the reference images they upload.
   */
+  // Either card is enough to need the two-column workspace; the condition has to match
+  // what is rendered below, or the cards land in a single-column body.
+  const hasMerchantSidebar = Boolean(
+    detail?.merchant_profile?.brand_info ||
+    detail?.merchant_profile?.prompt_sections?.length,
+  )
   const seedFromProfile = async () => {
     setSeeding(true)
     setError(null)
@@ -614,8 +620,13 @@ export default function BrandStudio({
         {loading || !draft ? (
           <div className="asset-empty"><strong>正在读取品牌配置</strong><span>请稍候…</span></div>
         ) : (
-          <div className={`brand-detail-body${detail?.merchant_profile?.prompt_sections?.length ? ' brand-merchant-workspace' : ''}`}>
-            <MerchantProfilePanel profile={detail?.merchant_profile ?? null} />
+          <div className={`brand-detail-body${hasMerchantSidebar ? ' brand-merchant-workspace' : ''}`}>
+            <div className="brand-left-column">
+              {detail?.merchant_profile?.brand_info ? (
+                <MerchantBrandInfoCard info={detail.merchant_profile.brand_info} />
+              ) : null}
+              <MerchantProfilePanel profile={detail?.merchant_profile ?? null} />
+            </div>
             <div className="brand-platform-column">
             <section className="brand-form-section brand-basics-section">
               <div className="brand-section-head">
