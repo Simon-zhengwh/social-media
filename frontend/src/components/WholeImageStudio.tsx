@@ -131,10 +131,10 @@ export default function WholeImageStudio({
   const [selectedPlatformId, setSelectedPlatformId] = useState('')
   const [selectedPlacementId, setSelectedPlacementId] = useState('')
   const [selectedRatio, setSelectedRatio] = useState<Ratio>('9:16')
-  // Store facts are on by default: a poster usually wants the address, and the operator can
-  // untick either field for a merchant that may not publish it.
+  // Store facts stay off until the operator asks for them: printing an address is a per-poster
+  // decision, so the default must not put one on a poster nobody vetted.
   const [storeSelection, setStoreSelection] = useState<StoreSelection>({
-    enabled: true,
+    enabled: false,
     placeId: '',
     address: true,
     phone: true,
