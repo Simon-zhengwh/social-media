@@ -66,11 +66,39 @@ def project_profile(profile: dict[str, Any] | None) -> dict[str, Any] | None:
         "sections": sections,
         "prompt_sections": _am_prompt_sections(profile),
         "raw_brand": _safe_raw(brand),
+        "brand_info": _brand_info(brand, profile.get("locations") or []),
         "location_place_ids": [
             str(item.get("place_id"))
             for item in profile.get("locations") or []
             if isinstance(item, dict) and item.get("place_id")
         ],
+    }
+
+
+
+def _brand_info(brand: dict[str, Any], locations: list[Any]) -> dict[str, Any]:
+    """The facts a reader of the style page needs, kept out of the model background.
+
+    The year is brand-wide; address and phone belong to each store, so they stay per
+    location rather than collapsing to whichever store happens to be first.
+    """
+    stores = []
+    for location in locations:
+        if not isinstance(location, dict):
+            continue
+        nap = location.get("nap") if isinstance(location.get("nap"), dict) else {}
+        stores.append(
+            {
+                "place_id": str(location.get("place_id") or ""),
+                "name": str(location.get("name") or ""),
+                "address": str(nap.get("address") or "").strip(),
+                "suite": str(nap.get("suite") or "").strip(),
+                "phone": str(nap.get("phone") or "").strip(),
+            }
+        )
+    return {
+        "year_established": brand.get("year_established"),
+        "stores": stores,
     }
 
 
@@ -109,6 +137,8 @@ def _safe_raw(brand: dict[str, Any]) -> dict[str, Any]:
         "secondary_categories", "cuisine", "positioning", "personality", "voice",
         # Included so a first style can adopt the merchant logo.
         "logo_url",
+        # Brand-level facts the info card prints; not part of the model background.
+        "year_established",
     )
     return {key: brand.get(key) for key in allowed if key in brand}
 

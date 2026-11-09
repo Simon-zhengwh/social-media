@@ -78,3 +78,57 @@ def test_scoped_profile_lookup_does_not_use_local_legacy_collection():
         {"source_path": "brand.positioning", "text": "MUST_NOT_REACH_UAT_MODEL"},
     ]})
     assert get_profile(db, "merchant") is None
+
+
+def test_brand_info_keeps_year_brand_wide_and_address_per_store():
+ from app.services.merchant_profile import project_profile
+
+ profile = {
+ "merchant_id": "merchant-keke",
+ "brand": {"canonical_name": "Keke", "year_established":2019},
+ "locations": [
+ {"place_id": "p1", "name": "Flushing",
+ "nap": {"address": "34-20 Linden Pl", "suite": "1st Fl", "phone": "(347)438-1030"}},
+ {"place_id": "p2", "name": "Murray Hill",
+ "nap": {"address": "150-15 Northern Blvd", "suite": "", "phone": "(718)555-0100"}},
+ ],
+ }
+ info = project_profile(profile)["brand_info"]
+
+ assert info["year_established"] == 2019
+ assert [store["name"] for store in info["stores"]] == ["Flushing", "Murray Hill"]
+ assert [store["address"] for store in info["stores"]] == ["34-20 Linden Pl", "150-15 Northern Blvd"]
+ assert info["stores"][0]["suite"] == "1st Fl"
+ assert info["stores"][1]["phone"] == "(718)555-0100"
+
+
+def test_brand_info_survives_missing_year_and_missing_nap():
+ from app.services.merchant_profile import project_profile
+
+ profile = {
+ "merchant_id": "m",
+ "brand": {"canonical_name": "M"},
+ "locations": [{"place_id": "p1", "name": "Store"}, {"name": "No place id"}],
+ }
+ info = project_profile(profile)["brand_info"]
+
+ assert info["year_established"] is None
+ assert info["stores"][0] == {"place_id": "p1", "name": "Store", "address": "", "suite": "", "phone": ""}
+ assert info["stores"][1]["name"] == "No place id"
+
+
+def test_brand_info_does_not_leak_into_the_model_background():
+ from app.services.merchant_profile import project_profile
+
+ profile = {
+ "merchant_id": "m",
+ "brand": {"canonical_name": "M", "year_established":1999, "positioning": "P"},
+ "locations": [{"place_id": "p1", "name": "S",
+ "nap": {"address": "SECRET_ADDRESS", "phone": "SECRET_PHONE"}}],
+ }
+ projected = project_profile(profile)
+ text = " ".join(section["text"] for section in projected["prompt_sections"])
+
+ assert "SECRET_ADDRESS" not in text
+ assert "SECRET_PHONE" not in text
+ assert "1999" not in text

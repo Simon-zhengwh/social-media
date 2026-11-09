@@ -6528,3 +6528,67 @@
   background: var(--surface-card);
   color: var(--text-primary);
 }
+
+.merchant-info-card {
+ margin-top: 24px;
+ padding-top: 20px;
+ border-top: 1px solid var(--color-neutral-200);
+}
+.merchant-info-head h3 {
+ margin: 4px 0 0;
+ font-family: var(--font-display);
+ font-size: 15px;
+ letter-spacing:-0.01em;
+ color: var(--color-primary-900);
+}
+.merchant-info-list {
+ display: grid;
+ grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+ gap: 12px;
+ margin: 12px 0 0;
+}
+.merchant-info-list dt {
+ font-size: 10px;
+ letter-spacing: 0.08em;
+ color: var(--color-neutral-400);
+}
+.merchant-info-list dd {
+ margin: 2px 0 0;
+ font-size: 12.5px;
+ color: var(--color-neutral-700);
+}
+.merchant-info-stores {
+ margin-top: 14px;
+}
+.merchant-info-stores-title {
+ display: block;
+ margin-bottom: 8px;
+ font-size: 10px;
+ letter-spacing: 0.08em;
+ color: var(--color-neutral-400);
+}
+.merchant-info-store {
+ display: flex;
+ flex-direction: column;
+ gap:2px;
+ padding: 9px 11px;
+ margin-bottom: 6px;
+ border: 1px solid var(--color-neutral-200);
+ border-radius: 9px;
+ background: rgba(255,255,255,0.6);
+ font-size: 12px;
+ color: var(--color-neutral-600);
+}
+.merchant-info-store strong {
+ font-size: 12.5px;
+ color: var(--color-neutral-800);
+}
+.merchant-info-phone {
+ font-variant-numeric: tabular-nums;
+ color: var(--color-neutral-500);
+}
+.merchant-info-empty {
+ margin: 12px 0 0;
+ font-size: 12px;
+ color: var(--color-neutral-400);
+}

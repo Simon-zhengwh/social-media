@@ -92,6 +92,20 @@ export type BrandDetail = BrandStyle & {
   reference_images: BrandReferenceImage[]
 }
 
+export type MerchantStore = {
+  place_id: string
+  name: string
+  address: string
+  suite: string
+  phone: string
+}
+
+/** Facts a reader of the style page needs, kept out of the model background. */
+export type MerchantBrandInfo = {
+  year_established: number | null
+  stores: MerchantStore[]
+}
+
 export type MerchantProfile = {
   id: string
   name: string
@@ -99,6 +113,7 @@ export type MerchantProfile = {
   source_record_id: string
   sections: { title: string; text: string; source_path: string; original: unknown }[]
   prompt_sections: { title: string; text: string }[]
+  brand_info?: MerchantBrandInfo | null
 }
 
 export type Asset = {
