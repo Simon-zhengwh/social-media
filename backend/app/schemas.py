@@ -228,6 +228,25 @@ class WholeImageEditRequest(BaseModel):
         return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
 
 
+class PosterEditRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=5000)
+    asset_ids: list[str] = Field(default_factory=list, max_length=5)
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def normalize_poster_prompt(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("asset_ids")
+    @classmethod
+    def normalize_poster_asset_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))[:5]
+
+
+class PosterEditBatchRequest(PosterEditRequest):
+    candidate_count: int = Field(default=3, ge=1, le=6)
+
+
 class PromptOptimizeRequest(BaseModel):
     prompt: str = Field(default="", max_length=5000)
     brand_mode: Literal["preset", "reference", "none"] = "none"

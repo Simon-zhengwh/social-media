@@ -15,6 +15,8 @@ import type {
   WholeImageTaskGroupPage,
   WholeImageTask,
   WholeImageVersion,
+ PosterEditBatch,
+ PosterEditTask,
 } from './types'
 
 
@@ -468,3 +470,31 @@ export async function optimizePrompt(
   })
   return parseResponse<{ prompt: string }>(response)
 }
+
+export async function createPosterEditBatch(
+ prompt: string,
+ assetIds: string[],
+ candidateCount: number,
+): Promise<PosterEditBatch> {
+ const response = await fetch('/api/poster-edits/batches', {
+ method: 'POST',
+ headers: { 'Content-Type': 'application/json' },
+ body: JSON.stringify({
+ prompt,
+ asset_ids: assetIds,
+ candidate_count: candidateCount,
+ }),
+ })
+ return parseResponse<PosterEditBatch>(response)
+}
+
+export async function getPosterEditBatch(batchId: string): Promise<PosterEditBatch> {
+ const response = await fetch(`/api/poster-edits/batches/${encodeURIComponent(batchId)}`)
+ return parseResponse<PosterEditBatch>(response)
+}
+
+export async function getPosterEdit(taskId: string): Promise<PosterEditTask> {
+ const response = await fetch(`/api/poster-edits/${encodeURIComponent(taskId)}`)
+ return parseResponse<PosterEditTask>(response)
+}
+

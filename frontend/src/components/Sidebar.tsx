@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react'
 
-export type AppView = 'whole' | 'tasks' | 'assets' | 'brands' | 'agent-tests'
+export type AppView = 'whole' | 'poster-edit' | 'tasks' | 'assets' | 'brands' | 'agent-tests'
 
 type Props = {
   view: AppView
@@ -66,6 +66,12 @@ const NAV_ITEMS: Array<{
     hint: '生成与改图',
     icon: WholeImageIcon,
   },
+    {
+      key: 'poster-edit',
+      label: '海报修改',
+      hint: '参考图与文字修改',
+      icon: WholeImageIcon,
+    },
   {
     key: 'tasks',
     label: '任务中心',

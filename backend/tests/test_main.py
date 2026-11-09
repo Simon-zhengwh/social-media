@@ -11,7 +11,8 @@ def test_public_routes_only_expose_whole_image_workflow() -> None:
     assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/retry" in paths
     assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/edits" in paths
     assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/versions/{version_id}/outputs/{output_id}/select" in paths
-    assert not any(path.startswith("/api/poster-edits") for path in paths)
+    assert "/api/merchants/{merchant_id}/poster-edits/batches" in paths
+    assert "/api/merchants/{merchant_id}/poster-edits/{task_id}" in paths
     assert not any(path.startswith("/api/background-replacements") for path in paths)
     assert "/api/merchants/{merchant_id}/task-center" in paths
     assert "/api/merchants/{merchant_id}/prompts/optimize" in paths

@@ -383,3 +383,52 @@ export type OriginalReplacementTask = {
   created_at: string
   updated_at: string
 }
+
+export type PosterEditReference = {
+ asset_id: string
+ name: string
+ preview_url: string
+ width: number
+ height: number
+}
+
+export type PosterEditOutput = {
+ id: string
+ role: string
+ label: string
+ asset_id: string
+ width: number
+ height: number
+ selectable: boolean
+ preview_url: string | null
+ download_url: string | null
+ model_input: string | null
+}
+
+export type PosterEditTask = {
+ id: string
+ batch_id: string
+ candidate_index: number
+ candidate_count: number
+ status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'interrupted'
+ stage: string
+ progress: number
+ prompt: string
+ references: PosterEditReference[]
+ outputs: PosterEditOutput[]
+ agent_id: string
+ agent_input: string | null
+ run_id: string | null
+ error: { code: string; message: string } | null
+ created_at: string
+ updated_at: string
+}
+
+export type PosterEditBatch = {
+ id: string
+ candidate_count: number
+ tasks: PosterEditTask[]
+ created_at: string
+ updated_at: string
+}
+

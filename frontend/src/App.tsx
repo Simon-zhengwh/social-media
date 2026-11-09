@@ -6,6 +6,7 @@ import TaskCenter from './components/TaskCenter'
 import WholeImageStudio from './components/WholeImageStudio'
 import AgentTestPage from './components/AgentTestPage'
 import MerchantSwitcher from './components/MerchantSwitcher'
+import PosterEditStudio from './components/PosterEditStudio'
 import {
   ApiError,
   getMerchantContext,
@@ -29,6 +30,9 @@ function readView(): AppView {
   }
   if (value === 'tasks') {
     return 'tasks'
+  }
+  if (value === 'poster-edit') {
+    return 'poster-edit'
   }
   return 'whole'
 }
@@ -68,6 +72,11 @@ const VIEW_META: Record<
     kicker: 'AGENT BENCHMARK',
     title: 'Agent 测试',
     meta: 'image-editor · 固定五例',
+  },
+  'poster-edit': {
+    kicker: 'POSTER EDIT',
+    title: '海报修改',
+    meta: '参考图 +文字 · image-editor',
   },
   whole: {
     kicker: 'POSTER STUDIO',
@@ -290,7 +299,14 @@ export default function App() {
           />
         </header>
 
-        {view === 'agent-tests' ? (
+        {view === 'poster-edit' ? (
+            <PosterEditStudio
+            assets={assets}
+            assetsLoading={assetsLoading}
+            onLoadAssets={() => void loadAssets()}
+            onGoAssets={() => handleViewChange('assets')}
+            />
+ ) : view === 'agent-tests' ? (
           <AgentTestPage />
         ) : view === 'tasks' ? (
           <TaskCenter

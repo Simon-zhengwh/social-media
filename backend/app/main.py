@@ -18,10 +18,14 @@ from app.routes import (
     brands,
     merchant_context,
     platforms,
+    poster_edit,
     prompts,
     task_center,
     whole_image,
 )
+from app.services.core_ai import CoreAIClient
+from app.services import storage
+from app.services.object_store import create_object_store
 from app.services import original_replacement_runner
 from app.services import agent_tests as agent_test_service
 from app.services import maintenance, storage, whole_image as whole_image_service
@@ -89,6 +93,21 @@ def _resume_original_replacements(app: FastAPI) -> None:
             ).start()
 
 
+def _resume_poster_edits(app: FastAPI) -> None:
+    raw = app.state.raw_db
+    merchant_ids = raw.poster_edit_tasks.distinct(
+        "merchant_id", {"status": {"$in": ["queued", "running"]}}
+    )
+    for merchant_id in sorted(str(value) for value in merchant_ids if value):
+        db = ScopedDatabase(raw, merchant_id)
+        if poster_edit.mark_interrupted(db):
+            threading.Thread(
+                target=poster_edit.resume_tasks,
+                args=(db, app.state.settings, _scoped_store(app, merchant_id, db), app.state.core_ai),
+                name=f"resume-poster-edits-{merchant_id}", daemon=True,
+            ).start()
+
+
 def _resume_agent_tests(app: FastAPI) -> None:
     raw = app.state.raw_db
     merchant_ids = raw.agent_test_runs.distinct(
@@ -123,10 +142,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         maintenance.initialize(db)
         whole_image_service.mark_interrupted(db)
         _resume_original_replacements(app)
+        _resume_poster_edits(app)
         _resume_agent_tests(app)
         app.state.ready = True
         logger.info("social media initialization complete; database=%s", settings.mongodb_database)
-    except Exception as exc:  # noqa: BLE001 - readiness reports initialization failure
+    except Exception as exc: # noqa: BLE001 - readiness reports initialization failure
         app.state.startup_error = str(exc)
         logger.exception("social media initialization failed")
     yield
