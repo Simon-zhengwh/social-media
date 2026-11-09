@@ -6,6 +6,7 @@ import WholeModelInputPanel from './WholeModelInputPanel'
 import WholeImageResultPanel from './WholeImageResultPanel'
 import WholeVersionPanel from './WholeVersionPanel'
 import OriginalReplacementPanel from './OriginalReplacementPanel'
+import type { StoreSelection } from './StoreInfoSelector'
 import {
   ApiError,
   createWholeImageEdit,
@@ -23,6 +24,7 @@ import type {
   BrandLogoImage,
   BrandMode,
   BrandStyle,
+  MerchantProfile,
   PlatformPreset,
   Ratio,
   WholeImageTask,
@@ -31,6 +33,7 @@ import type {
 import { DEFAULT_IMAGE_MODEL } from '../imageModels'
 
 type Props = {
+  merchantProfile: MerchantProfile | null
   brands: BrandStyle[]
   brandsLoading: boolean
   brandsError: string | null
@@ -109,6 +112,7 @@ function logoFromAsset(asset: Asset): BrandLogoImage {
 }
 
 export default function WholeImageStudio({
+  merchantProfile,
   brands,
   brandsLoading,
   brandsError,
@@ -127,6 +131,15 @@ export default function WholeImageStudio({
   const [selectedPlatformId, setSelectedPlatformId] = useState('')
   const [selectedPlacementId, setSelectedPlacementId] = useState('')
   const [selectedRatio, setSelectedRatio] = useState<Ratio>('9:16')
+  // Store facts are on by default: a poster usually wants the address, and the operator can
+  // untick either field for a merchant that may not publish it.
+  const [storeSelection, setStoreSelection] = useState<StoreSelection>({
+    enabled: true,
+    placeId: '',
+    address: true,
+    phone: true,
+  })
+  const stores = merchantProfile?.brand_info?.stores ?? []
   const [prompt, setPrompt] = useState('')
   const [promptOptimized, setPromptOptimized] = useState(false)
   const [candidateCount, setCandidateCount] = useState(3)
@@ -216,6 +229,10 @@ export default function WholeImageStudio({
           height: taskRestoredAsset.height,
         }
       : null)
+  // The submit and the form both read these, so they are derived once, after all state.
+  const selectedStoreId = storeSelection.placeId || stores[0]?.place_id || ''
+  const storeEnabled = storeSelection.enabled && Boolean(selectedStoreId)
+
   const logoOptions: BrandLogoImage[] = restoredLogo
     ? [...baseLogoOptions, restoredLogo]
     : baseLogoOptions
@@ -415,6 +432,9 @@ export default function WholeImageStudio({
             style_reference_asset_ids:
               brandMode === 'reference' ? styleReferences.map((asset) => asset.id) : [],
             product_asset_ids: products.map((asset) => asset.id),
+            include_store_address: storeEnabled && storeSelection.address,
+            include_store_phone: storeEnabled && storeSelection.phone,
+            store_place_id: storeEnabled ? selectedStoreId : null,
             ratio: selectedPlatform ? undefined : selectedRatio,
             platform_id: selectedPlatform?.id ?? null,
             placement_id: selectedPlacement?.id ?? null,
@@ -619,7 +639,8 @@ export default function WholeImageStudio({
       onLoadAssets()
     }
   }
-  const openLogoPicker = () => {
+
+ const openLogoPicker = () => {
     setPickerPurpose('logo')
     onLoadAssets()
   }
@@ -639,6 +660,9 @@ export default function WholeImageStudio({
         logoUploading={logoUploading}
         logoDeleting={logoDeleting}
         canAddLogo
+        stores={stores}
+        storeSelection={storeSelection}
+        onStoreSelectionChange={(next) => setStoreSelection(next)}
         platforms={platforms}
         platformsLoading={platformsLoading}
         platformsError={platformsError}

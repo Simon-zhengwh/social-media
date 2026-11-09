@@ -16,7 +16,7 @@ from app.api_paths import asset_url, whole_download_url, merchant_base
 from app.request_context import request_db, request_merchant_id, request_store, request_profile
 from app.schemas import (WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
-from app.services import original_replacement_runner, brand_rules, brand_style, original_replacement, platform_presets, request_assets, whole_image
+from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
 from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
 from app.time_utils import utc_iso
@@ -553,8 +553,16 @@ def create_task(
             raise HTTPException(status_code=422, detail="请选择预设品牌风格")
         try:
             brand = brand_style.get_brand(db, payload.brand_id)
+            # Only the fields the operator ticked reach the prompt; the rest of NAP stays out.
+            store_facts = merchant_profile.store_facts(
+                request_profile(request),
+                payload.store_place_id or "",
+                include_address=payload.include_store_address,
+                include_phone=payload.include_store_phone,
+            )
             brand_snapshot = brand_style.snapshot_brand(
-                brand, db, request_store(request), settings, profile=request_profile(request)
+                brand, db, request_store(request), settings,
+                profile=request_profile(request), store_facts=store_facts,
             )
         except brand_style.BrandError as exc:
             raise HTTPException(status_code=422, detail=exc.message) from exc

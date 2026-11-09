@@ -525,6 +525,7 @@ def snapshot_brand(
     settings: Any,
     *,
     profile: dict[str, Any] | None = None,
+    store_facts: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Create an immutable task snapshot from Mongo brand assets."""
     references: list[dict[str, Any]] = []
@@ -572,7 +573,8 @@ def snapshot_brand(
     snapshot["reference_asset_ids"] = [item["asset_id"] for item in references]
     snapshot["logo_asset_ids"] = logo_asset_ids
     snapshot["merchant_context"] = merchant_profile.prompt_context(
-        profile if profile is not None else merchant_profile.get_profile(db, brand.merchant_id)
+        profile if profile is not None else merchant_profile.get_profile(db, brand.merchant_id),
+        store_facts,
     )
     return snapshot
 

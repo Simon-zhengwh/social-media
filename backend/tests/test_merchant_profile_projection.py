@@ -1,3 +1,4 @@
+from app.services import merchant_profile
 from app.services.merchant_profile import project_profile
 
 
@@ -132,3 +133,81 @@ def test_brand_info_does_not_leak_into_the_model_background():
  assert "SECRET_ADDRESS" not in text
  assert "SECRET_PHONE" not in text
  assert "1999" not in text
+
+
+profile = {
+	"merchant_id": "m",
+	"name": "Keke",
+	"prompt_sections": [{"title": "商户定位", "text": "卤味"}],
+	"locations": [
+		{"place_id": "p1", "name": "Flushing",
+		 "nap": {"address": "34-20 Linden Pl", "suite": "1st Fl", "phone": "(347)438-1030"}},
+		{"place_id": "p2", "name": "Murray Hill",
+		 "nap": {"address": "150-15 Northern Blvd", "suite": "", "phone": "(718)555-0100"}},
+	],
+}
+
+
+def test_nothing_selected_adds_no_store_block():
+	assert merchant_profile.store_facts(profile, "p1", include_address=False, include_phone=False) is None
+	prompt = merchant_profile.prompt_context(profile, None)
+	assert "34-20 Linden Pl" not in prompt
+	assert "(347)438-1030" not in prompt
+
+
+def test_address_only_omits_the_phone():
+	facts = merchant_profile.store_facts(profile, "p1", include_address=True, include_phone=False)
+
+	assert facts is not None
+	assert facts["address"] == "34-20 Linden Pl 1st Fl"
+	assert "phone" not in facts
+	block = merchant_profile.store_context(facts)
+	assert "34-20 Linden Pl" in block
+	assert "438-1030" not in block
+
+
+def test_phone_only_omits_the_address():
+	facts = merchant_profile.store_facts(profile, "p1", include_address=False, include_phone=True)
+
+	assert facts is not None
+	assert facts["phone"] == "(347)438-1030"
+	assert "address" not in facts
+	block = merchant_profile.store_context(facts)
+	assert "438-1030" in block
+	assert "Linden" not in block
+
+
+def test_both_fields_are_joined_into_one_block():
+	facts = merchant_profile.store_facts(profile, "p1", include_address=True, include_phone=True)
+	block = merchant_profile.store_context(facts)
+
+	assert "34-20 Linden Pl" in block
+	assert "(347)438-1030" in block
+	assert "逐字照抄" in block
+
+
+def test_only_the_selected_store_is_used():
+	facts = merchant_profile.store_facts(profile, "p2", include_address=True, include_phone=True)
+
+	assert facts["address"] == "150-15 Northern Blvd"
+	assert facts["phone"] == "(718)555-0100"
+
+
+def test_unknown_store_contributes_nothing():
+	assert merchant_profile.store_facts(profile, "nope", include_address=True, include_phone=True) is None
+	assert merchant_profile.store_facts(profile, "", include_address=True, include_phone=True) is None
+
+
+def test_store_block_joins_the_merchant_background():
+	prompt = merchant_profile.prompt_context(profile, {"name": "Flushing", "address": "34-20 Linden Pl", "phone": "(347)438-1030"})
+
+	assert "商户背景参考" in prompt
+	assert "门店信息" in prompt
+	assert prompt.index("商户背景参考") < prompt.index("门店信息")
+
+
+def test_prompt_without_profile_can_still_carry_store_facts():
+	prompt = merchant_profile.prompt_context(None, {"address": "34-20 Linden Pl"})
+
+	assert "34-20 Linden Pl" in prompt
+	assert "商户背景参考" not in prompt

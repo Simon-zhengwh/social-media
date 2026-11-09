@@ -9,13 +9,14 @@ import MerchantSwitcher from './components/MerchantSwitcher'
 import {
   ApiError,
   getMerchantContext,
+  type MerchantContext,
   listAssetPage,
   listBrands,
   listPlatforms,
   merchantIdFromLocation,
   uploadAsset,
 } from './api'
-import type { Asset, BrandStyle, PlatformPreset } from './types'
+import type { Asset, BrandStyle, MerchantProfile, PlatformPreset } from './types'
 
 function readView(): AppView {
   const value = new URLSearchParams(window.location.search).get('view')
@@ -106,7 +107,7 @@ export default function App() {
   const [assetQuery, setAssetQuery] = useState('')
   const [loadingMoreAssets, setLoadingMoreAssets] = useState(false)
   const [uploadingAsset, setUploadingAsset] = useState(false)
-  const [context, setContext] = useState<{ merchant: { merchant_name: string; merchant_id: string; user_name: string } } | null>(null)
+  const [context, setContext] = useState<MerchantContext | null>(null)
   const [contextLoading, setContextLoading] = useState(Boolean(initialMerchantId))
   const [contextError, setContextError] = useState<string | null>(
     initialMerchantId ? null : '缺少 merchant_id，请从 AM Console 重新选择商家进入',
@@ -295,7 +296,8 @@ export default function App() {
         ) : view === 'whole' ? (
           <WholeImageStudio
             key={`whole-${studioRevision}`}
-            brands={brands}
+            merchantProfile={(context?.profile as MerchantProfile | null) ?? null}
+    brands={brands}
             brandsLoading={brandsLoading}
             brandsError={brandsError}
             platforms={platforms}

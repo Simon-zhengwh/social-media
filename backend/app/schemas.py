@@ -139,6 +139,9 @@ class WholeImageTaskCreate(BaseModel):
     candidate_index: int = Field(default=0, ge=0, le=5)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)
+    include_store_address: bool = False
+    include_store_phone: bool = False
+    store_place_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("brand_id", mode="before")
     @classmethod
@@ -234,6 +237,9 @@ class PromptOptimizeRequest(BaseModel):
     product_asset_ids: list[str] = Field(default_factory=list, max_length=6)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)
+    include_store_address: bool = False
+    include_store_phone: bool = False
+    store_place_id: str | None = Field(default=None, max_length=128)
 
     @field_validator("prompt", mode="before")
     @classmethod

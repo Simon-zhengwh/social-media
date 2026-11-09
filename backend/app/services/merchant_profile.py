@@ -190,12 +190,71 @@ def get_profile(db: Any, merchant_id: str | None) -> dict[str, Any] | None:
     }
 
 
-def prompt_context(profile: dict[str, Any] | None) -> str:
-    if not profile or not profile.get("prompt_sections"):
+def store_facts(
+    profile: dict[str, Any] | None,
+    place_id: str,
+    *,
+    include_address: bool,
+    include_phone: bool,
+) -> dict[str, str] | None:
+    """The selected store facts a poster may print, or None when there is nothing to add.
+
+    Only the requested fields come back, so a merchant that may not show a phone can still put
+    its address on the poster.
+    """
+    if not profile or not place_id:
+        return None
+    for location in profile.get("locations") or []:
+        if not isinstance(location, dict) or str(location.get("place_id") or "") != place_id:
+            continue
+        nap = location.get("nap") if isinstance(location.get("nap"), dict) else {}
+        facts: dict[str, str] = {"name": str(location.get("name") or "").strip()}
+        if include_address:
+            address = str(nap.get("address") or "").strip()
+            suite = str(nap.get("suite") or "").strip()
+            facts["address"] = f"{address} {suite}".strip()
+        if include_phone:
+            facts["phone"] = str(nap.get("phone") or "").strip()
+        # A store with neither requested field filled in has nothing to say.
+        if not facts.get("address") and not facts.get("phone"):
+            return None
+        return facts
+    return None
+
+
+def store_context(facts: dict[str, str] | None) -> str:
+    """One block the model may print verbatim; it must not invent or reformat these values."""
+    if not facts:
         return ""
-    return "\n".join((
-        f"商户背景参考：{profile['name']}",
-        *(f"{section['title']}：{section['text']}" for section in profile["prompt_sections"]),
-        "以上为用户提供的背景参考，未独立核验，按本次需求选取相关信息，不必全部写入海报。"
-        "本次要求和备注优先，同时遵守平台限制。不要默认添加地址、电话或营业时间。",
-    ))
+    lines = ["门店信息（可以放在海报上，必须逐字照抄，不得改写、缩写或编造）："]
+    if facts.get("name"):
+        lines.append("门店：" + facts["name"])
+    if facts.get("address"):
+        lines.append("地址：" + facts["address"])
+    if facts.get("phone"):
+        lines.append("电话：" + facts["phone"])
+    return "\n".join(lines)
+
+
+def prompt_context(
+    profile: dict[str, Any] | None,
+    store: dict[str, str] | None = None,
+) -> str:
+    if not profile:
+        return store_context(store)
+    blocks: list[str] = []
+    if profile.get("prompt_sections"):
+        blocks.append(
+            "\n".join(
+                (
+                    "商户背景参考：" + str(profile["name"]),
+                    *(section["title"] + "：" + section["text"] for section in profile["prompt_sections"]),
+                    "以上为用户提供的背景参考，未独立核验，按本次需求选取相关信息，不必全部写入海报。"
+                    "本次要求和备注优先，同时遵守平台限制。不要默认添加地址、电话或营业时间。",
+                )
+            )
+        )
+    store_block = store_context(store)
+    if store_block:
+        blocks.append(store_block)
+    return "\n\n".join(blocks)

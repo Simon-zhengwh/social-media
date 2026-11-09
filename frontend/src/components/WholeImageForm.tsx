@@ -3,12 +3,14 @@ import BrandModeSelector from './BrandModeSelector'
 import CandidateCountSelector from './CandidateCountSelector'
 import PromptField from './PromptField'
 import LogoSelector from './LogoSelector'
+import StoreInfoSelector, { type StoreSelection } from './StoreInfoSelector'
 import { ZoomableImage } from './ImageLightbox'
 import type {
   Asset,
   BrandMode,
   BrandStyle,
   BrandLogoImage,
+  MerchantStore,
   PlatformPreset,
   Ratio,
 } from '../types'
@@ -26,6 +28,9 @@ type Props = {
   logoUploading: boolean
   logoDeleting: boolean
   canAddLogo: boolean
+  stores: MerchantStore[]
+  storeSelection: StoreSelection
+  onStoreSelectionChange: (next: StoreSelection) => void
   platforms: PlatformPreset[]
   platformsLoading: boolean
   platformsError: string | null
@@ -67,6 +72,9 @@ export default function WholeImageForm({
   logoUploading,
   logoDeleting,
   canAddLogo,
+  stores,
+  storeSelection,
+  onStoreSelectionChange,
   platforms,
   platformsLoading,
   platformsError,
@@ -156,6 +164,13 @@ export default function WholeImageForm({
         onRemoveLogo={onRemoveLogo}
       />
 
+      <StoreInfoSelector
+        stores={stores}
+        value={storeSelection}
+        disabled={busy}
+        onChange={onStoreSelectionChange}
+      />
+
       <div className="product-block">
         <div className="product-block-head">
           <strong>素材图</strong>
@@ -216,6 +231,9 @@ export default function WholeImageForm({
           product_asset_ids: products.map((asset) => asset.id),
           platform_id: selectedPlatform?.id ?? selectedPlatformId ?? null,
           placement_id: selectedPlacementId || null,
+          include_store_address: storeSelection.enabled && storeSelection.address,
+          include_store_phone: storeSelection.enabled && storeSelection.phone,
+          store_place_id: storeSelection.enabled ? (storeSelection.placeId || stores[0]?.place_id || null) : null,
         }}
         onPromptChange={onPromptChange}
       />

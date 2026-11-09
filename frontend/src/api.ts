@@ -321,6 +321,9 @@ export type WholeImageTaskCreatePayload = {
   product_asset_ids?: string[]
   platform_id?: string | null
   placement_id?: string | null
+  include_store_address?: boolean
+  include_store_phone?: boolean
+  store_place_id?: string | null
 }
 
 export async function createWholeImageTask(
@@ -450,6 +453,9 @@ export type PromptOptimizePayload = {
   product_asset_ids: string[]
   platform_id?: string | null
   placement_id?: string | null
+  include_store_address?: boolean
+  include_store_phone?: boolean
+  store_place_id?: string | null
 }
 
 export async function optimizePrompt(
