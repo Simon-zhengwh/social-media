@@ -94,6 +94,20 @@ export type MerchantContext = {
   profile: unknown
 }
 
+export type MerchantOption = { id: string; name: string }
+
+/**
+ * The merchants the operator may switch to.
+ *
+ * Unscoped on purpose: this is the call that picks a merchant, so it cannot carry one.
+ */
+export async function listMerchants(keyword = ''): Promise<MerchantOption[]> {
+  const query = keyword.trim() ? `?keyword=${encodeURIComponent(keyword.trim())}` : ''
+  const page = await apiFetch(`/api/merchants${query}`)
+  const result = await parseResponse<{ total: number; merchants: MerchantOption[] }>(page)
+  return result.merchants ?? []
+}
+
 export async function getMerchantContext(): Promise<MerchantContext> {
   return parseResponse<MerchantContext>(await apiFetch('/api/context'))
 }

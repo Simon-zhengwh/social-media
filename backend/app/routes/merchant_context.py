@@ -10,6 +10,29 @@ from app.services.am_client import AMClientError
 
 router = APIRouter(tags=["merchant-context"])
 
+# Mounted without the /merchants/{merchant_id} prefix: picking a merchant cannot require one.
+merchant_list_router = APIRouter(prefix="/api/merchants", tags=["merchants"])
+
+
+@merchant_list_router.get("")
+def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
+    """The merchants the operator may switch to.
+
+    Same list the AM Console launcher shows, read with the caller's own session. It is
+    deliberately not scoped to one merchant: it exists to choose one.
+    """
+    am = request.app.state.am
+    try:
+        payload = am.search_merchants(request.headers.get("cookie", ""), keyword=keyword)
+    except AMClientError as exc:
+        raise _am_http_error(exc) from exc
+    merchants = [
+        {"id": str(item.get("merchant_id") or ""), "name": str(item.get("name") or "")}
+        for item in payload.get("merchants") or []
+        if item.get("merchant_id")
+    ]
+    return {"total": int(payload.get("total") or len(merchants)), "merchants": merchants}
+
 
 @router.get("/context")
 def get_merchant_context(merchant_id: str, request: Request) -> dict[str, Any]:

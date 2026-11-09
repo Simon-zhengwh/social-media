@@ -5,6 +5,7 @@ import Sidebar, { type AppView } from './components/Sidebar'
 import TaskCenter from './components/TaskCenter'
 import WholeImageStudio from './components/WholeImageStudio'
 import AgentTestPage from './components/AgentTestPage'
+import MerchantSwitcher from './components/MerchantSwitcher'
 import {
   ApiError,
   getMerchantContext,
@@ -277,10 +278,10 @@ export default function App() {
             <span className="topbar-kicker">{viewMeta.kicker}</span>
             <strong>{viewMeta.title}</strong>
           </div>
-          <div className="topbar-meta">
-            <span className="status-dot status-dot-live" aria-hidden="true" />
-            <span>{context?.merchant.merchant_name ?? viewMeta.meta ?? '商家工作区'}</span>
-          </div>
+          <MerchantSwitcher
+            currentId={initialMerchantId}
+            currentName={context?.merchant.merchant_name ?? viewMeta.meta ?? '商家工作区'}
+          />
         </header>
 
         {view === 'agent-tests' ? (

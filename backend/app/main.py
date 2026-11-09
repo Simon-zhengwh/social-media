@@ -138,6 +138,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="Social Media Design Agent", version="0.4.0", lifespan=lifespan)
 app.middleware("http")(merchant_context_middleware)
 
+app.include_router(merchant_context.merchant_list_router)
+
 merchant_router = APIRouter(prefix="/api/merchants/{merchant_id}")
 merchant_router.include_router(merchant_context.router)
 merchant_router.include_router(assets.router)

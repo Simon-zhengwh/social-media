@@ -56,6 +56,31 @@ class AMClient:
                 return None
             raise
 
+    def search_merchants(
+        self,
+        cookie: str,
+        *,
+        keyword: str = "",
+        skip: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """The merchants AM Console offers on its own image-tool launcher.
+
+        Same endpoint the console page uses, so the switcher cannot drift from it. The list
+        is deliberately unfiltered by primary AM or status: the UAT console opens every
+        merchant that has a restaurant brand profile.
+        """
+        return self._request(
+            "PUT",
+            "/ajax/image-tools/merchant/search",
+            cookie=cookie,
+            json={
+                "keyword": keyword.strip() or None,
+                "skip": skip,
+                "limit": max(1, min(limit, 100)),
+            },
+        )
+
     def search_media(
         self,
         cookie: str,
