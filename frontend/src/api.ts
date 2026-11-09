@@ -161,6 +161,12 @@ export async function createBrand(payload: UpdateBrandPayload): Promise<BrandDet
   }))
 }
 
+export async function initializeBrandFromProfile(): Promise<BrandDetail & { created: boolean }> {
+  return parseResponse<BrandDetail & { created: boolean }>(await apiFetch('/api/brands/initialize-from-profile', {
+    method: 'POST',
+  }))
+}
+
 export async function previewBrand(payload: UpdateBrandPayload): Promise<{ prompt: string }> {
   return parseResponse<{ prompt: string }>(await apiFetch('/api/brands/preview', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),

@@ -107,6 +107,8 @@ def _safe_raw(brand: dict[str, Any]) -> dict[str, Any]:
     allowed = (
         "legal_name", "canonical_name", "name_variants", "primary_category",
         "secondary_categories", "cuisine", "positioning", "personality", "voice",
+        # Included so a first style can adopt the merchant logo.
+        "logo_url",
     )
     return {key: brand.get(key) for key in allowed if key in brand}
 

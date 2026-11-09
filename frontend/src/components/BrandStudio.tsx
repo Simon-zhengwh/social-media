@@ -10,6 +10,7 @@ import {
   deleteBrandLogo,
   deleteBrandReference,
   getBrand,
+  initializeBrandFromProfile,
   updateBrand,
   uploadBrandLogos,
   uploadBrandReference,
@@ -138,6 +139,7 @@ export default function BrandStudio({
   const [uploadingReference, setUploadingReference] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<{ target: 'logo' | 'reference'; id: string } | null>(null)
+  const [seeding, setSeeding] = useState(false)
   const assetDeleteDialogRef = useRef<HTMLDialogElement>(null)
   const [coverBusyId, setCoverBusyId] = useState<string | null>(null)
   const [editingColor, setEditingColor] = useState<number | null>(null)
@@ -219,6 +221,32 @@ export default function BrandStudio({
     layout_guide: source.style_fields ? '' : source.layout_guide.trim(),
     background_guide: source.style_fields ? '' : source.background_guide.trim(),
   })
+
+  /*
+    Build the merchant's first style from its AM brand profile. The profile is what the merchant
+    panel already shows, so this only saves the operator a blank form — the visual fields still
+    need their own review against the reference images they upload.
+  */
+  const seedFromProfile = async () => {
+    setSeeding(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const data = await initializeBrandFromProfile()
+      setSelectedId(data.id)
+      setCreating(false)
+      applyDetail(data)
+      setNotice(
+        data.created
+          ? '已从商户资料生成风格，请补充主色调与参考图后保存'
+          : '该商户已有风格，已为你打开',
+      )
+    } catch (reason: unknown) {
+      setError(errorText(reason))
+    } finally {
+      setSeeding(false)
+    }
+  }
 
   const saveBrand = async () => {
     if (!draft) return
@@ -483,6 +511,16 @@ export default function BrandStudio({
               setEditingColor(null)
               setDraft({ schema_version: 2, style_fields: null, name: '', short_name: '', summary: '', platform_id: '', placement_id: '', colors: [], logo_asset_ids: [], layout_guide: '', background_guide: '', logo_keywords: [], note: '', is_default: false, cover_asset_id: null })
             }}>＋ 新建风格</button>
+            {!brandsLoading && brands.length === 0 ? (
+              <button
+                type="button"
+                className="mp-btn-ghost"
+                onClick={() => void seedFromProfile()}
+                disabled={seeding}
+              >
+                {seeding ? '生成中…' : '从商户资料生成风格'}
+              </button>
+            ) : null}
           </div>
         </div>
         {brandsError ? <div className="asset-notice asset-notice-error">{brandsError}</div> : null}
@@ -546,7 +584,7 @@ export default function BrandStudio({
               ))}
             </div>
             {brands.length === 0 ? (
-              <p className="brand-empty-note">还没有独立品牌风格，点击“新建风格”开始配置。</p>
+              <p className="brand-empty-note">还没有品牌风格。可以“从商户资料生成风格”快速起步，或点击“新建风格”手工配置。</p>
             ) : null}
           </>
         )}
