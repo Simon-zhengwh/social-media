@@ -75,7 +75,7 @@ def test_ordered_mapping_and_reused_material_are_preserved(env):
     task = create(env, [{"target": "牛肉", "asset_id": "beef"}, {"target": "左上人物", "asset_id": "beef"}])
     result = run(env, task)
     agent, text, timeout = env.client.triggers[0]
-    assert agent == "d1692e66-c34b-4e70-9437-7462258dd84e"
+    assert agent == "5a162c34-f333-453f-9835-de6a4f96e3fb"
     assert timeout == 2700
     assert text == (
         "帮我把图1的牛肉替换成图2，并且把图1的左上人物替换成图2\n\n"
@@ -109,15 +109,26 @@ def test_missing_source_and_non_image_are_rejected(env):
 @pytest.mark.parametrize("output,code", [
     ("请问要替换左边还是右边？", "agent_image_missing"),
     ("![蒙版](https://example.com/mask.png)", "agent_image_missing"),
-    ("![替换结果](https://example.com/a.png)\n![替换结果](https://example.com/b.png)", "agent_image_ambiguous"),
 ])
-def test_missing_or_ambiguous_final_image_is_not_success(env, output, code):
+def test_missing_final_image_is_not_success(env, output, code):
     env.client.output = output
     result = run(env, create(env))
     assert result["status"] == "partial"
     assert result["error"]["code"] == code
     assert result["agent_output"] == output
     assert not env.client.downloads
+
+
+def test_several_final_candidates_are_settled_by_canvas_size(env):
+    # The image-editor Agent often links several renders; the canvas is the only
+    # hard discriminator, so the first download that matches the source wins.
+    env.client.output = (
+        "![替换结果](https://example.com/a.png)\n"
+        "![替换结果](https://example.com/b.png)"
+    )
+    result = run(env, create(env))
+    assert result["status"] == "succeeded"
+    assert env.client.downloads == ["https://example.com/a.png"]
 
 
 def test_background_request_explicitly_replaces_the_whole_photo_and_preserves_design(env):

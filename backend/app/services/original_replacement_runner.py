@@ -115,51 +115,124 @@ def _build_input(db: Any, settings: Settings, store: ObjectStore, client: CoreAI
     return instruction + "\n\n" + "\n".join(url(asset_id) for asset_id in image_ids)
 
 
-def _final_image_url(result: AgentRunResult) -> str:
-    auxiliary = re.compile(r"蒙版|遮罩|对比|预览|校验|报告|前景|透明层|原图|参考图|mask|comparison|preview|overlay|manifest|foreground|layer|fitted|crop|intermediate|source|input", re.I)
-    final = re.compile(r"最终|成图|成品|替换结果|修改结果|final|result", re.I)
-    links = re.findall(r'(!?)\[([^\]]*)\]\(<?(https://[^\s)>]+)>?(?:\s+"[^"]*")?\)', result.output)
+# Strong markers never describe a deliverable, even when the label also says
+# "预览" or "海报" (e.g. "替换效果预览（新背景 +原设计前景）").
+STRONG_AUXILIARY = re.compile(
+    r"蒙版|遮罩|对比|校验|报告|原图|参考图|抽图|mask|comparison|overlay|"
+    r"manifest|fitted|crop|intermediate|source|input",
+    re.I,
+)
+# Weak markers only veto when the label carries no genuine deliverable word;
+# real posters are titled "…全不透明" or "…预览（新背景）".
+WEAK_AUXILIARY = re.compile(r"(?<!不)透明|前景|透明层|preview|foreground|layer", re.I)
+GENUINE_FINAL = re.compile(r"最终|成图|成品|替换后|修改后|改字后|final|result", re.I)
+WEAK_FINAL = re.compile(r"海报|合成|结果|poster", re.I)
+
+
+def _rate(described: str, *, linked_image: bool) -> int | None:
+    """Return a trust score, or None when the label cannot be a deliverable."""
+    if STRONG_AUXILIARY.search(described):
+        return None
+    genuine = bool(GENUINE_FINAL.search(described))
+    if WEAK_AUXILIARY.search(described) and not genuine:
+        return None
+    if genuine:
+        return 2
+    if WEAK_FINAL.search(described):
+        return 1
+    return 0 if linked_image else None
+
+
+def _final_image_candidates(result: AgentRunResult) -> list[str]:
+    """Rank every plausible deliverable; the caller settles ties by canvas size."""
     artifacts = {item.download_url: item for item in result.artifacts}
-    finals, images = [], []
-    for image, label, url in links:
+    scored: list[tuple[int, int, str]] = []
+    fallback: list[tuple[int, str]] = []
+    for order, (image, label, url) in enumerate(
+        re.findall(r'(!?)\[([^\]]*)\]\(<?(https://[^\s)>]+)>?(?:\s+"[^"]*")?\)', result.output)
+    ):
         artifact = artifacts.get(url)
-        description = label + (f" {artifact.file_name} {artifact.title}" if artifact else "")
-        if auxiliary.search(description):
+        described = label + (f" {artifact.file_name} {artifact.title}" if artifact else "")
+        if STRONG_AUXILIARY.search(described):
             continue
-        if final.search(description):
-            finals.append(url)
-        elif image:
-            images.append(url)
-    # The final reply identifies deliverables; artifacts may also contain intermediate masks and previews.
-    candidates = finals or images
-    if not candidates:
-        candidates = [item.download_url for item in result.artifacts
-                      if final.search(f"{item.file_name} {item.title}")
-                      and not auxiliary.search(f"{item.file_name} {item.title}")]
-    urls = list(dict.fromkeys(candidates))
-    if not urls:
-        raise OriginalReplacementError("agent_image_missing", "未返回明确的最终成图，请查看 Agent 回复并调整替换项", 502)
-    if len(urls) != 1:
-        raise OriginalReplacementError("agent_image_ambiguous", "Agent 返回多个可能的最终成图，无法确定替换结果，请查看回复", 502)
-    return urls[0]
+        fallback.append((order, url))
+        score = _rate(described, linked_image=bool(image))
+        if score is not None:
+            scored.append((score, order, url))
+    if not scored:
+        for order, item in enumerate(result.artifacts):
+            described = f"{item.file_name} {item.title}"
+            if STRONG_AUXILIARY.search(described):
+                continue
+            fallback.append((len(scored) + order, item.download_url))
+            score = _rate(described, linked_image=False)
+            if score:
+                scored.append((score, order, item.download_url))
+    # Highest trust first, then the Agent's own order.
+    scored.sort(key=lambda entry: (-entry[0], entry[1]))
+    ranked = list(dict.fromkeys(url for _, _, url in scored))
+    if ranked:
+        return ranked
+    # Every label looked auxiliary (e.g. a run whose only poster is titled
+    # "…预览"). The canvas-size check in _save_result still guards the result,
+    # so fall back to anything that is not an explicit mask, cutout or comparison.
+    return list(dict.fromkeys(url for _, url in fallback))
 
 
 def _save_result(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
                  task: dict[str, Any], result: Any) -> None:
     task_id = task["_id"]
     _update(db, task_id, agent_output=result.output, stage="saving", progress=85)
-    data = client.download_image(_final_image_url(result))
-    try:
-        with Image.open(io.BytesIO(data)) as image:
-            image.load()
-            size = ImageOps.exif_transpose(image).size
-    except Exception as exc:
-        raise OriginalReplacementError("invalid_output", "最终图片无法解码", 502) from exc
     required = (task["source"]["width"], task["source"]["height"])
-    if size != required:
-        raise OriginalReplacementError("output_size_mismatch", f"结果尺寸 {size[0]}×{size[1]} 与原图 {required[0]}×{required[1]} 不一致", 502)
-    saved = agent_image.save_png_asset(db, settings, store, key_prefix=f"original-replace-{task_id}",
-                                      original_stem=f"original-replace-{task_id}", data=data, role="result")
+    candidates = _final_image_candidates(result)
+    if not candidates:
+        raise OriginalReplacementError(
+            "agent_image_missing",
+            "未返回明确的最终成图，请查看 Agent 回复并调整替换项",
+            502,
+        )
+    # The canvas size is the only hard discriminator: same-run candidates
+    # include masks, cutouts and comparisons, and the replacement contract
+    # already requires the deliverable to match the source exactly.
+    data = None
+    decoded_sizes: list[tuple[int, int]] = []
+    for url in candidates[:8]:
+        try:
+            candidate = client.download_image(url)
+        except CoreAIError:
+            continue
+        try:
+            with Image.open(io.BytesIO(candidate)) as image:
+                image.load()
+                size = ImageOps.exif_transpose(image).size
+        except Exception:
+            continue
+        decoded_sizes.append(size)
+        if size == required:
+            data = candidate
+            break
+    if data is None:
+        if decoded_sizes:
+            size = decoded_sizes[0]
+            raise OriginalReplacementError(
+                "output_size_mismatch",
+                f"结果尺寸 {size[0]}×{size[1]} 与原图 {required[0]}×{required[1]} 不一致",
+                502,
+            )
+        raise OriginalReplacementError(
+            "download_failed",
+            "候选成图都无法下载，请稍后重试",
+            502,
+        )
+    saved = agent_image.save_png_asset(
+        db,
+        settings,
+        store,
+        key_prefix=f"original-replace-{task_id}",
+        original_stem=f"original-replace-{task_id}",
+        data=data,
+        role="result",
+    )
     _update(db, task_id, output=saved, status="succeeded", stage="done", progress=100, error=None)
 
 

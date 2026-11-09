@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     core_ai_test_agent_id: str = "5a162c34-f333-453f-9835-de6a4f96e3fb"
     core_ai_test_timeout_seconds: int = 1800
     # Original-photo replacements retain the existing environment variable names.
-    core_ai_background_replace_agent_id: str = "d1692e66-c34b-4e70-9437-7462258dd84e"
+    core_ai_background_replace_agent_id: str = "5a162c34-f333-453f-9835-de6a4f96e3fb"
     core_ai_background_replace_agent_timeout_seconds: int = 2700
     core_ai_image_model: str = "gpt-image-2.5-sunburst"
     core_ai_design_model: str = "gpt-6.1-sol"
