@@ -96,6 +96,12 @@ function ArtifactActions({
   )
 }
 
+function channelLabel(output: WholeImageOutput) {
+  if (output.channel === 'gateway') return '接口直出'
+  if (output.role === 'original_replace_result') return '原照替换'
+  return '图片 Agent'
+}
+
 function OutputCard({
   output,
   task,
@@ -117,7 +123,7 @@ function OutputCard({
         <div>
           <strong>{output.label}</strong>
           <span>
-            {output.channel === 'gateway' ? '接口直出' : '图片 Agent'} · {output.width}×{output.height}
+            {channelLabel(output)} · {output.width}×{output.height}
           </span>
         </div>
         {selected ? <span className="comparison-selected">当前编辑源</span> : null}
@@ -201,7 +207,7 @@ export default function WholeImageResultPanel({
   const previewUrl = currentOutput?.preview_url ?? task?.preview_url
   const branches = task?.edit.branches
   const displayOutputs = isEditing
-    ? [...(branches?.gateway?.outputs ?? []), ...(branches?.agent?.outputs ?? [])]
+    ? branches?.gateway?.outputs ?? []
     : task?.outputs ?? []
   const comparisonVisible = Boolean(
     task && (displayOutputs.length > 1 || isEditing || task.requires_output_selection),
@@ -228,8 +234,8 @@ export default function WholeImageResultPanel({
         {isPreviewConfirmed && isReady && isEditing ? (
           <div className="preview-edit-overlay">
             <span className="scanline" aria-hidden="true" />
-            <strong>双路修改中</strong>
-            <span>接口与 Agent 正在并行生成，Agent 通常需要 10–30 分钟</span>
+            <strong>修改中</strong>
+            <span>模型正在按本次要求改图，完成后自动生成新版本</span>
           </div>
         ) : null}
       </div>
@@ -272,7 +278,6 @@ export default function WholeImageResultPanel({
       {isEditing || task?.edit.outcome ? (
         <div className="branch-status-row">
           <BranchStatus branch={branches?.gateway} label="Core AI 接口" />
-          <BranchStatus branch={branches?.agent} label="图片 Agent" />
         </div>
       ) : null}
 
@@ -304,8 +309,8 @@ export default function WholeImageResultPanel({
           ) : (
             <div className="comparison-pending">
               <span className="generating-dots" aria-hidden="true"><span /><span /><span /></span>
-              <strong>等待两条链路返回图片</strong>
-              <span>接口结果通常会先出现，Agent 透明层和最终图会在完成后展示。</span>
+              <strong>等待模型返回图片</strong>
+              <span>改图接口返回后会自动保存为新版本。</span>
             </div>
           )}
         </div>

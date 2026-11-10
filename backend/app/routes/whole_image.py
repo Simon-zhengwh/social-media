@@ -402,14 +402,8 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
     edit = _edit_state(doc)
     branches = (doc.get("edit") or {}).get("branches") or {}
     edit["outcome"] = (doc.get("edit") or {}).get("outcome")
-    edit["branches"] = {
-        name: value
-        for name, value in (
-            ("gateway", _branch_out(db, task_id, branches.get("gateway"))),
-            ("agent", _branch_out(db, task_id, branches.get("agent"))),
-        )
-        if value is not None
-    }
+    gateway_branch = _branch_out(db, task_id, branches.get("gateway"))
+    edit["branches"] = {"gateway": gateway_branch} if gateway_branch is not None else {}
     return {
         "id": task_id,
         "status": doc["status"],

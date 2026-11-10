@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from app.routes import whole_image as whole_routes
 from app.schemas import WholeImageEditRequest, WholeImageTaskCreate
 from app.services import storage, whole_image as whole_service
-from app.services.core_ai import AgentArtifact, AgentRunResult, CoreAIError
+from app.services.core_ai import CoreAIError
 
 
 class FakeCoreAI:
@@ -23,42 +23,8 @@ class FakeCoreAI:
     def __init__(self) -> None:
         self.generation_calls: list[dict] = []
         self.edit_calls: list[dict] = []
-        self.agent_calls: list[dict] = []
         self.fail_edit = False
-        self.fail_agent = True
         self._color_index = 0
-        self.agent_artifacts = [
-            AgentArtifact(
-                "generated-image.png",
-                "image/png",
-                "https://example.com/agent-layer.png",
-                "模型原生透明前景",
-            ),
-            AgentArtifact(
-                "generated-image.png",
-                "image/png",
-                "https://example.com/agent-result.png",
-                "最终成图",
-            ),
-            AgentArtifact(
-                "editor.html",
-                "text/html",
-                "https://example.com/editor.html",
-                "离线编辑器",
-            ),
-            AgentArtifact(
-                "result-bundle.zip",
-                "application/zip",
-                "https://example.com/result.zip",
-                "完整结果包",
-            ),
-        ]
-        self.agent_downloads: list[str] = []
-        self.agent_result_size: tuple[int, int] | None = None
-        self.agent_image_overrides: dict[str, bytes] = {}
-        self.agent_fail_downloads: set[str] = set()
-        self.agent_fail_artifacts: set[str] = set()
-        self.agent_output: str | None = None
 
     def _image(self, color: tuple[int, int, int]) -> bytes:
         buffer = io.BytesIO()
@@ -90,71 +56,6 @@ class FakeCoreAI:
             raise CoreAIError("edit_failed", "模拟编辑失败")
         self._color_index += 1
         return self._image((180, 80, 40))
-
-    def upload_image_blob(self, data: bytes, *, content_type: str = "image/png") -> str:
-        if self.fail_agent:
-            raise CoreAIError("agent_disabled", "测试默认关闭 Agent 分支")
-        self.agent_calls.append({"upload_bytes": data, "content_type": content_type})
-        return "https://example.com/current-poster.png"
-
-    def _transparent_image(self) -> bytes:
-        image = Image.new("RGBA", (640, 640), (0, 0, 0, 0))
-        for x in range(120, 520):
-            for y in range(120, 220):
-                image.putpixel((x, y), (180, 80, 40, 255))
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        return buffer.getvalue()
-
-    def _sized_image(self, size: tuple[int, int], color: tuple[int, int, int]) -> bytes:
-        buffer = io.BytesIO()
-        Image.new("RGB", size, color).save(buffer, format="PNG")
-        return buffer.getvalue()
-
-    def run_agent_detail(
-        self,
-        agent_id: str,
-        input_text: str,
-        *,
-        timeout_seconds: int,
-        poll_interval: float = 2.0,
-    ) -> AgentRunResult:
-        self.agent_calls.append(
-            {"agent_id": agent_id, "input": input_text, "timeout_seconds": timeout_seconds}
-        )
-        return AgentRunResult(
-            run_id="run-agent-1",
-            status="COMPLETED",
-            output=self.agent_output
-            if self.agent_output is not None
-            else (
-                "![透明层](https://example.com/agent-layer.png)\n"
-                "![成图](https://example.com/agent-result.png)"
-            ),
-            artifacts=self.agent_artifacts,
-        )
-
-    def download_image(self, url: str) -> bytes:
-        self.agent_downloads.append(url)
-        if url in self.agent_fail_downloads:
-            raise CoreAIError("download_failed", "模拟图片下载失败")
-        if url in self.agent_image_overrides:
-            return self.agent_image_overrides[url]
-        if url.endswith("agent-layer.png"):
-            return self._transparent_image()
-        if url.endswith("agent-result.png"):
-            if self.agent_result_size is not None:
-                return self._sized_image(self.agent_result_size, (120, 40, 180))
-            return self._sized_image((640, 640), (120, 40, 180))
-        raise CoreAIError("download_failed", "未知图片")
-
-    def download_agent_file(self, url: str, *, content_type: str) -> bytes:
-        self.agent_downloads.append(url)
-        if url in self.agent_fail_artifacts:
-            raise CoreAIError("artifact_failed", "模拟附件下载失败")
-        if content_type == "text/html":
-            return b"<!doctype html><h1>Editor</h1>"
-        return b"PK\x03\x04bundle"
 
     def chat_json(self, messages, *, model=None, timeout_seconds=None):
         return {"status": "pass", "violations": []}
@@ -306,7 +207,6 @@ def test_merchant_context_reaches_generation_and_edit_prompts(settings, store, p
 
     version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
     fake.edit_calls.clear()
-    fake.fail_agent = False
     instruction = "强化聚会氛围"
     whole_routes.create_edit(
         created["id"],
@@ -315,10 +215,10 @@ def test_merchant_context_reaches_generation_and_edit_prompts(settings, store, p
     )
     whole_service.run_edit(db, settings, store, fake, created["id"], instruction, version["_id"])
 
-    for prompt in (fake.edit_calls[0]["prompt"], fake.agent_calls[-1]["input"]):
-        assert "商户背景参考：MERCHANT_NAME" in prompt
-        assert "POSITIONING" in prompt
-        assert "HIDDEN_ADDRESS" not in prompt
+    edit_prompt = fake.edit_calls[0]["prompt"]
+    assert "商户背景参考：MERCHANT_NAME" in edit_prompt
+    assert "POSITIONING" in edit_prompt
+    assert "HIDDEN_ADDRESS" not in edit_prompt
 
 
 def test_historical_generation_does_not_fetch_new_common_rules(settings, store):
@@ -615,9 +515,7 @@ def test_generation_protects_food_photos_in_raw_and_optimized_prompts(
     assert saved["model_input"]["prompt"] == prompt
 
 
-def test_text_edit_protects_food_in_both_gateway_and_agent_inputs(
-    settings, store, product_png
-):
+def test_text_edit_protects_food_in_the_model_prompt(settings, store, product_png):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     product = _seed_product(db, settings, store, product_png, "side-dishes.png")
@@ -630,7 +528,6 @@ def test_text_edit_protects_food_in_both_gateway_and_agent_inputs(
     whole_service.run_generation(db, settings, store, fake, task_id)
     v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
     fake.edit_calls.clear()
-    fake.fail_agent = False
     instruction = "把文案改成：除了新鲜牛肉，配菜也很新鲜"
     whole_routes.create_edit(
         task_id,
@@ -640,27 +537,24 @@ def test_text_edit_protects_food_in_both_gateway_and_agent_inputs(
 
     whole_service.run_edit(db, settings, store, fake, task_id, instruction, v1["_id"])
 
-    gateway_prompt = fake.edit_calls[0]["prompt"]
-    agent_prompt = fake.agent_calls[-1]["input"]
-    for prompt in (gateway_prompt, agent_prompt):
-        assert "Use the current poster as the editing base" in prompt
-        assert "Food-photo preservation:" in prompt
-        assert "Do not redraw, retouch, replace, rearrange, add, or remove food" in prompt
-        assert "only when the user explicitly requests that specific change" not in prompt
-        for constraint in ("严格小于 30°", "禁止 30° 及以上", "生成式补画或扩图", "不得编造", "摄影场景及其他内容素材"):
-            assert constraint in prompt
-        assert "For text-only edits, change only the requested lettering" in prompt
-        assert instruction in prompt
-        assert "原始文案：鲜切牛肉" not in prompt
-        assert "style and layout only" not in prompt
-        assert "do not use it as a pixel source" not in prompt
-    assert "Image 2 is the current poster to edit." in gateway_prompt
-    assert gateway_prompt.endswith(instruction)
-    assert agent_prompt.endswith(instruction + "\n\nhttps://example.com/current-poster.png")
+    prompt = fake.edit_calls[0]["prompt"]
+    assert "Use the current poster as the editing base" in prompt
+    assert "Food-photo preservation:" in prompt
+    assert "Do not redraw, retouch, replace, rearrange, add, or remove food" in prompt
+    assert "only when the user explicitly requests that specific change" not in prompt
+    for constraint in ("严格小于 30°", "禁止 30° 及以上", "生成式补画或扩图", "不得编造", "摄影场景及其他内容素材"):
+        assert constraint in prompt
+    assert "For text-only edits, change only the requested lettering" in prompt
+    assert instruction in prompt
+    assert "原始文案：鲜切牛肉" not in prompt
+    assert "style and layout only" not in prompt
+    assert "do not use it as a pixel source" not in prompt
+    assert "Image 2 is the current poster to edit." in prompt
+    assert prompt.endswith(instruction)
     version = db.whole_versions.find_one({"task_id": task_id, "version": 2})
+    assert [item["channel"] for item in version["outputs"]] == ["gateway"]
     for output in version["outputs"]:
-        expected = gateway_prompt if output["channel"] == "gateway" else agent_prompt
-        assert output["model_input"]["prompt"] == expected
+        assert output["model_input"]["prompt"] == prompt
 
 
 def test_edit_request_normalizes_and_persists_reference_asset_ids(settings, store, product_png):
@@ -702,9 +596,7 @@ def test_edit_request_normalizes_and_persists_reference_asset_ids(settings, stor
     ]
 
 
-def test_edit_reference_images_reach_both_branches(
-    settings, store, product_png, monkeypatch
-):
+def test_edit_reference_images_reach_the_model(settings, store, product_png):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     product = _seed_product(db, settings, store, product_png, "dish.png")
@@ -719,15 +611,6 @@ def test_edit_reference_images_reach_both_branches(
     whole_service.run_generation(db, settings, store, fake, created["id"])
     version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
     fake.edit_calls.clear()
-    fake.agent_calls.clear()
-    fake.fail_agent = False
-    monkeypatch.setattr(
-        whole_service.agent_image,
-        "asset_public_url",
-        lambda _db, _settings, _store, _client, asset_id, **_kwargs: (
-            f"https://example.com/{asset_id}.png"
-        ),
-    )
     instruction = "参考这张图调整配色"
 
     whole_routes.create_edit(
@@ -751,45 +634,21 @@ def test_edit_reference_images_reach_both_branches(
         reference_asset_ids=[reference.id],
     )
 
-    gateway_call = fake.edit_calls[-1]
+    sent = fake.edit_calls[-1]
     source = db.assets.find_one({"_id": version["output_asset_id"]})
-    assert gateway_call["reference_names"][-2:] == [
+    assert sent["reference_names"][-2:] == [
         source["original_name"],
         "reference.png",
     ]
-    assert "Image 3 is this turn's user-supplied edit reference 1." in gateway_call["prompt"]
-    agent_input = fake.agent_calls[-1]["input"]
-    assert agent_input.endswith(
-        "https://example.com/"
-        + str(version["output_asset_id"])
-        + f".png\nhttps://example.com/{reference.id}.png"
-    )
+    assert "Image 3 is this turn's user-supplied edit reference 1." in sent["prompt"]
     task = db.whole_tasks.find_one({"_id": created["id"]})
     gateway_images = task["edit"]["branches"]["gateway"]["model_input"]["images"]
-    agent_images = task["edit"]["branches"]["agent"]["model_input"]["images"]
     assert [image["role"] for image in gateway_images] == [
         "product",
         "current_design",
         "edit_reference",
     ]
-    assert [image["role"] for image in agent_images] == [
-        "edit_target",
-        "edit_reference",
-    ]
-    expected_orientation = (
-        "portrait" if source["height"] > source["width"]
-        else "landscape" if source["width"] > source["height"]
-        else "square"
-    )
-    assert "Canvas contract:" in agent_input
-    assert f"{source['width']}×{source['height']}" in agent_input
-    assert expected_orientation in agent_input
-    assert "1:1" in agent_input
-    agent_model_input = task["edit"]["branches"]["agent"]["model_input"]
-    assert agent_model_input["parameters"]["width"] == source["width"]
-    assert agent_model_input["parameters"]["height"] == source["height"]
-    assert agent_model_input["parameters"]["orientation"] == expected_orientation
-    assert agent_model_input["parameters"]["aspect_ratio"] == "1:1"
+    assert "agent" not in task["edit"]["branches"]
     assert task["edit"]["reference_asset_ids"] == [reference.id]
 
 
@@ -798,8 +657,10 @@ def test_agent_final_output_must_match_current_canvas(settings, store):
     buffer = io.BytesIO()
     Image.new("RGB", (1536, 1152), (80, 40, 20)).save(buffer, format="PNG")
 
+    from app.services import agent_image
+
     with pytest.raises(CoreAIError) as exc_info:
-        whole_service.agent_image.save_png_asset(
+        agent_image.save_png_asset(
             db,
             settings,
             store,
@@ -1613,10 +1474,9 @@ def test_edit_history_is_isolated_to_selected_branch(settings, store):
     assert "分支A：把背景改成橙色" not in prompt
 
 
-def test_dual_edit_stores_three_outputs_and_requires_manual_selection(settings, store):
+def test_edit_stores_one_gateway_output_and_keeps_editing_ready(settings, store):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
-    fake.fail_agent = False
     task_id, _ = _generate(db, settings, store, fake)
     v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
     request = _request(db, settings, store, fake)
@@ -1633,71 +1493,29 @@ def test_dual_edit_stores_three_outputs_and_requires_manual_selection(settings, 
 
     task = db.whole_tasks.find_one({"_id": task_id})
     v2 = db.whole_versions.find_one({"task_id": task_id, "version": 2})
-    assert task["edit"]["status"] == "awaiting_selection"
+    assert task["edit"]["status"] == "idle"
     assert task["edit"]["outcome"] == "success"
-    assert task["current_output_id"] is None
-    assert [output["role"] for output in v2["outputs"]] == [
-        "gateway_result",
-        "agent_result",
-        "agent_transparent",
-    ]
-    agent_output = next(output for output in v2["outputs"] if output["role"] == "agent_result")
-    assert [item["kind"] for item in agent_output["artifacts"]] == ["html", "bundle"]
-    assert [item["file_name"] for item in agent_output["artifacts"]] == [
-        "editor.html",
-        "result-bundle.zip",
-    ]
+    assert [output["role"] for output in v2["outputs"]] == ["gateway_result"]
     assert v2["outputs"][0]["artifacts"] == []
-    assert sum(1 for output in v2["outputs"] if output["selectable"]) == 2
-    assert fake.agent_downloads
-    assert fake.agent_calls[-2]["upload_bytes"]
-    assert fake.agent_calls[-1]["agent_id"] == settings.core_ai_image_agent_id
-    assert fake.agent_calls[-1]["timeout_seconds"] == 1800
-    agent_input = fake.agent_calls[-1]["input"]
-    assert "Use the current poster as the editing base" in agent_input
-    assert "Food-photo preservation:" in agent_input
-    assert agent_input.endswith("把背景换成橙色\n\nhttps://example.com/current-poster.png")
+    assert task["current_output_id"] == v2["outputs"][0]["id"]
 
     out = whole_routes.get_task(task_id, request)
-    assert out["requires_output_selection"] is True
-    assert out["current_output_id"] is None
-    assert len(out["outputs"]) == 3
-
-    transparent = next(output for output in out["outputs"] if output["role"] == "agent_transparent")
-    with pytest.raises(HTTPException) as transparent_exc:
-        whole_routes.select_task_output(task_id, v2["_id"], transparent["id"], request)
-    assert transparent_exc.value.status_code == 422
-
-    agent_final = next(output for output in out["outputs"] if output["role"] == "agent_result")
-    selected = whole_routes.select_task_output(
-        task_id,
-        v2["_id"],
-        agent_final["id"],
-        request,
-    )
-    assert selected["current_output_id"] == agent_final["id"]
-    assert selected["edit"]["status"] == "idle"
-    assert selected["preview_url"] == agent_final["preview_url"]
+    assert out["requires_output_selection"] is False
+    assert len(out["outputs"]) == 1
+    assert list(out["edit"]["branches"]) == ["gateway"]
+    assert out["edit"]["branches"]["gateway"]["status"] == "completed"
 
     whole_routes.create_edit(
         task_id,
         WholeImageEditRequest(
             instruction="把标题再放大一点",
             source_version_id=v2["_id"],
-            source_output_id=agent_final["id"],
         ),
         request,
         BackgroundTasks(),
     )
     whole_service.run_edit(
-        db,
-        settings,
-        store,
-        fake,
-        task_id,
-        "把标题再放大一点",
-        v2["_id"],
-        agent_final["id"],
+        db, settings, store, fake, task_id, "把标题再放大一点", v2["_id"]
     )
     assert db.whole_versions.count_documents({"task_id": task_id}) == 3
 
@@ -1808,195 +1626,56 @@ def test_artifact_object_keys_keep_their_extension(settings):
         storage.object_key(settings, "elsewhere", "x.png")
 
 
-def test_agent_branch_rejects_mismatched_aspect_after_trying_candidates(settings, store):
-    db = mongomock.MongoClient().db
-    fake = FakeCoreAI()
-    fake.fail_agent = False
-    task_id, _ = _generate(db, settings, store, fake)
-    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
-    # Force the agent poster to 640x320 while the source canvas is 640x640.
-    fake.agent_result_size = (640, 320)
-
-    request = _request(db, settings, store, fake)
-    whole_routes.create_edit(
-        task_id,
-        WholeImageEditRequest(instruction="改背景", source_version_id=v1["_id"]),
-        request,
-        BackgroundTasks(),
-    )
-    whole_service.run_edit(db, settings, store, fake, task_id, "改背景", v1["_id"])
-
-    task = db.whole_tasks.find_one({"_id": task_id})
-    assert task["edit"]["branches"]["agent"]["status"] == "failed"
-    assert "画幅" in task["edit"]["branches"]["agent"]["error"]
-    assert task["edit"]["outcome"] == "partial"
-
-
-def _agent_artifacts(*specs):
-    # specs: (file_name, content_type, url, title)
-    return [AgentArtifact(*spec) for spec in specs]
-
-
-def _run_agent_edit(db, settings, store, fake):
-    task_id, _ = _generate(db, settings, store, fake)
-    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
-    request = _request(db, settings, store, fake)
-    whole_routes.create_edit(
-        task_id,
-        WholeImageEditRequest(instruction="改背景", source_version_id=v1["_id"]),
-        request,
-        BackgroundTasks(),
-    )
-    whole_service.run_edit(db, settings, store, fake, task_id, "改背景", v1["_id"])
-    task = db.whole_tasks.find_one({"_id": task_id})
-    v2 = db.whole_versions.find_one({"task_id": task_id, "version": 2})
-    return task, v2
-
-
-def test_agent_layer_source_url_prefers_transparent_candidate(settings, store):
-    db = mongomock.MongoClient().db
-    fake = FakeCoreAI()
-    fake.fail_agent = False
-    transparent_url = "https://example.com/t-first.png"
-    opaque_url = "https://example.com/o-second.png"
-    pre_pick_url = "https://example.com/p-opaque.png"
-    fake.agent_artifacts = _agent_artifacts(
-        ("t-first.png", "image/png", transparent_url, "成图一"),
-        ("o-second.png", "image/png", opaque_url, "成图二"),
-        ("p-layer.png", "image/png", pre_pick_url, "透明层"),
-    )
-    # The transparent picker falls back to an opaque artifact, so only the
-    # validated candidate in the final list may be used as the layer.
-    fake.agent_image_overrides = {
-        transparent_url: fake._transparent_image(),
-        opaque_url: fake._sized_image((640, 640), (120, 40, 180)),
-        pre_pick_url: fake._sized_image((640, 640), (10, 20, 30)),
-    }
-    fake.agent_output = (
-        f"![一]({transparent_url})\n"
-        f"![二]({opaque_url})"
-    )
-
-    _, v2 = _run_agent_edit(db, settings, store, fake)
-    roles = [output["role"] for output in v2["outputs"]]
-    assert roles == ["gateway_result", "agent_result", "agent_transparent"]
-    layer = next(output for output in v2["outputs"] if output["role"] == "agent_transparent")
-    assert layer["source_url"] == transparent_url
-
-
-def test_agent_layer_found_after_poster_when_ordered_last(settings, store):
-    db = mongomock.MongoClient().db
-    fake = FakeCoreAI()
-    fake.fail_agent = False
-    transparent_url = "https://example.com/t-last.png"
-    opaque_url = "https://example.com/o-first.png"
-    fake.agent_artifacts = _agent_artifacts(
-        ("o-first.png", "image/png", opaque_url, "成图一"),
-        ("t-last.png", "image/png", transparent_url, "成图二"),
-    )
-    fake.agent_image_overrides = {
-        opaque_url: fake._sized_image((640, 640), (120, 40, 180)),
-        transparent_url: fake._transparent_image(),
-    }
-    # Opaque poster first, transparent layer second.
-    fake.agent_output = (
-        f"![一]({opaque_url})\n"
-        f"![二]({transparent_url})"
-    )
-
-    _, v2 = _run_agent_edit(db, settings, store, fake)
-    poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
-    assert poster["source_url"] == opaque_url
-    layer = next(output for output in v2["outputs"] if output["role"] == "agent_transparent")
-    assert layer["source_url"] == transparent_url
-
-
-def test_artifact_download_failure_keeps_poster(settings, store):
-    db = mongomock.MongoClient().db
-    fake = FakeCoreAI()
-    fake.fail_agent = False
-    fake.agent_fail_artifacts.add("https://example.com/editor.html")
-
-    task, v2 = _run_agent_edit(db, settings, store, fake)
-    assert task["edit"]["outcome"] == "success"
-    poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
-    assert [item["kind"] for item in poster["artifacts"]] == ["bundle"]
-    assert "Agent 2 张" in task["messages"][-1]["content"]
-    assert "附加 HTML/结果包" in task["messages"][-1]["content"]
-
-
-def test_dead_candidate_url_falls_back_to_next(settings, store):
-    db = mongomock.MongoClient().db
-    fake = FakeCoreAI()
-    fake.fail_agent = False
-    dead_url = "https://example.com/dead-first.png"
-    good_url = "https://example.com/good-second.png"
-    fake.agent_artifacts = _agent_artifacts(
-        ("dead-first.png", "image/png", dead_url, "成图一"),
-        ("good-second.png", "image/png", good_url, "成图二"),
-    )
-    fake.agent_fail_downloads.add(dead_url)
-    fake.agent_image_overrides = {
-        good_url: fake._sized_image((640, 640), (120, 40, 180)),
-    }
-    fake.agent_output = (
-        f"![一]({dead_url})\n"
-        f"![二]({good_url})"
-    )
-
-    task, v2 = _run_agent_edit(db, settings, store, fake)
-    assert task["edit"]["branches"]["agent"]["status"] == "completed"
-    poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
-    assert poster["source_url"] == good_url
-
-
-def test_agent_artifacts_are_exposed_with_preview_and_download(settings, store):
+def test_artifact_preview_and_download_are_guarded(settings, store):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
-    db = mongomock.MongoClient().db
-    fake = FakeCoreAI()
-    fake.fail_agent = False
-    task_id, _ = _generate(db, settings, store, fake)
-    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
-    request = _request(db, settings, store, fake)
-    whole_routes.create_edit(
-        task_id,
-        WholeImageEditRequest(instruction="换背景", source_version_id=v1["_id"]),
-        request,
-        BackgroundTasks(),
-    )
-    whole_service.run_edit(db, settings, store, fake, task_id, "换背景", v1["_id"])
+    from app.services import agent_image
+    from app.services.core_ai import AgentArtifact
 
-    task = whole_routes.get_task(task_id, request)
-    agent_output = next(
-        output for output in task["outputs"] if output["role"] == "agent_result"
+    db = mongomock.MongoClient().db
+    html = agent_image.save_agent_artifact(
+        db,
+        settings,
+        store,
+        task_id="wtask_v2",
+        version=2,
+        artifact=AgentArtifact(
+            "editor.html", "text/html", "https://example.com/editor.html", "离线编辑器"
+        ),
+        data=b"<!doctype html><h1>Editor</h1>",
     )
-    assert [item["kind"] for item in agent_output["artifacts"]] == ["html", "bundle"]
-    html = agent_output["artifacts"][0]
-    assert html["preview_url"] == f"/api/whole-image/artifacts/{html['id']}/preview"
-    assert html["download_url"] == f"/api/whole-image/artifacts/{html['id']}/download"
-    assert html["file_name"] == "editor.html"
-    assert html["content_type"] == "text/html"
-    assert html["size"] == len(b"<!doctype html><h1>Editor</h1>")
-    assert html["title"] == "离线编辑器"
-    assert agent_output["artifacts"][1]["preview_url"] is None
-    gateway_output = next(
-        output for output in task["outputs"] if output["role"] == "gateway_result"
+    bundle = agent_image.save_agent_artifact(
+        db,
+        settings,
+        store,
+        task_id="wtask_v2",
+        version=2,
+        artifact=AgentArtifact(
+            "result-bundle.zip",
+            "application/zip",
+            "https://example.com/result.zip",
+            "完整结果包",
+        ),
+        data=b"PKbundle",
     )
-    assert gateway_output["artifacts"] == []
-    branch_output = next(
-        output
-        for output in task["edit"]["branches"]["agent"]["outputs"]
-        if output["role"] == "agent_result"
+    html_out, bundle_out = agent_image.artifacts_out(
+        {"artifacts": [html, bundle]}
     )
-    assert [item["kind"] for item in branch_output["artifacts"]] == ["html", "bundle"]
+    assert html_out["kind"] == "html"
+    assert html_out["preview_url"] == f"/api/whole-image/artifacts/{html['id']}/preview"
+    assert html_out["download_url"] == f"/api/whole-image/artifacts/{html['id']}/download"
+    assert html_out["file_name"] == "editor.html"
+    assert html_out["content_type"] == "text/html"
+    assert html_out["size"] == len(b"<!doctype html><h1>Editor</h1>")
+    assert html_out["title"] == "离线编辑器"
+    assert bundle_out["preview_url"] is None
 
     web = FastAPI()
     web.include_router(whole_routes.router, prefix="/api")
     web.state.db, web.state.settings, web.state.store = db, settings, store
     with TestClient(web) as client:
-        preview = client.get(html["preview_url"])
+        preview = client.get(html_out["preview_url"])
         assert preview.status_code == 200
         csp = preview.headers["content-security-policy"]
         assert "sandbox allow-scripts allow-downloads;" in csp
@@ -2008,16 +1687,16 @@ def test_agent_artifacts_are_exposed_with_preview_and_download(settings, store):
         assert preview.headers["content-type"].startswith("text/html")
         assert b"Editor" in preview.content
 
-        download = client.get(html["download_url"])
+        download = client.get(html_out["download_url"])
         assert download.status_code == 200
         assert download.headers["content-disposition"].startswith("attachment;")
         assert download.headers["content-type"].startswith("text/html")
         assert download.content == b"<!doctype html><h1>Editor</h1>"
 
-        bundle = client.get(agent_output["artifacts"][1]["download_url"])
-        assert bundle.status_code == 200
-        assert bundle.content == b"PK\x03\x04bundle"
-        assert bundle.headers["content-type"].startswith("application/zip")
+        bundle_response = client.get(bundle_out["download_url"])
+        assert bundle_response.status_code == 200
+        assert bundle_response.content == b"PKbundle"
+        assert bundle_response.headers["content-type"].startswith("application/zip")
 
         # Only HTML artifacts can be previewed; unknown ids are missing.
         missing_preview = client.get(
@@ -2029,7 +1708,7 @@ def test_agent_artifacts_are_exposed_with_preview_and_download(settings, store):
         )
         assert missing_download.status_code == 404
         bundle_preview = client.get(
-            f"/api/whole-image/artifacts/{agent_output['artifacts'][1]['id']}/preview"
+            f"/api/whole-image/artifacts/{bundle['id']}/preview"
         )
         assert bundle_preview.status_code == 422
 
@@ -2097,51 +1776,6 @@ def test_outputs_without_artifacts_serialize_as_empty_list(settings, store):
     branch = whole_routes._branch_out(
         db,
         "wtask_legacy",
-        {"status": "completed", "outputs": [{"role": "agent_result"}]},
+        {"status": "completed", "outputs": [{"role": "gateway_result"}]},
     )
     assert branch["outputs"][0]["artifacts"] == []
-def test_oversized_artifact_keeps_poster_and_reports_missing_title(settings, store):
-    db = mongomock.MongoClient().db
-    fake = FakeCoreAI()
-    fake.fail_agent = False
-    original = fake.download_agent_file
-
-    def download_agent_file(url, *, content_type):
-        if url == "https://example.com/editor.html":
-            raise CoreAIError("artifact_too_large", "Agent产物超过体积限制", 413)
-        return original(url, content_type=content_type)
-
-    fake.download_agent_file = download_agent_file
-
-    task, v2 = _run_agent_edit(db, settings, store, fake)
-    assert task["edit"]["branches"]["agent"]["status"] == "completed"
-    assert task["edit"]["outcome"] == "success"
-    poster = next(output for output in v2["outputs"] if output["role"] == "agent_result")
-    assert [item["kind"] for item in poster["artifacts"]] == ["bundle"]
-    assert "未取得产物" in task["messages"][-1]["content"]
-    assert "离线编辑器" in task["messages"][-1]["content"]
-
-
-def test_poster_failure_cleans_up_saved_artifacts(settings, store):
-    db = mongomock.MongoClient().db
-    fake = FakeCoreAI()
-    fake.fail_agent = False
-    # Force every final candidate to fail the aspect gate so the poster never commits.
-    fake.agent_result_size = (640, 320)
-
-    task_id, _ = _generate(db, settings, store, fake)
-    v1 = db.whole_versions.find_one({"task_id": task_id, "version": 1})
-    request = _request(db, settings, store, fake)
-    whole_routes.create_edit(
-        task_id,
-        WholeImageEditRequest(instruction="改背景", source_version_id=v1["_id"]),
-        request,
-        BackgroundTasks(),
-    )
-    whole_service.run_edit(db, settings, store, fake, task_id, "改背景", v1["_id"])
-
-    task = db.whole_tasks.find_one({"_id": task_id})
-    assert task["edit"]["branches"]["agent"]["status"] == "failed"
-    assert db.whole_artifacts.count_documents({}) == 0
-    artifact_dir = settings.storage_path / "objects" / "social-media" / "artifacts"
-    assert not list(artifact_dir.glob("**/*")) if artifact_dir.exists() else True

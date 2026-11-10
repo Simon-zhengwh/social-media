@@ -391,9 +391,9 @@ export default function App() {
         <footer className="app-footer">
           {view === 'whole' ? (
             <>
-              <span>接口与 Agent 双路改图 · 结果并排对比</span>
+              <span>提示词直出整图 · 模型直接改图，每轮结果自动保存为新版本</span>
               <span className="footer-sep" aria-hidden="true" />
-              <span>每轮结果需手动选择后才能继续修改</span>
+              <span>原照替换结果需确认后应用</span>
             </>
           ) : view === 'tasks' ? (
             <span>任务按候选批次归档 · 点击封面回到工作台继续编辑</span>

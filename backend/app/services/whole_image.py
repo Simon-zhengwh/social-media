@@ -4,7 +4,6 @@ import hashlib
 import io
 import logging
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,14 +13,9 @@ from pymongo import ReturnDocument
 from pymongo.database import Database
 
 from app.config import Settings
-from app.services import agent_image, brand_rules, platform_presets, storage
+from app.services import brand_rules, platform_presets, storage
 from app.services.canvas import canvas_size, gateway_image_size
-from app.services.core_ai import (
-    AgentArtifact,
-    AgentRunResult,
-    CoreAIClient,
-    CoreAIError,
-)
+from app.services.core_ai import CoreAIClient, CoreAIError
 from app.services.image_ref import ImageRef, cleanup_image_refs, image_ref_from_asset
 from app.services.object_store import ObjectStore
 
@@ -764,7 +758,7 @@ def _gateway_edit_branch(
         )
         asset_id = None
         return [output]
-    except Exception as exc:  # noqa: BLE001 - branch failure must not stop the other branch
+    except Exception as exc:  # noqa: BLE001 - report the failure on the task
         logger.exception("gateway edit branch failed for %s", task_id)
         _delete_asset(db, store, asset_id)
         _set_edit_branch(
@@ -784,350 +778,6 @@ def _gateway_edit_branch(
         cleanup_image_refs(edit_refs)
         if source_ref is not None:
             source_ref.cleanup()
-
-
-OUTPUT_ORDER = {"gateway_result": 0, "agent_result": 1, "agent_transparent": 2}
-
-
-def _output_sort_key(item: dict[str, Any]) -> int:
-    if str(item.get("channel") or "gateway") == "gateway":
-        return 0
-    return OUTPUT_ORDER.get(str(item.get("role") or ""), 3)
-
-
-def _delete_agent_artifacts(
-    db: Database, store: ObjectStore, artifact_meta: list[dict[str, Any]]
-) -> None:
-    for meta in artifact_meta:
-        artifact_id = str(meta.get("id") or "")
-        if not artifact_id:
-            continue
-        doc = db.whole_artifacts.find_one({"_id": artifact_id})
-        if doc:
-            try:
-                store.delete(str(doc.get("path") or ""))
-            except Exception:  # noqa: BLE001 - cleanup must not mask the original failure
-                logger.warning("could not delete artifact object %s", doc.get("path"))
-        db.whole_artifacts.delete_one({"_id": artifact_id})
-
-
-def _save_agent_artifacts(
-    db: Database,
-    settings: Settings,
-    store: ObjectStore,
-    client: CoreAIClient,
-    *,
-    task_id: str,
-    version: int,
-    result: AgentRunResult,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    picks: list[AgentArtifact] = []
-    html = agent_image.pick_html_artifact(result)
-    if html is not None:
-        picks.append(html)
-    bundle = agent_image.pick_bundle_artifact(result)
-    if bundle is not None and bundle.download_url not in {
-        item.download_url for item in picks
-    }:
-        picks.append(bundle)
-    saved: list[dict[str, Any]] = []
-    failed_titles: list[str] = []
-    for artifact in picks:
-        try:
-            data = client.download_agent_file(
-                artifact.download_url, content_type=artifact.content_type
-            )
-            saved.append(
-                agent_image.save_agent_artifact(
-                    db,
-                    settings,
-                    store,
-                    task_id=task_id,
-                    version=version,
-                    artifact=artifact,
-                    data=data,
-                )
-            )
-        except Exception:  # noqa: BLE001 - poster delivery must survive artifact failures
-            logger.exception("failed to store agent artifact for %s", task_id)
-            failed_titles.append(artifact.title or artifact.file_name)
-    return saved, failed_titles
-
-
-def _agent_edit_branch(
-    db: Database,
-    settings: Settings,
-    store: ObjectStore,
-    client: CoreAIClient,
-    *,
-    task_id: str,
-    version: int,
-    source_asset: dict[str, Any],
-    instruction: str,
-    merchant_context: str,
-    target_size: tuple[int, int],
-    reference_asset_ids: list[str],
-    canvas_ratio: str,
-) -> list[dict[str, Any]]:
-    artifact_meta: list[dict[str, Any]] = []
-    try:
-        expires = max(
-            settings.cos_presign_expiry_seconds,
-            settings.core_ai_image_agent_timeout_seconds + 600,
-        )
-        image_url = agent_image.asset_public_url(
-            db,
-            settings,
-            store,
-            client,
-            str(source_asset["_id"]),
-            expires=expires,
-        )
-        canvas_width, canvas_height = target_size
-        canvas_orientation = (
-            "portrait" if canvas_height > canvas_width
-            else "landscape" if canvas_width > canvas_height
-            else "square"
-        )
-        canvas_contract = (
-            f"Canvas contract: return the final image on exactly a {canvas_width}×"
-            f"{canvas_height} px {canvas_orientation} canvas ({canvas_ratio}). "
-            "Preserve the current poster's full composition and orientation. "
-            "Do not output a different aspect ratio, do not letterbox, and do not "
-            "add blank bands. Every final-stage generated image must match this canvas."
-        )
-        reference_images: list[dict[str, str]] = []
-        agent_references = [("当前海报（需要修改的原图）", image_url)]
-        for index, reference_asset_id in enumerate(reference_asset_ids, start=1):
-            reference_asset = db.assets.find_one({"_id": reference_asset_id})
-            if reference_asset is None:
-                raise StudioError("reference_image_missing", "附加参考图片不存在", 422)
-            reference_url = agent_image.asset_public_url(
-                db,
-                settings,
-                store,
-                client,
-                reference_asset_id,
-                expires=expires,
-            )
-            reference_images.append(
-                {
-                    "asset_id": reference_asset_id,
-                    "name": str(reference_asset.get("original_name") or "参考图片"),
-                    "kind": "edit_reference",
-                    "role": "edit_reference",
-                    "url": reference_url,
-                }
-            )
-            agent_references.append((f"本轮用户附加参考图 {index}", reference_url))
-        merchant_block = f"\n\n{merchant_context.strip()}" if merchant_context.strip() else ""
-        agent_instruction = (
-            f"{canvas_contract}\n\n{EDIT_PRESERVATION_PROMPT}{merchant_block}"
-            f"\n\nCurrent edit request:\n{instruction.strip()}"
-        )
-        if reference_images:
-            agent_instruction += (
-                "\n\nThe first URL is the current poster to edit. The following URLs "
-                "are user-supplied reference images for this edit; use them only as "
-                "references and do not replace the current poster wholesale."
-            )
-        agent_input = agent_image.build_agent_edit_input(
-            agent_references,
-            agent_instruction,
-        )
-        model_input = {
-            "channel": "agent",
-            "endpoint": f"/api/runs/agent/{settings.core_ai_image_agent_id}/trigger",
-            "model": "image-editor",
-            "prompt": agent_input,
-            "parameters": {
-                "agent_id": settings.core_ai_image_agent_id,
-                "timeout_seconds": settings.core_ai_image_agent_timeout_seconds,
-                "image_url": image_url,
-                "width": canvas_width,
-                "height": canvas_height,
-                "aspect_ratio": canvas_ratio,
-                "orientation": canvas_orientation,
-            },
-            "images": [
-                {
-                    "asset_id": str(source_asset["_id"]),
-                    "name": str(source_asset.get("original_name") or "当前海报"),
-                    "kind": "current_design",
-                    "role": "edit_target",
-                    "url": image_url,
-                },
-                *reference_images,
-            ],
-        }
-        _set_edit_branch(
-            db,
-            task_id,
-            "agent",
-            {"status": "running", "model_input": model_input, "updated_at": utcnow()},
-        )
-        result = client.run_agent_detail(
-            settings.core_ai_image_agent_id,
-            agent_input,
-            timeout_seconds=settings.core_ai_image_agent_timeout_seconds,
-        )
-        final_urls = agent_image.pick_final_image_urls(result)
-        if not final_urls:
-            raise CoreAIError("agent_image_missing", "Agent已完成，但没有返回海报图片", 502)
-        artifact_meta, failed_artifact_titles = _save_agent_artifacts(
-            db, settings, store, client, task_id=task_id, version=version, result=result
-        )
-        transparent_url = agent_image.pick_transparent_image_url(
-            result, excluded=final_urls
-        )
-        transparent_data: bytes | None = None
-        layer_source: str | None = None
-        if transparent_url is not None:
-            try:
-                candidate = client.download_image(transparent_url)
-                if agent_image.has_transparency(candidate):
-                    transparent_data = candidate
-                    layer_source = transparent_url
-            except CoreAIError:
-                logger.warning("could not download agent layer for %s", task_id)
-        candidates = final_urls[:4]
-        downloaded: dict[str, bytes | None] = {}
-        final_saved: dict[str, Any] | None = None
-        final_source: str | None = None
-        last_error: CoreAIError | None = None
-        for url in candidates:
-            if url in downloaded:
-                data = downloaded[url]
-            else:
-                try:
-                    data = client.download_image(url)
-                except CoreAIError as exc:
-                    last_error = exc
-                    downloaded[url] = None
-                    data = None
-                else:
-                    downloaded[url] = data
-            if data is None:
-                continue
-            if agent_image.has_transparency(data):
-                if transparent_data is None:
-                    transparent_data = data
-                    layer_source = url
-                continue
-            try:
-                saved = agent_image.save_png_asset(
-                    db,
-                    settings,
-                    store,
-                    key_prefix=f"{task_id}_v{version}_agent_1",
-                    original_stem=f"{task_id}-v{version}-agent-1",
-                    data=data,
-                    role="agent_result",
-                    target_size=target_size,
-                    require_aspect_match=True,
-                )
-            except CoreAIError as exc:
-                last_error = exc
-                continue
-            final_saved, final_source = saved, url
-            break
-        if final_saved is None:
-            raise last_error or CoreAIError(
-                "agent_image_missing", "Agent没有返回可用的最终海报", 502
-            )
-        # The layer may be ordered after the poster, so keep looking when the
-        # poster was found before any transparent candidate.
-        if transparent_data is None:
-            for url in candidates:
-                if url == final_source:
-                    continue
-                if url not in downloaded:
-                    try:
-                        downloaded[url] = client.download_image(url)
-                    except CoreAIError:
-                        downloaded[url] = None
-                data = downloaded[url]
-                if data is not None and agent_image.has_transparency(data):
-                    transparent_data = data
-                    layer_source = url
-                    break
-        saved_outputs: list[dict[str, Any]] = [
-            {
-                "id": f"agent_result_{uuid.uuid4().hex}",
-                "channel": "agent",
-                "role": "agent_result",
-                "label": "Agent最终图",
-                "asset_id": final_saved["asset_id"],
-                "width": final_saved["width"],
-                "height": final_saved["height"],
-                "selectable": True,
-                "model_input": model_input,
-                "source_url": final_source,
-                "artifacts": artifact_meta,
-                "created_at": utcnow(),
-            }
-        ]
-        if transparent_data is not None:
-            layer = agent_image.save_png_asset(
-                db,
-                settings,
-                store,
-                key_prefix=f"{task_id}_v{version}_agent_2",
-                original_stem=f"{task_id}-v{version}-agent-2",
-                data=transparent_data,
-                role="agent_transparent",
-                target_size=target_size,
-            )
-            saved_outputs.append(
-                {
-                    "id": f"agent_transparent_{uuid.uuid4().hex}",
-                    "channel": "agent",
-                    "role": "agent_transparent",
-                    "label": "Agent透明 PNG",
-                    "asset_id": layer["asset_id"],
-                    "width": layer["width"],
-                    "height": layer["height"],
-                    "selectable": False,
-                    "model_input": model_input,
-                    "source_url": layer_source,
-                    "artifacts": [],
-                    "created_at": utcnow(),
-                }
-            )
-        _set_edit_branch(
-            db,
-            task_id,
-            "agent",
-            {
-                "status": "completed",
-                "outputs": saved_outputs,
-                "run_id": result.run_id,
-                "agent_output": result.output,
-                "missing_artifacts": failed_artifact_titles,
-                "completed_at": utcnow(),
-                "updated_at": utcnow(),
-                "error": None,
-            },
-        )
-        return saved_outputs
-    except Exception as exc:  # noqa: BLE001 - keep gateway result available
-        logger.exception("agent edit branch failed for %s", task_id)
-        try:
-            _delete_agent_artifacts(db, store, artifact_meta)
-        except Exception:  # noqa: BLE001 - cleanup must not mask the real error
-            logger.warning("could not clean up agent artifacts for %s", task_id)
-        _set_edit_branch(
-            db,
-            task_id,
-            "agent",
-            {
-                "status": "failed",
-                "error": _error_text(exc),
-                "completed_at": utcnow(),
-                "updated_at": utcnow(),
-            },
-        )
-        return []
 
 
 def run_edit(
@@ -1268,69 +918,32 @@ def run_edit(
                                 "outputs": [],
                                 "error": None,
                             },
-                            "agent": {
-                                "status": "preparing",
-                                "started_at": started_at,
-                                "model_input": None,
-                                "outputs": [],
-                                "run_id": None,
-                                "error": None,
-                            },
                         },
                     },
                     "updated_at": started_at,
                 }
             },
         )
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [
-                executor.submit(
-                    _gateway_edit_branch,
-                    db,
-                    settings,
-                    store,
-                    client,
-                    task_id=task_id,
-                    version=version,
-                    task_input=task_input,
-                    source_asset=source_asset,
-                    size=size,
-                    image_model=image_model,
-                    model_input=gateway_input,
-                    prompt=prompt,
-                    target_size=(width, height),
-                    reference_asset_ids=reference_asset_ids,
-                ),
-                executor.submit(
-                    _agent_edit_branch,
-                    db,
-                    settings,
-                    store,
-                    client,
-                    task_id=task_id,
-                    version=version,
-                    source_asset=source_asset,
-                    instruction=instruction,
-                    merchant_context=merchant_context,
-                    target_size=(width, height),
-                    reference_asset_ids=reference_asset_ids,
-                    canvas_ratio=str(task_input.get("ratio") or f"{width}:{height}"),
-                ),
-            ]
-            all_outputs: list[dict[str, Any]] = []
-            for future in as_completed(futures):
-                all_outputs.extend(future.result())
-            all_outputs.sort(key=_output_sort_key)
+        outputs = _gateway_edit_branch(
+            db,
+            settings,
+            store,
+            client,
+            task_id=task_id,
+            version=version,
+            task_input=task_input,
+            source_asset=source_asset,
+            size=size,
+            image_model=image_model,
+            model_input=gateway_input,
+            prompt=prompt,
+            target_size=(width, height),
+            reference_asset_ids=reference_asset_ids,
+        )
         updated = db.whole_tasks.find_one({"_id": task_id}) or {}
-        branches = ((updated.get("edit") or {}).get("branches") or {})
-        gateway_status = (branches.get("gateway") or {}).get("status")
-        agent_status = (branches.get("agent") or {}).get("status")
-        if not all_outputs:
-            errors = [
-                str((branches.get(name) or {}).get("error") or "")
-                for name in ("gateway", "agent")
-            ]
-            message = "；".join(error for error in errors if error) or "两条改图链路都没有返回图片"
+        gateway = ((updated.get("edit") or {}).get("branches") or {}).get("gateway") or {}
+        if not outputs:
+            message = str(gateway.get("error") or "").strip() or "改图接口没有返回图片"
             db.whole_tasks.update_one(
                 {"_id": task_id},
                 {
@@ -1353,52 +966,26 @@ def run_edit(
                 status="failed",
             )
             return
-        outcome = (
-            "success"
-            if gateway_status == "completed" and agent_status == "completed"
-            else "partial"
-        )
-        gateway_count = 1 if gateway_status == "completed" else 0
-        agent_count = sum(1 for item in all_outputs if item.get("channel") == "agent")
-        message = f"已完成 v{version}：接口 {gateway_count} 张，Agent {agent_count} 张。"
-        artifact_count = sum(
-            len(item.get("artifacts") or [])
-            for item in all_outputs
-            if item.get("channel") == "agent"
-        )
-        if artifact_count:
-            message += f"附加 HTML/结果包 {artifact_count}个。"
-        missing_titles = [
-            str(title).strip()
-            for title in (branches.get("agent") or {}).get("missing_artifacts") or []
-            if str(title).strip()
-        ]
-        if missing_titles:
-            message += "；未取得产物：" + "、".join(missing_titles)
-        if outcome == "partial":
-            message += " 有一条链路失败，已保留成功结果。"
         document = _version_document(
             task_id=task_id,
             version=version,
             parent_version_id=source_version_id,
-            output_asset_id=str(all_outputs[0]["asset_id"]),
+            output_asset_id=str(outputs[0]["asset_id"]),
             instruction=instruction,
             operation="edit",
             width=width,
             height=height,
-            model_input=all_outputs[0].get("model_input") or gateway_input,
-            outputs=all_outputs,
+            model_input=outputs[0].get("model_input") or gateway_input,
+            outputs=outputs,
         )
-        selectable_count = sum(1 for item in all_outputs if item.get("selectable"))
         _commit_version(
             db,
             store,
             task_id=task_id,
             version_doc=document,
             generation=False,
-            require_output_selection=selectable_count > 1,
-            edit_outcome=outcome,
-            message=message,
+            edit_outcome="success",
+            message=f"已完成 v{version}：接口结果 1 张。",
         )
     except Exception as exc:  # noqa: BLE001 - preserve last good image
         logger.exception("edit failed for %s", task_id)
@@ -1530,8 +1117,6 @@ def mark_interrupted(db: Database) -> None:
                 "edit.error": "本地服务重启，修改已中断，请重新发起。",
                 "edit.branches.gateway.status": "failed",
                 "edit.branches.gateway.error": "本地服务重启，修改已中断。",
-                "edit.branches.agent.status": "failed",
-                "edit.branches.agent.error": "本地服务重启，修改已中断。",
                 "updated_at": utcnow(),
             }
         },
