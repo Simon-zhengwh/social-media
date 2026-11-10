@@ -25,3 +25,11 @@ seejoy素材/
 万圣节素材/
 朵颐素材/
 测试用例/
+
+# Working notes and design drafts, not shipped code.
+docs/plans/
+docs/superpowers/
+
+# Additional local material directories.
+*素材/
+*菜单/
