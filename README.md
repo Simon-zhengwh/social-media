@@ -163,6 +163,14 @@ IMAGE_HOST_UPLOAD_TOKEN=replace_me
 IMAGE_HOST_PUBLIC_BASE_URL=https://43.139.235.133/img
 IMAGE_HOST_TIMEOUT_SECONDS=60
 
+# AM Console 会话来源。本地直连时改成 http://127.0.0.1:5173。
+SOCIAL_MEDIA_ORIGIN=https://social-media.connexup-uat.net
+SOCIAL_MEDIA_URL=https://social-media.connexup-uat.net
+
+#本地直连开发：跳过 AM Console 会话校验，固定打开一个商户。默认关闭。
+AM_BYPASS_LOCAL=0
+AM_BYPASS_MERCHANT_ID=
+
 # 默认留空，使用 local_media/objects。
 COS_SECRET_ID=
 COS_SECRET_KEY=
@@ -170,6 +178,8 @@ COS_BUCKET=
 COS_REGION=
 COS_PREFIX=social-media
 ```
+
+不经过 AM Console 直接开发时，把 `SOCIAL_MEDIA_ORIGIN` 设为 `http://127.0.0.1:5173`，并设置 `AM_BYPASS_LOCAL=1` 与 `AM_BYPASS_MERCHANT_ID=<商户 ID>`。此时跳过 AM 会话校验：素材库只显示本地上传，媒体存储落到本地磁盘，商户资料读取 MongoDB `merchant_profiles` 中该商户已导入的记录。打开 <http://127.0.0.1:5173>会自动进入该商户工作区。该开关只在本机来源下生效，部署环境即使误设也不会启用。
 
 当前默认使用本地对象存储。提示词优化需要配置自建图床；图片仅在第一次需要外部模型读取时上传，返回 URL 会缓存在素材记录中。COS 配置留空即可，仅保留兼容入口。
 

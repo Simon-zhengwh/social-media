@@ -9,6 +9,7 @@ import MerchantSwitcher from './components/MerchantSwitcher'
 import PosterEditStudio from './components/PosterEditStudio'
 import {
   ApiError,
+  probeLocalDevMerchant,
   getMerchantContext,
   type MerchantContext,
   listAssetPage,
@@ -101,7 +102,33 @@ const VIEW_META: Record<
 }
 
 export default function App() {
-  const [initialMerchantId] = useState(() => merchantIdFromLocation())
+  const [initialMerchantId, setInitialMerchantId] = useState(() => merchantIdFromLocation())
+  // Local runs have no merchant in the URL yet; waiting for the backend answer
+  // keeps the AM login error from flashing before the bypass settles.
+  const [resolvingMerchant, setResolvingMerchant] = useState(() => !merchantIdFromLocation())
+  // Set when local dev cannot even reach the backend, so the error screen can say so.
+  const [backendUnreachable, setBackendUnreachable] = useState(false)
+
+  useEffect(() => {
+    if (initialMerchantId) return
+    let cancelled = false
+    void probeLocalDevMerchant().then((probe) => {
+      if (cancelled) return
+      setBackendUnreachable(probe.backendUnreachable)
+      if (!probe.merchantId) {
+        setResolvingMerchant(false)
+        return
+      }
+      const url = new URL(window.location.href)
+      url.searchParams.set('merchant_id', probe.merchantId)
+      window.history.replaceState({}, '', url)
+      setInitialMerchantId(probe.merchantId)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [initialMerchantId])
+
   const [view, setView] = useState<AppView>(() => readView())
   const [brands, setBrands] = useState<BrandStyle[]>([])
   const [brandsLoading, setBrandsLoading] = useState(true)
@@ -269,15 +296,22 @@ export default function App() {
     setView('whole')
   }
 
-  if (contextLoading) {
-    return <div className="app-loading">正在验证 AM 登录和商家权限…</div>
+  if (contextLoading || resolvingMerchant) {
+    return <div className="app-loading">正在打开商家工作区…</div>
   }
   if (contextError || !context) {
     return (
       <div className="app-context-error">
         <strong>无法打开商家工作区</strong>
-        <p>{contextError || '商家上下文不可用'}</p>
-        <a className="mp-btn-primary" href="https://am.connexup-uat.net">返回 AM Console 重新进入</a>
+        <p>{contextError || (backendUnreachable ? '无法连接后端服务，本地开发需先启动 backend（127.0.0.1:8000）再刷新页面' : '商家上下文不可用')}</p>
+        {backendUnreachable ? (
+          <p>
+            启动命令：在 backend 目录执行<br />
+            <code>.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code>
+          </p>
+        ) : (
+          <a className="mp-btn-primary" href="https://am.connexup-uat.net">返回 AM Console 重新进入</a>
+        )}
       </div>
     )
   }

@@ -170,6 +170,23 @@ PROMPT_SECTIONS = {
 }
 
 
+def stored_profile(db: Any, merchant_id: str | None) -> dict[str, Any] | None:
+    """The profile previously imported from AM Console, for local runs without a session.
+
+    The stored record keeps the AM payload under `source`, so the local view is the same
+    projection the console would produce instead of a second, drifting shape.
+    """
+    if not merchant_id:
+        return None
+    record = db.merchant_profiles.find_one({"_id": merchant_id})
+    if record is None:
+        return None
+    source = record.get("source")
+    if not isinstance(source, dict):
+        return get_profile(db, merchant_id)
+    return project_profile({"merchant_id": str(record.get("_id") or merchant_id), **source})
+
+
 def get_profile(db: Any, merchant_id: str | None) -> dict[str, Any] | None:
     # UAT profiles come only from the authenticated AM request, never local seeds.
     if isinstance(db, ScopedDatabase):

@@ -55,6 +55,50 @@ def list_media(
     }
 
 
+def list_local(
+    db: Any,
+    merchant_id: str,
+    *,
+    keyword: str,
+    skip: int,
+    limit: int,
+) -> dict[str, Any]:
+    """Uploaded assets only, for runs that have no AM Console session."""
+    local_query = _local_query(keyword)
+    total = db.assets.count_documents(local_query)
+    docs = list(db.assets.find(local_query).sort("created_at", -1).skip(skip).limit(limit))
+    return {
+        "items": [_local_item(merchant_id, document) for document in docs],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+    }
+
+
+def _local_query(keyword: str) -> dict[str, Any]:
+    query: dict[str, Any] = {"source": "upload"}
+    normalized = keyword.strip()
+    if normalized:
+        query["original_name"] = {"$regex": re.escape(normalized), "$options": "i"}
+    return query
+
+
+def _local_item(merchant_id: str, document: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(document["_id"]),
+        "original_name": str(document.get("original_name") or ""),
+        "width": int(document.get("width") or 0),
+        "height": int(document.get("height") or 0),
+        "mime_type": str(document.get("mime_type") or "image/png"),
+        "url": document.get("prepared_url")
+        or document.get("url")
+        or asset_url(merchant_id, str(document["_id"])),
+        "created_at": document.get("created_at"),
+        "source": "upload",
+        "read_only": False,
+    }
+
+
 def list_for_merchant(
     db: Any,
     am: AMClient,
@@ -65,13 +109,7 @@ def list_for_merchant(
     skip: int,
     limit: int,
 ) -> dict[str, Any]:
-    local_query: dict[str, Any] = {"source": "upload"}
-    normalized_keyword = keyword.strip()
-    if normalized_keyword:
-        local_query["original_name"] = {
-            "$regex": re.escape(normalized_keyword),
-            "$options": "i",
-        }
+    local_query = _local_query(keyword)
 
     local_total = db.assets.count_documents(local_query)
     local_docs = []
@@ -82,22 +120,7 @@ def list_for_merchant(
             .skip(skip)
             .limit(limit)
         )
-    local_items = [
-        {
-            "id": str(document["_id"]),
-            "original_name": str(document.get("original_name") or ""),
-            "width": int(document.get("width") or 0),
-            "height": int(document.get("height") or 0),
-            "mime_type": str(document.get("mime_type") or "image/png"),
-            "url": document.get("prepared_url")
-            or document.get("url")
-            or asset_url(merchant_id, str(document["_id"])),
-            "created_at": document.get("created_at"),
-            "source": "upload",
-            "read_only": False,
-        }
-        for document in local_docs
-    ]
+    local_items = [_local_item(merchant_id, document) for document in local_docs]
 
     remaining = limit - len(local_items)
     am_page = list_media(
@@ -115,6 +138,7 @@ def list_for_merchant(
         "skip": skip,
         "limit": limit,
     }
+
 
 def import_if_needed(
     db: Any,

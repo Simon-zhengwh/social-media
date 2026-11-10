@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from app.middleware import is_local_bypass as _local_bypass
 from app.request_context import request_db
 from app.services import am_assets, merchant_profile
 from app.services.am_client import AMClientError
@@ -21,6 +22,11 @@ def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
     Same list the AM Console launcher shows, read with the caller's own session. It is
     deliberately not scoped to one merchant: it exists to choose one.
     """
+    if _local_bypass(request):
+        # No console session locally: the configured merchant is the only one on offer.
+        merchant_id = request.app.state.settings.am_bypass_merchant_id.strip()
+        merchants = [{"id": merchant_id, "name": "本地商户"}] if merchant_id else []
+        return {"total": len(merchants), "merchants": merchants}
     am = request.app.state.am
     try:
         payload = am.search_merchants(request.headers.get("cookie", ""), keyword=keyword)
@@ -36,16 +42,20 @@ def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
 
 @router.get("/context")
 def get_merchant_context(merchant_id: str, request: Request) -> dict[str, Any]:
-    try:
-        profile = merchant_profile.load_profile(request.app.state.am, request.state.am_cookie, merchant_id)
-    except AMClientError as exc:
-        raise _am_http_error(exc) from exc
-    projected = merchant_profile.project_profile(profile)
-    request.state.merchant_profile = projected
+    bypass = _local_bypass(request)
+    if bypass:
+        projected = merchant_profile.stored_profile(request.app.state.raw_db, merchant_id)
+    else:
+        try:
+            profile = merchant_profile.load_profile(request.app.state.am, request.state.am_cookie, merchant_id)
+        except AMClientError as exc:
+            raise _am_http_error(exc) from exc
+        projected = merchant_profile.project_profile(profile)
+        request.state.merchant_profile = projected
     return {
         "merchant": request.state.merchant_context,
         "profile": projected,
-        "features": {"am_media_library": True, "maintenance_cli": True},
+        "features": {"am_media_library": not bypass, "maintenance_cli": True},
     }
 
 
@@ -57,6 +67,15 @@ def list_am_assets(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
+    if _local_bypass(request):
+        # The AM media library needs a console session; local dev only has uploads.
+        return am_assets.list_local(
+            request_db(request),
+            merchant_id,
+            keyword=keyword,
+            skip=skip,
+            limit=limit,
+        )
     try:
         return am_assets.list_for_merchant(
             request_db(request),

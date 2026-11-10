@@ -16,6 +16,9 @@ def settings(tmp_path: Path) -> Settings:
         storage_dir=str(tmp_path / "storage"),
         core_ai_api_key="test-key",
         core_ai_image_timeout_seconds=5,
+        # Keep tests independent of whatever the developer's backend/.env holds.
+        am_media_storage_service_key="",
+        am_bypass_local=False,
     )
 
 

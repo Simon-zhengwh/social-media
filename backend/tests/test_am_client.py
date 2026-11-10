@@ -115,3 +115,27 @@ def test_combined_asset_page_includes_scoped_uploads_before_am_media():
     assert page["items"][0]["original_name"] == "WIDE.png"
     assert page["items"][0]["width"] == 2400
     assert page["items"][1]["id"] == "am:am-1"
+
+
+def test_local_listing_returns_uploads_only_and_never_calls_am():
+    def handler(request: httpx.Request):
+        raise AssertionError("AM must not be called when there is no console session")
+
+    raw = mongomock.MongoClient().db
+    db = ScopedDatabase(raw, "m1")
+    db.assets.insert_one({
+        "_id": "wide", "original_name": "WIDE.png", "width": 2400, "height": 1200,
+        "mime_type": "image/png", "source": "upload", "created_at": "2026-01-02",
+    })
+    db.assets.insert_one({
+        "_id": "tall", "original_name": "tall.png", "width": 800, "height": 1600,
+        "mime_type": "image/png", "source": "upload", "created_at": "2026-01-03",
+    })
+
+    page = am_assets.list_local(db, "m1", keyword="", skip=0, limit=10)
+    assert page["total"] == 2
+    assert [item["id"] for item in page["items"]] == ["tall", "wide"]
+
+    filtered = am_assets.list_local(db, "m1", keyword="wid", skip=0, limit=10)
+    assert [item["original_name"] for item in filtered["items"]] == ["WIDE.png"]
+

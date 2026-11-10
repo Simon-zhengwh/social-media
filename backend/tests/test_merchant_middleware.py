@@ -5,6 +5,8 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from types import SimpleNamespace
+
 from app.config import Settings
 from app.middleware import merchant_context_middleware
 from app.services import maintenance
@@ -109,3 +111,82 @@ def test_generation_and_optimizer_requests_load_am_profile(method, path, expects
         assert profile["prompt_sections"] == [{"title": "商户定位", "text": "AM_BACKGROUND"}]
     else:
         assert profile is None
+
+def _bypass_app(origin: str = "http://127.0.0.1:5173", bypass: bool = True, merchant: str = "local-merchant"):
+    app = FastAPI()
+    raw = mongomock.MongoClient().db
+    maintenance.initialize(raw)
+    raw.merchant_profiles.insert_one(
+        {
+            "_id": merchant,
+            "source": {
+                "brand": {"canonical_name": "SEE JOY", "positioning": "LOCAL_BACKGROUND"},
+                "locations": [{"place_id": "p1", "name": "One", "core_highlights": ["hot pot"]}],
+            },
+        }
+    )
+    app.state.raw_db = raw
+    app.state.settings = Settings(
+        social_media_origin=origin,
+        am_bypass_local=bypass,
+        am_bypass_merchant_id=merchant,
+    )
+    app.state.am = FakeAM()
+    app.state.local_store = SimpleNamespace(name="local")
+    app.middleware("http")(merchant_context_middleware)
+
+    @app.get("/api/merchants/{merchant_id}/probe")
+    def probe(merchant_id: str, request: Request):
+        return {
+            "merchant_id": request.state.merchant_id,
+            "user_id": request.state.merchant_context["user_id"],
+            "store": request.state.store.name,
+        }
+
+    @app.get("/api/merchants/{merchant_id}/brands")
+    def brands(merchant_id: str, request: Request):
+        return {"profile": request.state.merchant_profile}
+
+    @app.post("/api/merchants/{merchant_id}/probe")
+    def write_probe(merchant_id: str, request: Request):
+        return {"ok": True}
+
+    return app, raw
+
+
+def test_local_bypass_serves_context_and_local_store_without_a_cookie():
+    app, _ = _bypass_app()
+    client = TestClient(app)
+    response = client.get("/api/merchants/local-merchant/probe")
+    assert response.status_code == 200
+    assert response.json() == {
+        "merchant_id": "local-merchant",
+        "user_id": "local-dev",
+        "store": "local",
+    }
+
+
+def test_local_bypass_reads_the_stored_profile_for_generation_requests():
+    app, _ = _bypass_app()
+    body = TestClient(app).get("/api/merchants/local-merchant/brands").json()["profile"]
+    assert body["id"] == "local-merchant"
+    assert body["prompt_sections"][0] == {"title": "商户定位", "text": "LOCAL_BACKGROUND"}
+
+
+def test_local_bypass_allows_the_vite_origin_for_writes():
+    app, _ = _bypass_app()
+    client = TestClient(app)
+    ok = client.post(
+        "/api/merchants/local-merchant/probe",
+        headers={"Origin": "http://127.0.0.1:5173", "X-Media-Request": "1"},
+    )
+    assert ok.status_code == 200
+    assert client.post("/api/merchants/local-merchant/probe", headers={"Origin": "http://evil.test", "X-Media-Request": "1"}).status_code == 403
+
+
+def test_local_bypass_is_ignored_when_am_is_disabled_or_the_origin_is_public():
+    app, _ = _bypass_app(bypass=False)
+    assert TestClient(app).get("/api/merchants/local-merchant/probe").status_code == 401
+
+    public, _ = _bypass_app(origin="https://social-media.connexup-uat.net")
+    assert TestClient(public).get("/api/merchants/local-merchant/probe").status_code == 401

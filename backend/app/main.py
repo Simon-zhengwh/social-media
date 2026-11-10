@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import get_settings
 from app.db import create_client, get_database
-from app.middleware import merchant_context_middleware
+from app.middleware import local_bypass_enabled, merchant_context_middleware
 from app.routes import (
     assets,
     agent_tests,
@@ -190,6 +190,8 @@ def liveness() -> JSONResponse:
 @app.get("/api/health")
 def health(request: Request) -> JSONResponse:
     settings = request.app.state.settings
+    bypass = local_bypass_enabled(settings)
+    local_merchant_id = settings.am_bypass_merchant_id.strip() if bypass else ""
     if not getattr(request.app.state, "ready", False):
         return JSONResponse(
             status_code=503,
@@ -204,7 +206,7 @@ def health(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=503,
-            content={"status": "error", "initialized": True, "mongo": "unavailable", "message": f"MongoDB 不可用：{exc}"},
+            content={"status": "error", "initialized": True, "mongo": "unavailable", "message": f"MongoDB 不可用：{exc}", "local_merchant_id": local_merchant_id},
         )
     try:
         storage.ensure_storage_dirs(settings)
@@ -212,9 +214,16 @@ def health(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=503,
-            content={"status": "error", "initialized": True, "mongo": "ok", "storage": "unavailable", "message": f"临时存储不可写：{exc}"},
+            content={
+                "status": "error",
+                "initialized": True,
+                "mongo": "ok",
+                "storage": "unavailable",
+                "message": f"临时存储不可写：{exc}",
+                "local_merchant_id": local_merchant_id,
+            },
         )
-    if not settings.am_media_storage_service_key.strip():
+    if not bypass and not settings.am_media_storage_service_key.strip():
         return JSONResponse(
             status_code=503,
             content={"status": "error", "initialized": True, "media_storage": "unconfigured", "message": "未配置媒体存储服务身份"},
@@ -225,7 +234,8 @@ def health(request: Request) -> JSONResponse:
             "initialized": True,
             "mongo": "ok",
             "storage": "ok",
-            "media_storage": "configured",
-            "storage_backend": "am-media",
+            "media_storage": "local-bypass" if bypass else "configured",
+            "storage_backend": "local" if bypass else "am-media",
+            "local_merchant_id": local_merchant_id,
         },
     )

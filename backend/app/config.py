@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     am_timeout_seconds: int = 30
     am_media_storage_service_key: str = ""
     am_media_storage_base_path: str = "/fbr-uat/product"
+    # Local development only: skips the AM Console session check so the
+    # workspace can run without an AM login cookie. Never enable in UAT or
+    # production; merchant scoping still applies to every query.
+    am_bypass_local: bool = False
+    am_bypass_merchant_id: str = ""
     social_media_origin: str = "https://social-media.connexup-uat.net"
     social_media_url: str = "https://social-media.connexup-uat.net"
 

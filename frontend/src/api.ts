@@ -15,10 +15,41 @@ import type {
   WholeImageTaskGroupPage,
   WholeImageTask,
   WholeImageVersion,
- PosterEditBatch,
- PosterEditTask,
+  PosterEditBatch,
+  PosterEditTask,
 } from './types'
 
+
+export type LocalDevProbe = {
+  /** Merchant to open when the backend runs with AM_BYPASS_LOCAL, else empty. */
+  merchantId: string
+  /** True when /api/health could not be reached at all, usually a stopped backend. */
+  backendUnreachable: boolean
+}
+
+/**
+ * Ask the backend which merchant local dev should open.
+ *
+ * Only a server started with AM_BYPASS_LOCAL answers with an id, so a deployed
+ * build keeps asking the operator to come in through AM Console. The reachability
+ * flag lets the caller tell "backend stopped" apart from "no bypass here".
+ */
+export async function probeLocalDevMerchant(): Promise<LocalDevProbe> {
+  try {
+    const response = await fetch('/api/health')
+    if (!response.ok && response.status !== 503) {
+      return { merchantId: '', backendUnreachable: false }
+    }
+    const payload = (await response.json()) as { local_merchant_id?: unknown }
+    const value = payload.local_merchant_id
+    return {
+      merchantId: typeof value === 'string' ? value.trim() : '',
+      backendUnreachable: false,
+    }
+  } catch {
+    return { merchantId: '', backendUnreachable: true }
+  }
+}
 
 export function merchantIdFromLocation(): string {
   return new URLSearchParams(window.location.search).get('merchant_id')?.trim() ?? ''
