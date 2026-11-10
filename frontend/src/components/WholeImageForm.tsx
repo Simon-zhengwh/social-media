@@ -1,3 +1,4 @@
+import type { ChangeEvent } from 'react'
 import PlatformSelector from './PlatformSelector'
 import BrandModeSelector from './BrandModeSelector'
 import CandidateCountSelector from './CandidateCountSelector'
@@ -15,6 +16,8 @@ import type {
   Ratio,
 } from '../types'
 
+const MAX_PRODUCTS = 6
+
 type Props = {
   brands: BrandStyle[]
   selectedBrandId: string
@@ -26,7 +29,6 @@ type Props = {
   logoOptions: BrandLogoImage[]
   selectedLogoId: string
   logoUploading: boolean
-  logoDeleting: boolean
   canAddLogo: boolean
   stores: MerchantStore[]
   storeSelection: StoreSelection
@@ -38,6 +40,7 @@ type Props = {
   selectedPlacementId: string
   selectedRatio: Ratio
   products: Asset[]
+  productsUploading: boolean
   prompt: string
   promptOptimized: boolean
   candidateCount: number
@@ -53,6 +56,7 @@ type Props = {
   onPlacementChange: (placementId: string) => void
   onRatioChange: (ratio: Ratio) => void
   onPickProducts: () => void
+  onUploadProducts: (files: File[]) => void
   onRemoveProduct: (id: string) => void
   onPromptChange: (value: string, optimized?: boolean) => void
   onCandidateCountChange: (value: number) => void
@@ -70,7 +74,6 @@ export default function WholeImageForm({
   logoOptions,
   selectedLogoId,
   logoUploading,
-  logoDeleting,
   canAddLogo,
   stores,
   storeSelection,
@@ -82,6 +85,7 @@ export default function WholeImageForm({
   selectedPlacementId,
   selectedRatio,
   products,
+  productsUploading,
   prompt,
   promptOptimized,
   candidateCount,
@@ -97,6 +101,7 @@ export default function WholeImageForm({
   onPlacementChange,
   onRatioChange,
   onPickProducts,
+  onUploadProducts,
   onRemoveProduct,
   onPromptChange,
   onCandidateCountChange,
@@ -108,6 +113,12 @@ export default function WholeImageForm({
     (!brandsLoading &&
       !brandsError &&
       brands.some((brand) => brand.id === selectedBrandId))
+  const handleUploadFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? [])
+    if (files.length) onUploadProducts(files)
+    event.target.value = ''
+  }
+
   const optimizationReady =
     products.length > 0 &&
     brandReady &&
@@ -157,7 +168,6 @@ export default function WholeImageForm({
         selectedLogoId={selectedLogoId}
         busy={busy}
         logoUploading={logoUploading}
-        logoDeleting={logoDeleting}
         canAddLogo={canAddLogo}
         onUploadLogos={onUploadLogos}
         onPickLogo={onPickLogo}
@@ -197,19 +207,49 @@ export default function WholeImageForm({
                 </button>
               </div>
             ))}
-            {products.length < 6 ? (
-              <button type="button" className="product-add" onClick={onPickProducts}>
-                <span className="upload-plus" aria-hidden="true" />
-                <span>添加</span>
-              </button>
+            {products.length < MAX_PRODUCTS ? (
+              <>
+                <button type="button" className="product-add" onClick={onPickProducts} disabled={busy}>
+                  <span className="upload-plus" aria-hidden="true" />
+                  <span>添加</span>
+                </button>
+                <label
+                  className={`product-add${busy || productsUploading ? ' is-disabled' : ''}`}
+                  title="直接上传素材图（同步到素材库）"
+                >
+                  <input
+                    type="file"
+                    multiple
+                    accept="image/png,image/jpeg,image/webp"
+                    disabled={busy || productsUploading}
+                    onChange={handleUploadFiles}
+                  />
+                  <span className="upload-plus" aria-hidden="true" />
+                  <span>{productsUploading ? '上传中' : '上传'}</span>
+                </label>
+              </>
             ) : null}
           </div>
         ) : (
-          <button type="button" className="product-empty" onClick={onPickProducts}>
-            <span className="upload-plus" aria-hidden="true" />
-            <strong>从资产管理选择素材图</strong>
-            <span>可多选</span>
-          </button>
+          <>
+            <button type="button" className="product-empty" onClick={onPickProducts} disabled={busy}>
+              <span className="upload-plus" aria-hidden="true" />
+              <strong>从资产管理选择素材图</strong>
+              <span>可多选</span>
+            </button>
+            <label
+              className={`product-upload-link${busy || productsUploading ? ' is-disabled' : ''}`}
+            >
+              <input
+                type="file"
+                multiple
+                accept="image/png,image/jpeg,image/webp"
+                disabled={busy || productsUploading}
+                onChange={handleUploadFiles}
+              />
+              {productsUploading ? '正在上传素材图…' : '或直接上传素材图（同步到素材库）'}
+            </label>
+          </>
         )}
       </div>
 

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.services import asset_records, brand_rules, merchant_profile, platform_presets, storage
+from app.services import asset_records, brand_rules, merchant_logos, merchant_profile, platform_presets, storage
 from app.services.image_ref import ImageRef, image_ref_from_asset
 
 logger = logging.getLogger(__name__)
@@ -545,7 +545,8 @@ def snapshot_brand(
                 _reference_entry(_asset_for_path(db, store, settings, path))
             )
 
-    logo_asset_ids = list(brand.logo_asset_ids[:MAX_BRAND_LOGOS])
+    # Logos are merchant-level now; the legacy per-style field is only a read-only fallback.
+    logo_asset_ids = list(merchant_logos.get_asset_ids(db)[:MAX_BRAND_LOGOS])
     if not logo_asset_ids and brand.logo_path is not None:
         logo_asset_ids.append(
             _asset_for_path(db, store, settings, brand.logo_path)["_id"]
@@ -678,6 +679,8 @@ def _import_loaded_brand(
         "updated_at": now,
     }
     db.brands.replace_one({"_id": brand.id}, document, upsert=True)
+    # Imported skills predate merchant-level logos; adopt theirs without overwriting a real record.
+    merchant_logos.seed_if_empty(db, logo_asset_ids[:MAX_BRAND_LOGOS])
     return {
         "brand_id": brand.id,
         "status": "imported",

@@ -16,7 +16,7 @@
 - 海报设计支持选择预设品牌、参考图风格或无品牌模式。
 - 品牌规范保存在 MongoDB `brands` 集合；`.agents/skills/<brand>/` 仅用于首次导入和人工文档，运行时不读取。
 - 每套品牌风格必须绑定一个发布平台及平台预设的发布用途；可从现有风格复制出独立平台版本。
-- 品牌风格页面支持紧凑基本信息编辑、生成规范折叠编辑、参考图管理，以及最多 5 张 Logo 和最多 6 个主色调管理。颜色统一使用 `#RRGGBB` HEX。
+- 品牌风格页面支持紧凑基本信息编辑、生成规范折叠编辑、参考图管理，以及最多 6 个主色调管理。颜色统一使用 `#RRGGBB` HEX。品牌 Logo 属于商户通用字段（左侧独立卡片，最多 5 张），全部平台风格共用，不再随单个风格保存。
 - 品牌风格使用一个选填的「备注」框填写要求，保留平台、用途、Logo、主色调和参考图。风格定位与原细分模板暂时隐藏，原数据继续保存以便恢复，但不再传给提示词优化或生图模型；规范预览也只包含备注及保留的配置。
 - 「通用规范」可在品牌风格页编辑，覆盖文案准确、素材使用、Logo 和可读性。更新应用于新任务；任务保存当时的规范正文和版本，历史任务不变。
 - 资产管理支持上传图片、查看已保存素材和删除素材。
@@ -69,7 +69,7 @@
 | 接口 | 用途 |
 |---|---|
 | `GET /api/assets` | 获取资产库中的全部上传图片 |
-| `POST /api/assets` | 上传图片素材 |
+| `POST /api/assets` | 上传图片素材，上传即进入资产库 |
 | `DELETE /api/assets/{id}` | 删除素材；被整图任务引用时需显式 `force=true` |
 | `GET /api/brands` / `GET /api/brands/{id}` | 品牌列表与详情 |
 | `PUT /api/brands/{id}` | 更新品牌配置 |
@@ -79,8 +79,9 @@
 | `POST /api/brands/{id}/duplicate` | 复制为另一个平台/用途的独立品牌风格 |
 | `POST /api/brands/{id}/references` | 上传品牌参考图，最多 5 张 |
 | `DELETE /api/brands/{id}/references/{asset_id}` | 移除品牌参考图 |
-| `POST /api/brands/{id}/logos` | 批量上传品牌 Logo，最多 5 张 |
-| `DELETE /api/brands/{id}/logos/{asset_id}` | 从当前风格移除 Logo 关联 |
+| `GET /api/brand-logos` | 获取商户级品牌 Logo（全部平台风格共用） |
+| `POST /api/brand-logos` | 批量上传商户级品牌 Logo，最多 5 张 |
+| `DELETE /api/brand-logos/{asset_id}` | 从商户级 Logo 集合移除 |
 | `GET /api/platforms` | 平台、用途、尺寸和安全区规则 |
 | `POST /api/prompts/optimize` | 优化整图生成提示词 |
 | `GET /api/health` | MongoDB、对象存储和模型配置健康检查 |
@@ -195,7 +196,7 @@ Set-Location backend
 .\.venv\Scripts\python.exe scripts/import_merchant_profile.py data/merchant_profiles/seejoy.json --brand-id seejoy --apply
 ```
 
-品牌运行时配置保存在 MongoDB 的 `brands` 集合。资产库中的图片不预设内容、Logo 或参考图角色；同一张图片可以在生成页按位置分别作为内容素材、Logo 或风格参考，角色由任务字段和品牌关联决定。任务创建时会把平台、用途、主色调、Logo 和参考图 asset id 写入 `whole_tasks.brand` 快照，后续品牌修改不会影响旧任务。生成页可单独选择当前风格的 Logo，默认使用第一张，也可选择不使用。
+品牌运行时配置保存在 MongoDB 的 `brands` 集合，商户级 Logo 保存在 `merchant_logos`。资产库中的图片不预设内容、Logo 或参考图角色；同一张图片可以在生成页按位置分别作为内容素材、Logo 或风格参考，角色由任务字段和品牌关联决定。任务创建时会把平台、用途、主色调、Logo 和参考图 asset id 写入 `whole_tasks.brand` 快照，后续品牌修改不会影响旧任务。生成页默认引用商户 Logo 的第一张，也可为本次海报换用其他素材或选择不使用；生成页上传的 Logo 仅覆盖本次任务并进入资产库。生成页素材图可从资产库多选，也可直接上传，上传的图片同样进入资产库。
 
 首次导入或重新导入 skill：
 

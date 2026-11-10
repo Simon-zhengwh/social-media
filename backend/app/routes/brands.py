@@ -17,9 +17,9 @@ from app.services import (
     brand_rules,
     brand_seed,
     brand_style,
+    merchant_logos,
     merchant_profile,
     platform_presets,
-    request_assets,
 )
 
 router = APIRouter(prefix="/brands", tags=["brands"])
@@ -53,18 +53,7 @@ def _brand_detail(request: Request, db: Any, document: dict[str, Any]) -> dict[s
             "height": int(asset.get("height") or 0),
             "is_cover": asset_id == cover_asset_id,
         })
-    logo_images: list[dict[str, Any]] = []
-    for asset_id in brand.logo_asset_ids:
-        asset = db.assets.find_one({"_id": asset_id})
-        if asset is None:
-            continue
-        logo_images.append({
-            "asset_id": asset_id,
-            "original_name": asset.get("original_name") or "",
-            "url": asset.get("prepared_url") or asset.get("url") or asset_url(merchant_id, asset_id),
-            "width": int(asset.get("width") or 0),
-            "height": int(asset.get("height") or 0),
-        })
+    logo_images = merchant_logos.images(db, merchant_id)
     return {
         "id": brand.id,
         "merchant_profile": (request_profile(request) if getattr(getattr(request, "state", None), "merchant_id", None) else merchant_profile.get_profile(db, brand.merchant_id)),
@@ -126,6 +115,8 @@ def _fetch_remote_image(url: str) -> bytes:
 def list_brands(request: Request) -> list[dict[str, Any]]:
     db = request_db(request)
     merchant_id = request_merchant_id(request)
+    # Every style shares the merchant's logos, so the list can answer without a per-brand read.
+    logo_images = merchant_logos.images(db, merchant_id)
     items: list[dict[str, Any]] = []
     for brand in brand_style.list_brands(db):
         item = brand.public_dict(
@@ -135,17 +126,8 @@ def list_brands(request: Request) -> list[dict[str, Any]]:
                 else None
             )
         )
-        item["logo_images"] = [
-            {
-                "asset_id": asset_id,
-                "original_name": (asset or {}).get("original_name") or "",
-                "url": asset.get("prepared_url") or asset.get("url") or asset_url(merchant_id, asset_id),
-                "width": int((asset or {}).get("width") or 0),
-                "height": int((asset or {}).get("height") or 0),
-            }
-            for asset_id in brand.logo_asset_ids
-            if (asset := db.assets.find_one({"_id": asset_id})) is not None
-        ]
+        item["logo_images"] = [dict(image) for image in logo_images]
+        item["logo_asset_ids"] = [image["asset_id"] for image in logo_images]
         items.append(item)
     return items
 
@@ -237,16 +219,6 @@ def update_brand(
         raise HTTPException(status_code=422, detail=exc.message) from exc
     display_platform = brand_style.platform_name(platform_id)
 
-    logo_ids = (
-        payload.logo_asset_ids
-        if "logo_asset_ids" in payload.model_fields_set
-        else list(document.get("logo_asset_ids") or [])
-    )[:brand_style.MAX_BRAND_LOGOS]
-    logo_ids = request_assets.resolve_asset_ids(request, logo_ids)
-    for logo_id in logo_ids:
-        asset = db.assets.find_one({"_id": logo_id})
-        if asset is None:
-            raise HTTPException(status_code=422, detail="品牌 Logo 不存在")
     colors = (
         [item.model_dump() for item in payload.colors]
         if "colors" in payload.model_fields_set
@@ -286,7 +258,7 @@ def update_brand(
                 "purpose": purpose,
                 "note": payload.note.strip(),
                 "colors": list(colors),
-                "logo_asset_ids": logo_ids,
+                # Legacy field: logos live on the merchant now, so saving a style must not touch them.
                 "layout_guide": layout_guide,
                 "background_guide": background_guide,
                 "logo_keywords": payload.logo_keywords,
@@ -342,6 +314,7 @@ def duplicate_brand(
     duplicate_id = f"{brand_id[:55]}-{uuid.uuid4().hex[:8]}"
     now = datetime.now(timezone.utc)
     document = dict(source)
+    document.pop("logo_asset_ids", None)
     document.update({
         "_id": duplicate_id,
         "name": payload.name or f"{source.get('name') or brand_id} 副本",
@@ -373,54 +346,6 @@ def _persist_uploaded_asset(
         db, settings, store, data, file.filename or ""
     )
     return asset
-
-
-@router.post("/{brand_id}/logos")
-def upload_logos(
-    brand_id: str,
-    request: Request,
-    files: list[UploadFile] = File(...),
-) -> dict[str, Any]:
-    db = request_db(request)
-    document = _brand_document(db, brand_id)
-    logo_ids = list(document.get("logo_asset_ids") or [])[:brand_style.MAX_BRAND_LOGOS]
-    remaining = brand_style.MAX_BRAND_LOGOS - len(logo_ids)
-    if remaining <= 0:
-        raise HTTPException(status_code=422, detail=f"品牌 Logo 最多 {brand_style.MAX_BRAND_LOGOS} 张")
-    for file in files[:remaining]:
-        asset = _persist_uploaded_asset(
-            db,
-            request.app.state.settings,
-            request_store(request),
-            file,
-        )
-        asset_id = str(asset["_id"])
-        if asset_id not in logo_ids:
-            logo_ids.append(asset_id)
-    db.brands.update_one(
-        {"_id": brand_id},
-        {"$set": {"logo_asset_ids": logo_ids, "updated_at": datetime.now(timezone.utc)}},
-    )
-    return _brand_detail(request, db, _brand_document(db, brand_id))
-
-
-@router.delete("/{brand_id}/logos/{asset_id}")
-def delete_logo(brand_id: str, asset_id: str, request: Request) -> dict[str, Any]:
-    db = request_db(request)
-    document = _brand_document(db, brand_id)
-    logo_ids = list(document.get("logo_asset_ids") or [])
-    if asset_id not in logo_ids:
-        raise HTTPException(status_code=404, detail="品牌 Logo 不存在")
-    db.brands.update_one(
-        {"_id": brand_id},
-        {
-            "$set": {
-                "logo_asset_ids": [item for item in logo_ids if item != asset_id],
-                "updated_at": datetime.now(timezone.utc),
-            }
-        },
-    )
-    return _brand_detail(request, db, _brand_document(db, brand_id))
 
 
 @router.post("/{brand_id}/references")

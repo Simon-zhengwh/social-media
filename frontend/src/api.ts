@@ -3,6 +3,7 @@ import type {
   OriginalReplacementItem,
   OriginalReplacementTask,
   BrandDetail,
+  BrandLogoImage,
   BrandMode,
   BrandColor,
   BrandStyleFields,
@@ -201,7 +202,6 @@ export type UpdateBrandPayload = {
   platform_id: string
   placement_id: string
   colors: BrandColor[]
-  logo_asset_ids: string[]
   platform: string
   note: string
   layout_guide: string
@@ -281,28 +281,25 @@ export async function deleteBrandReference(
   return parseResponse<BrandDetail>(response)
 }
 
-export async function uploadBrandLogos(
-  brandId: string,
-  files: File[],
-): Promise<BrandDetail> {
-  const form = new FormData()
-  files.forEach((file) => form.append('files', file))
-  const response = await apiFetch(
-    `/api/brands/${encodeURIComponent(brandId)}/logos`,
-    { method: 'POST', body: form },
-  )
-  return parseResponse<BrandDetail>(response)
+export type BrandLogoSet = { logo_asset_ids: string[]; logo_images: BrandLogoImage[] }
+
+export async function getBrandLogos(): Promise<BrandLogoSet> {
+  return parseResponse<BrandLogoSet>(await apiFetch('/api/brand-logos'))
 }
 
-export async function deleteBrandLogo(
-  brandId: string,
-  assetId: string,
-): Promise<BrandDetail> {
+export async function uploadBrandLogos(files: File[]): Promise<BrandLogoSet> {
+  const form = new FormData()
+  files.forEach((file) => form.append('files', file))
+  const response = await apiFetch('/api/brand-logos', { method: 'POST', body: form })
+  return parseResponse<BrandLogoSet>(response)
+}
+
+export async function deleteBrandLogo(assetId: string): Promise<BrandLogoSet> {
   const response = await apiFetch(
-    `/api/brands/${encodeURIComponent(brandId)}/logos/${encodeURIComponent(assetId)}`,
+    `/api/brand-logos/${encodeURIComponent(assetId)}`,
     { method: 'DELETE' },
   )
-  return parseResponse<BrandDetail>(response)
+  return parseResponse<BrandLogoSet>(response)
 }
 
 export async function duplicateBrand(

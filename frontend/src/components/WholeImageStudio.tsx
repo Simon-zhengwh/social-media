@@ -11,7 +11,6 @@ import {
   ApiError,
   createWholeImageEdit,
   createWholeImageTask,
-  deleteBrandLogo,
   getWholeImageTask,
   listWholeImageTaskBatch,
   listWholeImageVersions,
@@ -35,6 +34,8 @@ import { DEFAULT_IMAGE_MODEL } from '../imageModels'
 type Props = {
   merchantProfile: MerchantProfile | null
   brands: BrandStyle[]
+  // Merchant-level logos: shared by every platform style, and the poster form's default.
+  merchantLogos: BrandLogoImage[]
   brandsLoading: boolean
   brandsError: string | null
   platforms: PlatformPreset[]
@@ -43,11 +44,12 @@ type Props = {
   assets: Asset[]
   assetsLoading: boolean
   onLoadAssets: () => void
-  onRefreshBrands: () => Promise<void>
   onGoAssets: () => void
 }
 
 type StudioTab = 'chat' | 'original_replace' | 'versions' | 'model_input'
+
+const MAX_PRODUCTS = 6
 
 const TABS: Array<{ key: StudioTab; label: string }> = [
   { key: 'chat', label: '对话' },
@@ -114,6 +116,7 @@ function logoFromAsset(asset: Asset): BrandLogoImage {
 export default function WholeImageStudio({
   merchantProfile,
   brands,
+  merchantLogos,
   brandsLoading,
   brandsError,
   platforms,
@@ -122,7 +125,6 @@ export default function WholeImageStudio({
   assets,
   assetsLoading,
   onLoadAssets,
-  onRefreshBrands,
   onGoAssets,
 }: Props) {
   const [task, setTask] = useState<WholeImageTask | null>(null)
@@ -151,7 +153,7 @@ export default function WholeImageStudio({
   const [styleReferences, setStyleReferences] = useState<Asset[]>([])
   const [styleReferencesUploading, setStyleReferencesUploading] = useState(false)
   const [logoUploading, setLogoUploading] = useState(false)
-  const [logoDeleting, setLogoDeleting] = useState(false)
+  const [productsUploading, setProductsUploading] = useState(false)
   const [pickerPurpose, setPickerPurpose] = useState<'product' | 'logo' | null>(null)
   const [studioTab, setStudioTab] = useState<StudioTab>(() =>
     new URLSearchParams(window.location.search).get('tab') === 'original_replace' ? 'original_replace' : 'chat')
@@ -179,30 +181,18 @@ export default function WholeImageStudio({
     selectedBrandId && brandsForPlatform.some((brand) => brand.id === selectedBrandId)
       ? selectedBrandId
       : brandsForPlatform[0]?.id ?? ''
-  const selectedBrand = brandsForPlatform.find((brand) => brand.id === effectiveBrandId) ?? null
   const availableLogos = [
-    ...brands.flatMap((brand) => brand.logo_images),
-    ...assets
-      .map((asset) => ({
-        asset_id: asset.id,
-        original_name: asset.original_name,
-        url: asset.url,
-        width: asset.width,
-        height: asset.height,
-      })),
+    ...merchantLogos,
+    ...assets.map(logoFromAsset),
   ].filter(
     (logo, index, logos) =>
       logos.findIndex((candidate) => candidate.asset_id === logo.asset_id) === index,
   )
+  // The merchant logo is the default in every brand mode; touching the choice clears it.
   const effectiveLogoId = logoChoiceTouched
     ? selectedLogoId
-    : brandMode === 'preset'
-      ? selectedBrand?.logo_images[0]?.asset_id ?? ''
-      : ''
-  const baseLogoOptions: BrandLogoImage[] =
-    brandMode === 'preset'
-      ? selectedBrand?.logo_images ?? []
-      : availableLogos
+    : merchantLogos[0]?.asset_id ?? ''
+  const baseLogoOptions: BrandLogoImage[] = availableLogos
   const missingFromBase =
     Boolean(effectiveLogoId) &&
     !baseLogoOptions.some((logo) => logo.asset_id === effectiveLogoId)
@@ -385,7 +375,7 @@ export default function WholeImageStudio({
   const active = Boolean(task && (task.status === 'queued' || task.status === 'running'))
   const studioReady = Boolean(task?.status === 'succeeded' && task.current_version_id)
   const showStudioInspector = Boolean(studioReady || task?.model_input)
-  const busy = creating || active || editRunning || logoUploading || logoDeleting || selectingOutput
+  const busy = creating || active || editRunning || logoUploading || productsUploading || selectingOutput
   const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id && task.current_output_id)
 
   const handleGenerate = async (
@@ -559,11 +549,11 @@ export default function WholeImageStudio({
     setBrandMode(mode)
     setPromptOptimized(false)
     setSelectedLogoId('')
-    setLogoChoiceTouched(mode !== 'preset')
+    // The merchant logo is the default in every mode; the operator's × clears it explicitly.
+    setLogoChoiceTouched(false)
     if (mode === 'preset' && !selectedBrandId) {
       const next = brandsForPlatform.find((brand) => brand.is_default) ?? brandsForPlatform[0]
       setSelectedBrandId(next?.id ?? '')
-      setLogoChoiceTouched(false)
     }
   }
 
@@ -612,26 +602,32 @@ export default function WholeImageStudio({
       setLogoUploading(false)
     }
   }
-  const handleRemoveLogo = async (assetId: string) => {
-    const belongsToCurrentBrand =
-      brandMode === 'preset' &&
-      selectedBrand?.logo_images.some((logo) => logo.asset_id === assetId) === true
-
-    setLogoDeleting(true)
+  const handleUploadProducts = async (files: File[]) => {
+    const accepted = files.slice(0, Math.max(0, MAX_PRODUCTS - products.length))
+    if (!accepted.length) return
+    setProductsUploading(true)
     setError(null)
     try {
-      if (belongsToCurrentBrand && selectedBrand) {
-        await deleteBrandLogo(selectedBrand.id, assetId)
-        await onRefreshBrands()
-      }
-      setSelectedLogoId('')
-      setLogoChoiceTouched(brandMode !== 'preset')
+      // Uploads land in the asset library, so the picker and later posters can reuse them.
+      const uploaded = await Promise.all(accepted.map((file) => uploadAsset(file)))
+      setProducts((previous) => [...previous, ...uploaded].slice(0, MAX_PRODUCTS))
       setPromptOptimized(false)
+      onLoadAssets()
     } catch (reason: unknown) {
       setError(errorMessage(reason))
     } finally {
-      setLogoDeleting(false)
+      setProductsUploading(false)
     }
+  }
+
+  /*
+    The logos are merchant-level: dropping one from a poster only means "do not use it here".
+    Deleting it outright belongs to the brand page, where the operator sees the shared scope.
+  */
+  const handleRemoveLogo = () => {
+    setSelectedLogoId('')
+    setLogoChoiceTouched(true)
+    setPromptOptimized(false)
   }
   const openPicker = () => {
     setPickerPurpose('product')
@@ -658,7 +654,6 @@ export default function WholeImageStudio({
         logoOptions={logoOptions}
         selectedLogoId={effectiveLogoId}
         logoUploading={logoUploading}
-        logoDeleting={logoDeleting}
         canAddLogo
         stores={stores}
         storeSelection={storeSelection}
@@ -670,6 +665,7 @@ export default function WholeImageStudio({
         selectedPlacementId={effectivePlacementId}
         selectedRatio={selectedRatio}
         products={products}
+        productsUploading={productsUploading}
         prompt={prompt}
         promptOptimized={promptOptimized}
         candidateCount={candidateCount}
@@ -683,7 +679,8 @@ export default function WholeImageStudio({
         }}
         onUploadLogos={(files) => void handleUploadLogos(files)}
         onPickLogo={openLogoPicker}
-        onRemoveLogo={(assetId) => void handleRemoveLogo(assetId)}
+        onRemoveLogo={handleRemoveLogo}
+        onUploadProducts={(files) => void handleUploadProducts(files)}
         onPlatformChange={(platformId) => {
           const next = platforms.find((item) => item.id === platformId)
           setSelectedPlatformId(platformId)

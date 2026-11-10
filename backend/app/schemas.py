@@ -67,8 +67,8 @@ class BrandUpdate(BaseModel):
     summary: str = Field(default="", max_length=500)
     platform_id: str = Field(default="", max_length=64)
     placement_id: str = Field(default="", max_length=64)
+    # Logos belong to the merchant (`/brand-logos`), so a style update no longer carries them.
     colors: list[BrandColor] = Field(default_factory=list, max_length=6)
-    logo_asset_ids: list[str] = Field(default_factory=list, max_length=5)
     # Legacy fields remain accepted while existing records and clients migrate.
     platform: str = Field(default="", max_length=40)
     note: str = Field(default="", max_length=4000)
@@ -117,11 +117,6 @@ class BrandUpdate(BaseModel):
                 seen.add(text)
                 result.append(text)
         return result
-
-    @field_validator("logo_asset_ids")
-    @classmethod
-    def normalize_logo_asset_ids(cls, value: list[str]) -> list[str]:
-        return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))[:5]
 
 
 class WholeImageTaskCreate(BaseModel):

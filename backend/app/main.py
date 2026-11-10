@@ -14,6 +14,7 @@ from app.middleware import local_bypass_enabled, merchant_context_middleware
 from app.routes import (
     assets,
     agent_tests,
+    brand_logos,
     brand_rules,
     brands,
     merchant_context,
@@ -48,6 +49,7 @@ def _initialize_indexes(db) -> None:
     db.brands.create_index([("merchant_id", 1), ("logo_asset_ids", 1)])
     db.brands.create_index([("merchant_id", 1), ("cover_asset_id", 1)])
     db.brand_rules.create_index([("merchant_id", 1)])
+    db.merchant_logos.create_index([("merchant_id", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("created_at", -1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.candidate_batch_id", 1), ("input.candidate_index", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.product_asset_ids", 1)])
@@ -164,6 +166,7 @@ merchant_router = APIRouter(prefix="/api/merchants/{merchant_id}")
 merchant_router.include_router(merchant_context.router)
 merchant_router.include_router(assets.router)
 merchant_router.include_router(brands.router)
+merchant_router.include_router(brand_logos.router)
 merchant_router.include_router(brand_rules.router)
 merchant_router.include_router(prompts.router)
 merchant_router.include_router(agent_tests.router)

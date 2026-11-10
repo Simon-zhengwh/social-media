@@ -9,8 +9,9 @@ import MerchantSwitcher from './components/MerchantSwitcher'
 import PosterEditStudio from './components/PosterEditStudio'
 import {
   ApiError,
-  probeLocalDevMerchant,
+  getBrandLogos,
   getMerchantContext,
+  probeLocalDevMerchant,
   type MerchantContext,
   listAssetPage,
   listBrands,
@@ -18,7 +19,7 @@ import {
   merchantIdFromLocation,
   uploadAsset,
 } from './api'
-import type { Asset, BrandStyle, MerchantProfile, PlatformPreset } from './types'
+import type { Asset, BrandLogoImage, BrandStyle, MerchantProfile, PlatformPreset } from './types'
 
 function readView(): AppView {
   const value = new URLSearchParams(window.location.search).get('view')
@@ -131,6 +132,7 @@ export default function App() {
 
   const [view, setView] = useState<AppView>(() => readView())
   const [brands, setBrands] = useState<BrandStyle[]>([])
+  const [merchantLogos, setMerchantLogos] = useState<BrandLogoImage[]>([])
   const [brandsLoading, setBrandsLoading] = useState(true)
   const [brandsError, setBrandsError] = useState<string | null>(null)
   const [platforms, setPlatforms] = useState<PlatformPreset[]>([])
@@ -155,7 +157,15 @@ export default function App() {
       setBrandsLoading(true)
     }
     try {
-      setBrands(await listBrands())
+      /* Logos are merchant-level, so the brands load also refreshes the shared logo set that
+         both the brand page and the poster form read. */
+      const [brandList, logoSet] = await Promise.all([
+        listBrands(),
+        // A logo failure must not hide the styles: the poster form just keeps its last set.
+        getBrandLogos().catch(() => null),
+      ])
+      setBrands(brandList)
+      if (logoSet) setMerchantLogos(logoSet.logo_images)
       setBrandsError(null)
     } catch (reason: unknown) {
       setBrandsError(errorMessage(reason))
@@ -352,7 +362,8 @@ export default function App() {
           <WholeImageStudio
             key={`whole-${studioRevision}`}
             merchantProfile={(context?.profile as MerchantProfile | null) ?? null}
-    brands={brands}
+            brands={brands}
+            merchantLogos={merchantLogos}
             brandsLoading={brandsLoading}
             brandsError={brandsError}
             platforms={platforms}
@@ -361,12 +372,12 @@ export default function App() {
             assets={assets}
             assetsLoading={assetsLoading}
             onLoadAssets={() => void loadAssets()}
-            onRefreshBrands={loadBrands}
             onGoAssets={() => handleViewChange('assets')}
           />
         ) : view === 'brands' ? (
           <BrandStudio
             brands={brands}
+            merchantLogos={merchantLogos}
             platforms={platforms}
             brandsLoading={brandsLoading}
             brandsError={brandsError}

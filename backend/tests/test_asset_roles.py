@@ -121,3 +121,34 @@ def test_brand_logo_does_not_require_a_special_asset_kind(settings, store):
     items = brand_routes.list_brands(_request(db, settings, store))
 
     assert items[0]["logo_images"][0]["asset_id"] == "brand-logo"
+
+
+def _upload(file_bytes: bytes, name: str = "poster.png"):
+    from io import BytesIO
+
+    from fastapi import UploadFile
+
+    return UploadFile(file=BytesIO(file_bytes), filename=name)
+
+
+def test_direct_upload_lands_in_the_library_and_works_in_a_task(settings, store, product_png):
+    db = mongomock.MongoClient().db
+    request = _request(db, settings, store)
+
+    uploaded = asset_routes.upload_asset(request, _upload(product_png))
+    stored = db.assets.find_one({"_id": uploaded["id"]})
+
+    assert stored["source"] == "upload"
+    assert [item["id"] for item in asset_routes.list_assets(request)] == [uploaded["id"]]
+
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="页面上传的素材直接进入资产库",
+            ratio="1:1",
+            brand_mode="none",
+            product_asset_ids=[uploaded["id"]],
+        ),
+        request,
+        __import__("fastapi").BackgroundTasks(),
+    )
+    assert created["input"]["product_asset_ids"] == [uploaded["id"]]

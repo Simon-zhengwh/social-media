@@ -12,6 +12,7 @@ from fastapi import BackgroundTasks, HTTPException, UploadFile
 from PIL import Image, ImageDraw
 
 from app.config import PROJECT_DIR
+from app.routes import brand_logos as brand_logo_routes
 from app.routes import brands as brand_routes
 from app.routes import whole_image as whole_routes
 from app.schemas import BrandUpdate, DuplicateBrandRequest, WholeImageTaskCreate
@@ -458,8 +459,7 @@ def test_upload_and_delete_brand_logos(tmp_path, settings, store):
     _import(db, settings, store, tmp_path)
     request = _brand_request(db, settings, store)
 
-    uploaded = brand_routes.upload_logos(
-        "custom",
+    uploaded = brand_logo_routes.upload_brand_logos(
         request,
         [_upload_png((10, 20, 30)), _upload_png((40, 50, 60))],
     )
@@ -467,9 +467,45 @@ def test_upload_and_delete_brand_logos(tmp_path, settings, store):
     logo_ids = [item["asset_id"] for item in uploaded["logo_images"]]
     assert all(db.assets.find_one({"_id": item})["source"] == "upload" for item in logo_ids)
 
-    deleted = brand_routes.delete_logo("custom", logo_ids[0], request)
+    deleted = brand_logo_routes.delete_brand_logo(logo_ids[0], request)
     assert [item["asset_id"] for item in deleted["logo_images"]] == [logo_ids[1], logo_ids[2]]
     assert db.assets.find_one({"_id": logo_ids[0]}) is not None
+
+
+def test_merchant_logos_are_shared_by_every_platform_style(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    other = brand_routes.duplicate_brand(
+        "custom",
+        DuplicateBrandRequest(
+            name="Custom Instagram", platform_id="instagram", placement_id="square"
+        ),
+        request,
+    )
+
+    uploaded = brand_logo_routes.upload_brand_logos(request, [_upload_png((10, 20, 30))])
+    expected = [item["asset_id"] for item in uploaded["logo_images"]]
+
+    for brand_id in ("custom", other["id"]):
+        detail = brand_routes.get_brand(brand_id, request)
+        assert [item["asset_id"] for item in detail["logo_images"]] == expected
+
+    # A style save must not touch the merchant-level logos any more.
+    brand_routes.update_brand("custom", _update_payload(brand_routes.get_brand("custom", request)), request)
+    assert brand_logo_routes.list_brand_logos(request)["logo_asset_ids"] == expected
+
+
+def test_seeded_style_adopts_its_logo_as_merchant_level(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+
+    logos = brand_logo_routes.list_brand_logos(_brand_request(db, settings, store))
+    legacy = db.brands.find_one({"_id": "custom"})["logo_asset_ids"]
+
+    assert logos["logo_asset_ids"] == legacy
 
 
 def test_duplicate_brand_creates_independent_platform_style(tmp_path, settings, store):

@@ -94,6 +94,8 @@ def _asset_referenced(db: Any, asset_id: str) -> bool:
         }
     ):
         return True
+    if db.merchant_logos.find_one({"logo_asset_ids": asset_id}):
+        return True
     if db.brands.find_one(
         {
             "$or": [

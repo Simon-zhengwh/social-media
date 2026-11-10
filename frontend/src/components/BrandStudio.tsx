@@ -18,6 +18,7 @@ import {
 import type {
   BrandColor,
   BrandDetail,
+  BrandLogoImage,
   BrandStyle,
   BrandStyleFields,
   BrandRules,
@@ -28,6 +29,8 @@ import MerchantProfilePanel, { MerchantBrandInfoCard } from './MerchantProfilePa
 
 type Props = {
   brands: BrandStyle[]
+  // Merchant-level logos: shared by every style, edited here once.
+  merchantLogos: BrandLogoImage[]
   platforms: PlatformPreset[]
   brandsLoading: boolean
   brandsError: string | null
@@ -43,7 +46,6 @@ type BrandDraft = {
   platform_id: string
   placement_id: string
   colors: BrandColor[]
-  logo_asset_ids: string[]
   layout_guide: string
   background_guide: string
   logo_keywords: string[]
@@ -69,7 +71,6 @@ function toDraft(detail: BrandDetail): BrandDraft {
     platform_id: detail.platform_id,
     placement_id: detail.placement_id,
     colors: detail.colors.map((color) => ({ ...color })),
-    logo_asset_ids: [...detail.logo_asset_ids],
     layout_guide: detail.layout_guide,
     background_guide: detail.background_guide,
     logo_keywords: [...detail.logo_keywords],
@@ -118,6 +119,7 @@ function CommonRulesCard({ onOpen }: { onOpen: () => void }) {
 
 export default function BrandStudio({
   brands,
+  merchantLogos,
   platforms,
   brandsLoading,
   brandsError,
@@ -171,7 +173,7 @@ export default function BrandStudio({
 
   const selectedPlatform = platforms.find((item) => item.id === draft?.platform_id)
   const duplicatePlatform = platforms.find((item) => item.id === duplicatePlatformId)
-  const logosFull = (detail?.logo_images.length ?? 0) >= 5
+  const logosFull = merchantLogos.length >= 5
   const referencesFull = (detail?.reference_images.length ?? 0) >= 5
 
   const openBrand = async (brandId: string) => {
@@ -201,7 +203,6 @@ export default function BrandStudio({
         : {
             ...previous,
             cover_asset_id: data.cover_asset_id,
-            logo_asset_ids: [...data.logo_asset_ids],
           },
     )
     void onRefreshBrands()
@@ -231,7 +232,8 @@ export default function BrandStudio({
   // what is rendered below, or the cards land in a single-column body.
   const hasMerchantSidebar = Boolean(
     detail?.merchant_profile?.brand_info ||
-    detail?.merchant_profile?.prompt_sections?.length,
+    detail?.merchant_profile?.prompt_sections?.length ||
+    merchantLogos.length,
   )
   const seedFromProfile = async () => {
     setSeeding(true)
@@ -270,7 +272,7 @@ export default function BrandStudio({
       setSelectedId(data.id)
       setCreating(false)
       applyDetail(data)
-      setNotice(selectedId ? '品牌配置已保存' : '风格已创建，现在可以上传 Logo 和参考图')
+      setNotice(selectedId ? '品牌配置已保存' : '风格已创建，现在可以上传参考图和主色调')
     } catch (reason: unknown) {
       setError(errorText(reason))
     } finally {
@@ -332,16 +334,17 @@ export default function BrandStudio({
     }
   }
   const uploadLogos = async (files: File[]) => {
-    if (!selectedId) return
-    const accepted = files.slice(0, Math.max(0, 5 - (detail?.logo_images.length ?? 0)))
+    const accepted = files.slice(0, Math.max(0, 5 - merchantLogos.length))
     if (!accepted.length) return
     setUploadingLogo(true)
     setError(null)
     setNotice(null)
     try {
-      const data = await uploadBrandLogos(selectedId, accepted)
-      applyDetail(data, false)
-      setNotice(`已上传 ${data.logo_images.length - (detail?.logo_images.length ?? 0)} 张 Logo`)
+      // Uploads land in the asset library and are then attached to the merchant-level logo set.
+      const before = merchantLogos.length
+      const data = await uploadBrandLogos(accepted)
+      await onRefreshBrands()
+      setNotice(`已上传 ${data.logo_images.length - before} 张 Logo`)
     } catch (reason: unknown) {
       setError(errorText(reason))
     } finally {
@@ -350,12 +353,12 @@ export default function BrandStudio({
   }
 
   const removeLogo = async (assetId: string) => {
-    if (!selectedId) return
     setDeletingId(assetId)
     setConfirmDelete(null)
     setError(null)
     try {
-      applyDetail(await deleteBrandLogo(selectedId, assetId), false)
+      await deleteBrandLogo(assetId)
+      await onRefreshBrands()
       setNotice('Logo 已从品牌配置中移除')
     } catch (reason: unknown) {
       setError(errorText(reason))
@@ -515,7 +518,7 @@ export default function BrandStudio({
               setError(null)
               setNotice(null)
               setEditingColor(null)
-              setDraft({ schema_version: 2, style_fields: null, name: '', short_name: '', summary: '', platform_id: '', placement_id: '', colors: [], logo_asset_ids: [], layout_guide: '', background_guide: '', logo_keywords: [], note: '', is_default: false, cover_asset_id: null })
+              setDraft({ schema_version: 2, style_fields: null, name: '', short_name: '', summary: '', platform_id: '', placement_id: '', colors: [], layout_guide: '', background_guide: '', logo_keywords: [], note: '', is_default: false, cover_asset_id: null })
             }}>＋ 新建风格</button>
             {!brandsLoading && brands.length === 0 ? (
               <button
@@ -625,6 +628,42 @@ export default function BrandStudio({
               {detail?.merchant_profile?.brand_info ? (
                 <MerchantBrandInfoCard info={detail.merchant_profile.brand_info} />
               ) : null}
+              {creating ? null : (
+                <section className="brand-form-section brand-logo-card">
+                  <div className="brand-section-head">
+                    <div>
+                      <span className="eyebrow">MERCHANT LOGO</span>
+                      <h2>品牌 Logo</h2>
+                    </div>
+                    <span className="brand-logo-count">{merchantLogos.length}/5</span>
+                  </div>
+                  <p className="brand-logo-hint">
+                    商户通用字段：全部平台风格与海报共用这套 Logo，生成页默认引用第一张。
+                  </p>
+                  <div className="brand-logo-strip">
+                    {merchantLogos.map((logo) => (
+                      <div className="brand-logo-chip" key={logo.asset_id}>
+                        <ZoomableImage
+                          className="brand-logo-preview"
+                          src={logo.url}
+                          alt={logo.original_name}
+                          title={logo.original_name}
+                        />
+                        <button type="button" className="brand-logo-remove" onClick={() => setConfirmDelete({ target: 'logo', id: logo.asset_id })} aria-label="移除 Logo" disabled={deletingId === logo.asset_id}>×</button>
+                      </div>
+                    ))}
+                    {!logosFull ? (
+                      <label className="brand-asset-add">
+                        <input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={uploadingLogo} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void uploadLogos(files); event.target.value = '' }} />
+                        <span>＋</span><small>{uploadingLogo ? '上传中' : 'Logo'}</small>
+                      </label>
+                    ) : null}
+                  </div>
+                  {merchantLogos.length === 0 ? (
+                    <p className="brand-logo-empty">还没有商户 Logo，上传后会直接用于全部平台风格的生成。</p>
+                  ) : null}
+                </section>
+              )}
               <MerchantProfilePanel profile={detail?.merchant_profile ?? null} />
             </div>
             <div className="brand-platform-column">
@@ -661,29 +700,6 @@ export default function BrandStudio({
               </div>
 
               <div className="brand-visual-assets">
-                <div className="brand-asset-group">
-                  <div className="brand-subhead"><strong>品牌 Logo</strong><span>{detail?.logo_images.length ?? 0}/5</span></div>
-                  <div className="brand-logo-strip">
-                    {detail?.logo_images.map((logo) => (
-                      <div className="brand-logo-chip" key={logo.asset_id}>
-                        <ZoomableImage
-                          className="brand-logo-preview"
-                          src={logo.url}
-                          alt={logo.original_name}
-                          title={logo.original_name}
-                        />
-                        <button type="button" className="brand-logo-remove" onClick={() => setConfirmDelete({ target: 'logo', id: logo.asset_id })} aria-label="移除 Logo" disabled={deletingId === logo.asset_id}>×</button>
-                      </div>
-                    ))}
-                    {!logosFull ? (
-                      <label className="brand-asset-add">
-                        <input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={uploadingLogo || !selectedId} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void uploadLogos(files); event.target.value = '' }} />
-                        <span>＋</span><small>{!selectedId ? '保存后上传' : uploadingLogo ? '上传中' : 'Logo'}</small>
-                      </label>
-                    ) : null}
-                  </div>
-                </div>
-
                 <div className="brand-asset-group">
                   <div className="brand-subhead"><strong>主色调</strong><span>{draft.colors.length}/6</span></div>
                   <div className="brand-color-strip">
@@ -761,7 +777,11 @@ export default function BrandStudio({
                     <strong id="brand-asset-delete-title">
                       移除{confirmDelete.target === 'logo' ? '品牌 Logo' : '参考图'}？
                     </strong>
-                    <p>确认从当前风格中移除？素材文件和历史任务会保留。</p>
+                    <p>
+                      {confirmDelete.target === 'logo'
+                        ? '确认从商户 Logo 集合移除？全部平台风格将不再默认使用它，素材文件和历史任务会保留。'
+                        : '确认从当前风格中移除？素材文件和历史任务会保留。'}
+                    </p>
                     <div className="brand-delete-modal-actions">
                       <button type="button" onClick={() => setConfirmDelete(null)} autoFocus>取消</button>
                       <button type="button" className="is-danger" onClick={() => {

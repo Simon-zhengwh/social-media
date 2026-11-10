@@ -6,10 +6,10 @@ type Props = {
   selectedLogoId: string
   busy: boolean
   logoUploading: boolean
-  logoDeleting: boolean
   canAddLogo: boolean
   onUploadLogos: (files: File[]) => void
   onPickLogo: () => void
+  /** Clears the logo for this poster only; the merchant-level logo stays in the brand page. */
   onRemoveLogo: (assetId: string) => void
 }
 
@@ -18,7 +18,6 @@ export default function LogoSelector({
   selectedLogoId,
   busy,
   logoUploading,
-  logoDeleting,
   canAddLogo,
   onUploadLogos,
   onPickLogo,
@@ -47,10 +46,11 @@ export default function LogoSelector({
                 type="button"
                 className="logo-selector-remove"
                 onClick={() => onRemoveLogo(activeLogo.asset_id)}
-                disabled={busy || logoUploading || logoDeleting}
-                aria-label={`删除 ${activeLogoName}`}
+                disabled={busy || logoUploading}
+                title="本张海报不使用 Logo"
+                aria-label={`本张海报不使用 ${activeLogoName}`}
               >
-                {logoDeleting ? '…' : '×'}
+                ×
             </button>
           </div>
         ) : null}
@@ -80,7 +80,7 @@ export default function LogoSelector({
             type="button"
             className="logo-selector-add logo-selector-pick"
             onClick={onPickLogo}
-            disabled={busy || logoUploading || logoDeleting}
+            disabled={busy || logoUploading}
             title="从素材库选择品牌 Logo"
           >
             <span className="logo-selector-add-plus" aria-hidden="true">▦</span>

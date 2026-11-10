@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageOps
 
-from app.services import asset_records, brand_style, storage
+from app.services import asset_records, brand_style, merchant_logos, storage
 
 logger = logging.getLogger(__name__)
 
@@ -244,4 +244,6 @@ def initialize(
         if existing is not None:
             return existing, False
         raise
+    # The seeded logo is a merchant-level asset; the style keeps its legacy copy untouched.
+    merchant_logos.seed_if_empty(db, logo_asset_ids)
     return document, True
