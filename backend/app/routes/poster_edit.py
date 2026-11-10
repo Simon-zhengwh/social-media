@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from app.schemas import PosterEditBatchRequest, PosterEditRequest
 from app.services import poster_edit as service
 
-router = APIRouter(prefix="/api/poster-edits", tags=["poster-edit"])
+router = APIRouter(prefix="/poster-edits", tags=["poster-edit"])
 
 
 def _require_configured(request: Request) -> None:

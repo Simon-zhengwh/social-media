@@ -169,6 +169,7 @@ merchant_router.include_router(prompts.router)
 merchant_router.include_router(agent_tests.router)
 merchant_router.include_router(task_center.router)
 merchant_router.include_router(whole_image.router)
+merchant_router.include_router(poster_edit.router)
 app.include_router(merchant_router)
 app.include_router(platforms.router)
 
