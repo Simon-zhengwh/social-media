@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ApiError, deleteAsset } from '../api'
 import type { Asset } from '../types'
 import { ZoomableImage } from './ImageLightbox'
 
@@ -13,6 +14,8 @@ type Props = {
   loadingMore: boolean
   uploading: boolean
   onUpload: (file: File) => Promise<boolean>
+  /** Remove a deleted asset from the list the page is showing. */
+  onDeleted: (assetId: string) => void
 }
 
 function formatDate(value: string) {
@@ -32,8 +35,31 @@ export default function AssetLibrary({
   loadingMore,
   uploading,
   onUpload,
+  onDeleted,
 }: Props) {
   const [draft, setDraft] = useState(query)
+  // A referenced asset answers with a conflict; keep it pending so the operator can confirm.
+  const [pendingDelete, setPendingDelete] = useState<{ asset: Asset; force: boolean } | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const removeAsset = async (asset: Asset, force: boolean) => {
+    setDeletingId(asset.id)
+    setDeleteError(null)
+    try {
+      await deleteAsset(asset.id, force)
+      onDeleted(asset.id)
+      setPendingDelete(null)
+    } catch (reason: unknown) {
+      if (!force && reason instanceof ApiError && reason.code === 'http_409') {
+        setPendingDelete({ asset, force: true })
+        return
+      }
+      setDeleteError(reason instanceof Error ? reason.message : '删除失败，请稍后重试')
+      setPendingDelete(null)
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   return (
     <section className="asset-page">
@@ -72,6 +98,7 @@ export default function AssetLibrary({
       </form>
 
       {error ? <div className="asset-notice asset-notice-error">{error}</div> : null}
+      {deleteError ? <div className="asset-notice asset-notice-error">{deleteError}</div> : null}
 
       {loading ? (
         <div className="asset-grid">
@@ -100,6 +127,18 @@ export default function AssetLibrary({
                     alt={asset.original_name}
                     title={asset.original_name}
                   />
+                  {asset.source !== 'am' && !asset.read_only ? (
+                    <button
+                      type="button"
+                      className="asset-delete-fab"
+                      title="删除这张临时图片"
+                      aria-label={`删除 ${asset.original_name}`}
+                      disabled={deletingId === asset.id}
+                      onClick={() => setPendingDelete({ asset, force: false })}
+                    >
+                      {deletingId === asset.id ? '…' : '×'}
+                    </button>
+                  ) : null}
                 </div>
                 <div className="asset-card-head">
                   <span className="asset-date">{formatDate(asset.created_at)}</span>
@@ -123,6 +162,35 @@ export default function AssetLibrary({
           ) : null}
         </>
       )}
+
+      {pendingDelete ? (
+      <div
+        className="brand-delete-modal-backdrop"
+        onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingDelete(null) }}
+      >
+        <div className="brand-delete-modal" role="dialog" aria-modal="true" aria-labelledby="asset-delete-title">
+          <strong id="asset-delete-title">
+            {pendingDelete.force ? '这张图片正在被引用' : '删除这张临时图片？'}
+          </strong>
+          <p>
+            {pendingDelete.force
+              ? '它被品牌配置、任务或历史版本引用。强制删除会让这些引用失效，已生成的海报不受影响。'
+              : `${pendingDelete.asset.original_name}删除后无法恢复。`}
+          </p>
+          <div className="brand-delete-modal-actions">
+            <button type="button" onClick={() => setPendingDelete(null)} autoFocus>取消</button>
+            <button
+            type="button"
+            className="is-danger"
+            disabled={deletingId !== null}
+            onClick={() => void removeAsset(pendingDelete.asset, pendingDelete.force)}
+            >
+            {deletingId ? '删除中…' : pendingDelete.force ? '强制删除' : '确认删除'}
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : null}
     </section>
   )
 }

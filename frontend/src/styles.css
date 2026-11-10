@@ -6634,3 +6634,37 @@
  line-height: 1.7;
  color: var(--color-neutral-400);
 }
+
+.asset-delete-fab {
+ position: absolute;
+ top: 6px;
+ right: 6px;
+ width: 24px;
+ height: 24px;
+ display: grid;
+ place-items: center;
+ padding: 0;
+ border: 1px solid rgba(255,255,255,0.6);
+ border-radius: 50%;
+ background: rgba(17,24,39,0.55);
+ color: #fff;
+ font-size: 14px;
+ line-height: 1;
+ cursor: pointer;
+ opacity: 0;
+ transition: opacity var(--dur-base) var(--ease-standard), background var(--dur-base) var(--ease-standard);
+}
+
+.asset-card:hover .asset-delete-fab,
+.asset-delete-fab:focus-visible {
+ opacity: 1;
+}
+
+.asset-delete-fab:hover {
+ background: var(--color-danger);
+}
+
+.asset-delete-fab:disabled {
+ opacity: 1;
+ cursor: progress;
+}

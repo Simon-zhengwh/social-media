@@ -214,6 +214,11 @@ export default function App() {
     void loadAssets(assetQuery, true, assets.length, false)
   }
 
+  const handleDeleteAsset = (assetId: string) => {
+    setAssets((previous) => previous.filter((item) => item.id !== assetId))
+    setAssetTotal((current) => Math.max(0, current -1))
+  }
+
   const handleUploadAsset = async (file: File): Promise<boolean> => {
     setUploadingAsset(true)
     setAssetsError(null)
@@ -329,6 +334,7 @@ export default function App() {
             loadingMore={loadingMoreAssets}
             uploading={uploadingAsset}
             onUpload={handleUploadAsset}
+            onDeleted={handleDeleteAsset}
           />
         )}
 
