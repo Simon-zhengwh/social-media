@@ -119,21 +119,37 @@ def local_copy_path(settings, scheme: dict[str, Any], evaluation: dict[str, Any]
     return target
 
 
-def existing_asset_names(client: httpx.Client, base_url: str, merchant_id: str) -> set[str]:
-    """Names already in the deployed library, so -2/-3 numbering is stable."""
-    try:
-        response = client.get(f"{base_url}/api/merchants/{merchant_id}/assets", params={"limit": 500})
+def _collect_names(client: httpx.Client, base_url: str, merchant_id: str, path: str) -> set[str]:
+    names: set[str] = set()
+    skip = 0
+    while True:
+        try:
+            response = client.get(
+                f"{base_url}/api/merchants/{merchant_id}{path}",
+                params={"skip": skip, "limit": 100},
+            )
+        except Exception:  # noqa: BLE001 - numbering falls back to what we already have
+            break
         if response.status_code != 200:
-            return set()
+            break
         payload = response.json()
         items = payload if isinstance(payload, list) else payload.get("items") or []
-        return {
-            str(item.get("original_name") or "").casefold()
-            for item in items
-            if item.get("original_name")
-        }
-    except Exception:  # noqa: BLE001 - numbering falls back to this run only
-        return set()
+        for item in items:
+            name = str(item.get("original_name") or "").strip()
+            if name:
+                names.add(name.casefold())
+        total = payload.get("total") if isinstance(payload, dict) else None
+        skip += len(items)
+        if not items or len(items) < 100 or (total is not None and skip >= int(total)):
+            break
+    return names
+
+
+def existing_asset_names(client: httpx.Client, base_url: str, merchant_id: str) -> set[str]:
+    """Names already visible in the deployed library: uploads plus AM media records."""
+    names = _collect_names(client, base_url, merchant_id, "/assets")
+    names |= _collect_names(client, base_url, merchant_id, "/am-assets")
+    return names
 
 
 def upload_name(row: dict[str, Any], suffix: str, used: set[str]) -> str:
@@ -186,6 +202,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="最多上传多少张")
     parser.add_argument("--force", action="store_true", help="忽略已同步标记重新上传")
     parser.add_argument("--dry-run", action="store_true", help="只列出将要上传的文件")
+    parser.add_argument(
+        "--check-names",
+        action="store_true",
+        help="只检查目标文件名：列出与 UAT 资产库或本批次重名后会追加 -2/-3 的条目",
+    )
     parser.add_argument("--no-model-tags", action="store_true", help="不写入 AI 标签，只写「素材筛选」")
     parser.add_argument("--base-url", default=os.environ.get("UAT_BASE_URL", DEFAULT_BASE_URL))
     parser.add_argument("--merchant", default="", help="默认取本地配置的商户")
@@ -218,12 +239,51 @@ def main() -> int:
         print("没有待上传的图片。提示：先在页面里点「☆ 入选」，或用 --all-passed。")
         return 0
 
-    print(f"方案：{scheme['name']} | 待上传 {len(rows)} 张 | 目标 {args.base_url}")
-    if args.dry_run:
-        used: set[str] = set()
+    if args.dry_run or args.check_names:
+        cookie = args.cookie.strip()
+        if not cookie and args.orca_auto:
+            cookie = cookie_from_orca(args.base_url)
+        library: set[str] = set()
+        if cookie:
+            with httpx.Client(
+                headers={"Cookie": cookie, "Accept": "application/json"}, timeout=60
+            ) as client:
+                library = existing_asset_names(client, args.base_url, merchant_id)
+        else:
+            print("提示：没有会话，只检查本批次内部重名，不比对 UAT 资产库。")
+
+        used = set(library)
+        plan: list[tuple[dict[str, Any], str, str]] = []
         for row in rows:
             suffix = Path(str(row.get("output_name") or "x.jpg")).suffix.lower() or ".jpg"
-            print(f"  [dry-run] {row['original_name']} -> {upload_name(row, suffix, used)}")
+            base = files.sanitize_output_stem(
+                row.get("display_name") or row.get("original_name") or "图片", max_length=60
+            ) + suffix
+            planned = upload_name(row, suffix, used)
+            plan.append((row, base, planned))
+
+        collisions = [item for item in plan if item[2] != item[1]]
+        print(
+            f"方案：{scheme['name']} | 待上传 {len(rows)} 张 | UAT 已有文件名 {len(library)} 个"
+            f" | 需要 -N 区分 {len(collisions)} 张"
+        )
+        if collisions:
+            print("以下文件名会与已有素材（或本批次前一张）重名，上传时会自动加序号：")
+            for row, base, planned in collisions:
+                print(f"  {row['original_name']}: {base} -> {planned}")
+        else:
+            print("没有重名，全部按「中文名.扩展名」上传。")
+        if args.report:
+            path = Path(args.report)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["原文件名", "计划上传名", "是否重名", "本地副本名"])
+                for row, base, planned in plan:
+                    writer.writerow(
+                        [row["original_name"], planned, "是" if planned != base else "否", row.get("output_name")]
+                    )
+            print(f"清单：{path}")
         return 0
 
     cookie = args.cookie.strip()
