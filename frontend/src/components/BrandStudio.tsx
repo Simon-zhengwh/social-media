@@ -3,8 +3,6 @@ import { createPortal } from 'react-dom'
 import {
   ApiError,
   createBrand,
-  getBrandRules,
-  updateBrandRules,
   deleteBrand,
   duplicateBrand,
   deleteBrandLogo,
@@ -21,13 +19,15 @@ import type {
   BrandLogoImage,
   BrandStyle,
   BrandStyleFields,
-  BrandRules,
+  MerchantProfile,
   PlatformPreset,
 } from '../types'
 import { ZoomableImage } from './ImageLightbox'
 import MerchantProfilePanel, { MerchantBrandInfoCard } from './MerchantProfilePanel'
 
 type Props = {
+  // Merchant facts, the shared logo set and profile data belong to the merchant, not a style.
+  merchantProfile: MerchantProfile | null
   brands: BrandStyle[]
   // Merchant-level logos: shared by every style, edited here once.
   merchantLogos: BrandLogoImage[]
@@ -53,13 +53,6 @@ type BrandDraft = {
   is_default: boolean
   cover_asset_id: string | null
 }
-
-const ruleFields: { key: Exclude<keyof BrandRules, 'version'>; label: string; hint: string }[] = [
-  { key: 'copy_accuracy', label: '文案准确', hint: '保证价格、日期、条件和承诺准确。' },
-  { key: 'asset_usage', label: '素材使用', hint: '限定裁切、等比缩放、移动、旋转及小于 30° 的轻微透视；禁止重绘或编造素材。' },
-  { key: 'logo_usage', label: 'Logo 使用', hint: '保持品牌标识的图形、字形、比例和原色。' },
-  { key: 'readability', label: '可读性', hint: '避免遮挡关键主体或裁切必要信息。' },
-]
 
 function toDraft(detail: BrandDetail): BrandDraft {
   return {
@@ -95,29 +88,8 @@ function colorFromHex(hex: string): BrandColor {
   return { hex }
 }
 
-function CommonRulesCard({ onOpen }: { onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      className="brand-common-rules-card"
-      onClick={onOpen}
-    >
-      <span className="brand-common-rules-mark" aria-hidden="true">规</span>
-      <span className="brand-common-rules-copy">
-        <span className="brand-common-rules-title">
-          <strong>通用规范</strong>
-          <span className="brand-common-rules-chip">适用于全部品牌风格</span>
-        </span>
-        <span className="brand-common-rules-description">
-          文案准确 · 素材使用 · Logo · 可读性
-        </span>
-      </span>
-      <span className="brand-common-rules-action">查看与编辑 <span aria-hidden="true">→</span></span>
-    </button>
-  )
-}
-
 export default function BrandStudio({
+  merchantProfile,
   brands,
   merchantLogos,
   platforms,
@@ -127,12 +99,6 @@ export default function BrandStudio({
 }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  const [showRules, setShowRules] = useState(false)
-  const [rules, setRules] = useState<BrandRules | null>(null)
-  const [rulesLoading, setRulesLoading] = useState(false)
-  const [rulesSaving, setRulesSaving] = useState(false)
-  const [rulesError, setRulesError] = useState<string | null>(null)
-  const [rulesNotice, setRulesNotice] = useState<string | null>(null)
   const [detail, setDetail] = useState<BrandDetail | null>(null)
   const [draft, setDraft] = useState<BrandDraft | null>(null)
   const [loading, setLoading] = useState(false)
@@ -230,11 +196,6 @@ export default function BrandStudio({
   */
   // Either card is enough to need the two-column workspace; the condition has to match
   // what is rendered below, or the cards land in a single-column body.
-  const hasMerchantSidebar = Boolean(
-    detail?.merchant_profile?.brand_info ||
-    detail?.merchant_profile?.prompt_sections?.length ||
-    merchantLogos.length,
-  )
   const seedFromProfile = async () => {
     setSeeding(true)
     setError(null)
@@ -446,66 +407,81 @@ export default function BrandStudio({
     setEditingColor(target)
   }
 
-  const loadRules = async () => {
-    setRulesLoading(true)
-    setRulesError(null)
-    setRulesNotice(null)
-    try {
-      setRules(await getBrandRules())
-    } catch (reason) {
-      setRulesError(errorText(reason))
-    } finally {
-      setRulesLoading(false)
-    }
-  }
-
-  const saveRules = async () => {
-    if (!rules) return
-    if (ruleFields.some(({ key }) => !rules[key].trim())) {
-      setRulesError('请填写四项通用规范')
-      return
-    }
-    setRulesSaving(true)
-    setRulesError(null)
-    setRulesNotice(null)
-    try {
-      setRules(await updateBrandRules(rules))
-      setRulesNotice('通用规范已保存，将应用于之后新建的生成任务')
-    } catch (reason) {
-      setRulesError(reason instanceof ApiError && (reason.code === 'http_409' || reason.code === 'version_conflict')
-        ? '通用规范已被其他页面更新，本次修改未保存。请返回后重新打开再修改。'
-        : errorText(reason))
-    } finally {
-      setRulesSaving(false)
-    }
-  }
-
-  if (showRules) {
-    return (
-      <section className="asset-page brand-page brand-detail-page">
-        <div className="brand-detail-shell">
-          <button type="button" className="brand-back" onClick={() => setShowRules(false)}>← 返回品牌列表</button>
-          <div className="brand-section-head"><div><span className="eyebrow">COMMON RULES</span><h1>通用规范</h1></div><span>版本 {rules?.version ?? '—'}</span></div>
-          <p className="panel-lead">所有风格、参考图风格和无品牌模式都会应用。保存后对新任务生效，已有任务保留原规范。</p>
-          {rulesError ? <div className="asset-notice asset-notice-error" role="alert">{rulesError}</div> : null}
-          {rulesNotice ? <div className="asset-notice" role="status">{rulesNotice}</div> : null}
-          {rulesLoading ? <p>正在读取通用规范…</p> : rules ? (
-            <div className="brand-form-grid">
-              {ruleFields.map(({ key, label, hint }) => (
-                <label className="brand-field brand-field-wide" key={key}>
-                  <span>{label} <span className="asset-required" aria-hidden="true">*</span></span><small>{hint}</small>
-                  <textarea required rows={4} maxLength={4000} value={rules[key]} onChange={(event) => setRules({ ...rules, [key]: event.target.value })} />
-                </label>
-              ))}
-            </div>
-          ) : null}
-          <div className="brand-detail-footer-actions">
-            <button type="button" className="mp-btn-primary" disabled={!rules || rulesLoading || rulesSaving} onClick={() => void saveRules()}>{rulesSaving ? '保存中…' : '保存通用规范'}</button>
+  /*
+    FB-003 / FB-004: merchant facts, the shared logo set and the AM profile are merchant-level
+    data, so they sit above the style list. A style page now only configures platform visuals.
+  */
+  const merchantSection = (
+    <div className="brand-merchant-public">
+      {merchantProfile?.brand_info ? (
+        <MerchantBrandInfoCard info={merchantProfile.brand_info} />
+      ) : null}
+      <section className="brand-form-section brand-logo-card">
+        <div className="brand-section-head">
+          <div>
+            <span className="eyebrow">MERCHANT LOGO</span>
+            <h2>品牌 Logo</h2>
           </div>
+          <span className="brand-logo-count">{merchantLogos.length}/5</span>
         </div>
+        <p className="brand-logo-hint">
+          商户通用字段：全部平台风格与海报共用这套 Logo，生成页可勾选其中一张，默认第一张。
+        </p>
+        <div className="brand-logo-strip">
+          {merchantLogos.map((logo) => (
+            <div className="brand-logo-chip" key={logo.asset_id}>
+              <ZoomableImage
+                className="brand-logo-preview"
+                src={logo.url}
+                alt={logo.original_name}
+                title={logo.original_name}
+              />
+              <button type="button" className="brand-logo-remove" onClick={() => setConfirmDelete({ target: 'logo', id: logo.asset_id })} aria-label="移除 Logo" disabled={deletingId === logo.asset_id}>×</button>
+            </div>
+          ))}
+          {!logosFull ? (
+            <label className="brand-asset-add">
+              <input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={uploadingLogo} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void uploadLogos(files); event.target.value = '' }} />
+              <span>＋</span><small>{uploadingLogo ? '上传中' : 'Logo'}</small>
+            </label>
+          ) : null}
+        </div>
+        {merchantLogos.length === 0 ? (
+          <p className="brand-logo-empty">还没有商户 Logo，上传后会用于全部平台风格的生成。</p>
+        ) : null}
       </section>
-    )
-  }
+      <MerchantProfilePanel profile={merchantProfile} />
+    </div>
+  )
+
+  const assetDeleteDialog = confirmDelete
+    ? createPortal(
+        <dialog
+          ref={assetDeleteDialogRef}
+          className="brand-delete-modal brand-asset-delete-modal"
+          aria-labelledby="brand-asset-delete-title"
+          onCancel={() => setConfirmDelete(null)}
+          onClose={() => setConfirmDelete(null)}
+        >
+          <strong id="brand-asset-delete-title">
+            移除{confirmDelete.target === 'logo' ? '品牌 Logo' : '参考图'}？
+          </strong>
+          <p>
+            {confirmDelete.target === 'logo'
+              ? '确认从商户 Logo 集合移除？全部平台风格将不再默认使用它，素材文件和历史任务会保留。'
+              : '确认从当前风格中移除？素材文件和历史任务会保留。'}
+          </p>
+          <div className="brand-delete-modal-actions">
+            <button type="button" onClick={() => setConfirmDelete(null)} autoFocus>取消</button>
+            <button type="button" className="is-danger" onClick={() => {
+              if (confirmDelete.target === 'logo') void removeLogo(confirmDelete.id)
+              else void removeReference(confirmDelete.id)
+            }}>确认移除</button>
+          </div>
+        </dialog>,
+        document.body,
+      )
+    : null
 
   if (!selectedId && !creating) {
     return (
@@ -535,7 +511,8 @@ export default function BrandStudio({
         {brandsError ? <div className="asset-notice asset-notice-error">{brandsError}</div> : null}
         {error ? <div className="asset-notice asset-notice-error">{error}</div> : null}
         {notice ? <div className="asset-notice">{notice}</div> : null}
-        <CommonRulesCard onOpen={() => { setShowRules(true); void loadRules() }} />
+        {merchantSection}
+        {assetDeleteDialog}
         {brandsLoading ? (
           <div className="brand-card-grid">
             {[0, 1, 2].map((item) => (
@@ -623,49 +600,8 @@ export default function BrandStudio({
         {loading || !draft ? (
           <div className="asset-empty"><strong>正在读取品牌配置</strong><span>请稍候…</span></div>
         ) : (
-          <div className={`brand-detail-body${hasMerchantSidebar ? ' brand-merchant-workspace' : ''}`}>
-            <div className="brand-left-column">
-              {detail?.merchant_profile?.brand_info ? (
-                <MerchantBrandInfoCard info={detail.merchant_profile.brand_info} />
-              ) : null}
-              {creating ? null : (
-                <section className="brand-form-section brand-logo-card">
-                  <div className="brand-section-head">
-                    <div>
-                      <span className="eyebrow">MERCHANT LOGO</span>
-                      <h2>品牌 Logo</h2>
-                    </div>
-                    <span className="brand-logo-count">{merchantLogos.length}/5</span>
-                  </div>
-                  <p className="brand-logo-hint">
-                    商户通用字段：全部平台风格与海报共用这套 Logo，生成页默认引用第一张。
-                  </p>
-                  <div className="brand-logo-strip">
-                    {merchantLogos.map((logo) => (
-                      <div className="brand-logo-chip" key={logo.asset_id}>
-                        <ZoomableImage
-                          className="brand-logo-preview"
-                          src={logo.url}
-                          alt={logo.original_name}
-                          title={logo.original_name}
-                        />
-                        <button type="button" className="brand-logo-remove" onClick={() => setConfirmDelete({ target: 'logo', id: logo.asset_id })} aria-label="移除 Logo" disabled={deletingId === logo.asset_id}>×</button>
-                      </div>
-                    ))}
-                    {!logosFull ? (
-                      <label className="brand-asset-add">
-                        <input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={uploadingLogo} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void uploadLogos(files); event.target.value = '' }} />
-                        <span>＋</span><small>{uploadingLogo ? '上传中' : 'Logo'}</small>
-                      </label>
-                    ) : null}
-                  </div>
-                  {merchantLogos.length === 0 ? (
-                    <p className="brand-logo-empty">还没有商户 Logo，上传后会直接用于全部平台风格的生成。</p>
-                  ) : null}
-                </section>
-              )}
-              <MerchantProfilePanel profile={detail?.merchant_profile ?? null} />
-            </div>
+          <div className="brand-detail-body">
+            {assetDeleteDialog}
             <div className="brand-platform-column">
             <section className="brand-form-section brand-basics-section">
               <div className="brand-section-head">
@@ -764,35 +700,6 @@ export default function BrandStudio({
                 ) : null}
               </div>
             </section>
-
-            {confirmDelete
-              ? createPortal(
-                  <dialog
-                    ref={assetDeleteDialogRef}
-                    className="brand-delete-modal brand-asset-delete-modal"
-                    aria-labelledby="brand-asset-delete-title"
-                    onCancel={() => setConfirmDelete(null)}
-                    onClose={() => setConfirmDelete(null)}
-                  >
-                    <strong id="brand-asset-delete-title">
-                      移除{confirmDelete.target === 'logo' ? '品牌 Logo' : '参考图'}？
-                    </strong>
-                    <p>
-                      {confirmDelete.target === 'logo'
-                        ? '确认从商户 Logo 集合移除？全部平台风格将不再默认使用它，素材文件和历史任务会保留。'
-                        : '确认从当前风格中移除？素材文件和历史任务会保留。'}
-                    </p>
-                    <div className="brand-delete-modal-actions">
-                      <button type="button" onClick={() => setConfirmDelete(null)} autoFocus>取消</button>
-                      <button type="button" className="is-danger" onClick={() => {
-                        if (confirmDelete.target === 'logo') void removeLogo(confirmDelete.id)
-                        else void removeReference(confirmDelete.id)
-                      }}>确认移除</button>
-                    </div>
-                  </dialog>,
-                  document.body,
-                )
-              : null}
 
             <div className="brand-detail-footer">
               <div className="brand-detail-footer-actions">

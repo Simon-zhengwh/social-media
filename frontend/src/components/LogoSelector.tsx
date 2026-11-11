@@ -2,92 +2,76 @@ import type { BrandLogoImage } from '../types'
 import { ZoomableImage } from './ImageLightbox'
 
 type Props = {
+  /** The merchant-level logos configured on the brand page; never ordinary content assets. */
   logos: BrandLogoImage[]
   selectedLogoId: string
   busy: boolean
-  logoUploading: boolean
-  canAddLogo: boolean
-  onUploadLogos: (files: File[]) => void
-  onPickLogo: () => void
-  /** Clears the logo for this poster only; the merchant-level logo stays in the brand page. */
-  onRemoveLogo: (assetId: string) => void
+  /**
+   * Picks one logo, or clears it when the active tile is clicked again.
+   * The merchant-level set is untouched: only this poster stops using the logo.
+   */
+  onSelectLogo: (assetId: string) => void
 }
 
-export default function LogoSelector({
-  logos,
-  selectedLogoId,
-  busy,
-  logoUploading,
-  canAddLogo,
-  onUploadLogos,
-  onPickLogo,
-  onRemoveLogo,
-}: Props) {
-  const activeLogo = logos.find((logo) => logo.asset_id === selectedLogoId) ?? null
-  const activeLogoName = activeLogo?.original_name || '品牌 Logo'
-
+export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo }: Props) {
   return (
     <div className="brand-field logo-selector-field">
       <div className="brand-field-head">
         <span className="prompt-field-label">
-          品牌 Logo <span>可选</span>
+          品牌 Logo <span>可选 · 至多一张</span>
         </span>
+        {logos.length > 0 ? (
+          <small className="logo-selector-hint">在「品牌风格」页维护</small>
+        ) : null}
       </div>
-      <div className="logo-selector-options" aria-label="品牌 Logo">
-        {activeLogo ? (
-          <div className="logo-selector-thumb">
-            <ZoomableImage
-              className="logo-selector-preview"
-              src={activeLogo.url}
-              alt={activeLogoName}
-              title={activeLogoName}
-            />
-            <button
-                type="button"
-                className="logo-selector-remove"
-                onClick={() => onRemoveLogo(activeLogo.asset_id)}
-                disabled={busy || logoUploading}
-                title="本张海报不使用 Logo"
-                aria-label={`本张海报不使用 ${activeLogoName}`}
+
+      {logos.length === 0 ? (
+        <p className="logo-selector-empty">
+          还没有配置品牌 Logo。可到「品牌风格」页的商户公共区上传，上传后这里即可勾选。
+        </p>
+      ) : (
+        <div className="logo-selector-options" aria-label="品牌 Logo">
+          {logos.map((logo) => {
+            const active = logo.asset_id === selectedLogoId
+            const name = logo.original_name || '品牌 Logo'
+            return (
+              <div
+                key={logo.asset_id}
+                className={`logo-selector-option${active ? ' is-active' : ''}`}
               >
-                ×
-            </button>
-          </div>
-        ) : null}
-        {canAddLogo ? (
-          <label
-            className={`logo-selector-add${busy || logoUploading ? ' is-disabled' : ''}`}
-            title={activeLogo ? '更换品牌 Logo' : '添加品牌 Logo'}
-          >
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              disabled={busy || logoUploading}
-              onChange={(event) => {
-                const files = Array.from(event.target.files ?? [])
-                if (files.length) onUploadLogos(files)
-                event.target.value = ''
-              }}
-            />
-            <span className="logo-selector-add-plus" aria-hidden="true">＋</span>
-            <small>
-              {logoUploading ? '上传中…' : activeLogo ? '更换' : '上传'}
-            </small>
-          </label>
-        ) : null}
-        {canAddLogo ? (
+                <ZoomableImage
+                  className="logo-selector-preview"
+                  src={logo.url}
+                  alt={name}
+                  title={name}
+                />
+                <button
+                  type="button"
+                  className="logo-selector-choice"
+                  aria-pressed={active}
+                  disabled={busy}
+                  onClick={() => onSelectLogo(active ? '' : logo.asset_id)}
+                  title={active ? '本张海报不使用这张 Logo' : `本张海报使用 ${name}`}
+                >
+                  <span className="logo-selector-radio" aria-hidden="true" />
+                  <span className="logo-selector-name">{name}</span>
+                </button>
+              </div>
+            )
+          })}
           <button
             type="button"
-            className="logo-selector-add logo-selector-pick"
-            onClick={onPickLogo}
-            disabled={busy || logoUploading}
-            title="从素材库选择品牌 Logo"
+            className={`logo-selector-option logo-selector-none${selectedLogoId ? '' : ' is-active'}`}
+            disabled={busy}
+            onClick={() => onSelectLogo('')}
+            title="本张海报不使用 Logo"
+            aria-label="本张海报不使用 Logo"
           >
-            <span className="logo-selector-add-plus" aria-hidden="true">▦</span>
-            <small>素材库</small>
+            <span aria-hidden="true">✕</span>
+            <small>不用 Logo</small>
           </button>
-        ) : null}
-      </div>
+        </div>
+      )}
     </div>
   )
 }

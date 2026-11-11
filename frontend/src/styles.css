@@ -7246,3 +7246,162 @@ label.product-add.is-disabled {
   gap: 8px;
   margin-top:8px;
 }
+
+/* FB-008: keyword, tag and their trigger form one compact group; upload sits on the right. */
+.asset-search-group {
+  display: flex;
+  flex: 1 1 320px;
+  align-items: center;
+  gap: 8px;
+  max-width: 620px;
+}
+
+.asset-search-group .asset-search-input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.asset-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+@media (max-width: 760px) {
+  .asset-search-group {
+    max-width: none;
+  }
+
+  .asset-toolbar-actions {
+    margin-left: 0;
+  }
+}
+
+/* FB-011: tags stay short per card and double as filter shortcuts. */
+.asset-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.asset-tag {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 1px solid var(--color-secondary-200);
+  border-radius: 999px;
+  background: var(--color-secondary-50);
+  color: var(--color-secondary-600);
+  font-size: 9.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-tag:hover {
+  border-color: var(--color-secondary-600);
+}
+
+.asset-tag-edit {
+  padding: 2px 6px;
+  border: 1px dashed var(--color-neutral-300);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--color-neutral-500);
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.asset-tag-edit:hover {
+  border-color: var(--color-secondary-600);
+  color: var(--color-secondary-600);
+}
+
+.asset-tag-dialog {
+  width: min(460px, 100%);
+}
+
+.asset-tag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 12px;
+}
+
+.asset-tag-editor .asset-tag-input {
+  flex: 1 1 160px;
+  min-width: 0;
+  min-height: 30px;
+}
+
+.asset-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 9px;
+  border-radius: 999px;
+  background: var(--color-secondary-50);
+  color: var(--color-secondary-600);
+  font-size: 10px;
+}
+
+.asset-tag-chip button {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* FB-004: merchant facts, the shared logo set and the AM profile above the style list. */
+.brand-merchant-public {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
+  gap: 18px;
+  margin: 8px 0 22px;
+}
+
+.brand-merchant-public > .merchant-profile-panel {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1100px) {
+  .brand-merchant-public {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* FB-010: the second square entry reuses the upload tile, with a grid glyph instead of a plus. */
+.product-add-glyph {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.product-add.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* FB-007: empty logo state and hint inside the poster form. */
+.logo-selector-hint {
+  color: var(--color-neutral-400);
+  font-size: 9.5px;
+}
+
+.logo-selector-empty {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--color-neutral-200);
+  border-radius: 10px;
+  color: var(--color-neutral-500);
+  font-size: 10.5px;
+  line-height: 1.6;
+}

@@ -126,6 +126,8 @@ export type Asset = {
   created_at: string
   source?: 'am' | 'upload'
   read_only?: boolean
+  /** AM media library tags; older assets may not carry the field yet. */
+  tags?: string[]
 }
 
 // ---------- Whole-image flow ----------

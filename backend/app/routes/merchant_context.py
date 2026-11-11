@@ -72,6 +72,7 @@ def list_am_assets(
     merchant_id: str,
     request: Request,
     keyword: str = "",
+    tag: str = "",
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
@@ -81,6 +82,7 @@ def list_am_assets(
             request_db(request),
             merchant_id,
             keyword=keyword,
+            tag=tag,
             skip=skip,
             limit=limit,
         )

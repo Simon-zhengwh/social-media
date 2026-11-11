@@ -345,6 +345,16 @@ export async function uploadAsset(file: File): Promise<Asset> {
   return parseResponse<Asset>(response)
 }
 
+
+export async function updateAssetTags(assetId: string, tags: string[]): Promise<Asset> {
+  const response = await apiFetch(`/api/assets/${encodeURIComponent(assetId)}/tags`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tags }),
+  })
+  return parseResponse<Asset>(response)
+}
+
 export async function deleteAsset(assetId: string, force = false): Promise<void> {
   const query = force ? '?force=true' : ''
   const response = await apiFetch(`/api/assets/${encodeURIComponent(assetId)}${query}`, {

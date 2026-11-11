@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
+from app.config import local_bypass_enabled
 from app.services import am_assets
 from app.services.am_client import AMClientError
 
@@ -23,6 +24,13 @@ def resolve_asset_id(request: Request, asset_id: str | None) -> str | None:
     state = getattr(request, "state", None)
     if state is None or not hasattr(state, "db"):
         return asset_id
+    if local_bypass_enabled(request.app.state.settings):
+        cached = request.state.db.assets.find_one({
+            "source": "am", "am_media_library_id": asset_id[len(am_assets.AM_ASSET_PREFIX):],
+        })
+        if cached is not None:
+            return str(cached["_id"])
+        raise HTTPException(422, "该 AM 素材尚未导入本地，请先上传本地图片。")
     try:
         return am_assets.import_if_needed(
             request.state.db,

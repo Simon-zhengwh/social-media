@@ -4,12 +4,21 @@ from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel, Field
 
+from app.api_errors import am_http_error
 from app.api_paths import asset_url
+from app.middleware import is_local_bypass
 from app.request_context import request_db, request_merchant_id, request_store
-from app.services import asset_records
+from app.services import am_assets, asset_records
+from app.services.am_client import AMClientError
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+
+class AssetTagsUpdate(BaseModel):
+    # The full set replaces the previous tags; an empty list clears them.
+    tags: list[str] = Field(default_factory=list, max_length=am_assets.MAX_ASSET_TAGS)
 
 
 def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
@@ -24,6 +33,7 @@ def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
         "created_at": doc["created_at"],
         "source": doc.get("source") or "upload",
         "read_only": False,
+        "tags": [str(tag) for tag in doc.get("tags") or [] if str(tag).strip()],
     }
 
 
@@ -48,14 +58,72 @@ def upload_asset(
     data = file.file.read(settings.max_upload_bytes + 1)
     if len(data) > settings.max_upload_bytes:
         raise HTTPException(status_code=413, detail=f"文件超过 {settings.max_upload_bytes / 1_000_000:g} MB 限制")
-    doc, _ = asset_records.persist_upload(
+    document, created = asset_records.persist_upload(
         request_db(request),
         settings,
         store,
         data,
         file.filename or "",
     )
-    return asset_out(doc)
+    am = getattr(request.app.state, "am", None)
+    if is_local_bypass(request) or am is None:
+        # Local dev (and unit-test doubles) keep uploads local; no AM write is attempted.
+        return asset_out(document)
+    if document.get("am_media_library_id"):
+        # Same bytes uploaded before: it already owns a media-library record.
+        return asset_out(document)
+
+    try:
+        document = am_assets.register_in_library(
+            request_db(request),
+            am,
+            request.state.am_cookie,
+            request_merchant_id(request),
+            document,
+            data,
+            file.filename or document["original_name"],
+        )
+    except AMClientError as exc:
+        # Never fall back to a private copy that pretends to be a library asset.
+        if created:
+            _discard_upload(request, document, store)
+        raise am_http_error(exc) from exc
+    return asset_out(document)
+
+
+def _discard_upload(request: Request, document: dict[str, Any], store: Any) -> None:
+    for key in (document.get("prepared_path"), document.get("path")):
+        if not key:
+            continue
+        try:
+            store.delete(key)
+        except Exception:  # noqa: BLE001 - the upload already failed
+            pass
+    request_db(request).assets.delete_one({"_id": document["_id"]})
+
+
+@router.put("/{asset_id}/tags")
+def update_asset_tags(
+    asset_id: str,
+    payload: AssetTagsUpdate,
+    request: Request,
+) -> dict[str, Any]:
+    bypass = is_local_bypass(request)
+    try:
+        return am_assets.update_tags(
+            request_db(request),
+            None if bypass else getattr(request.app.state, "am", None),
+            request.state.am_cookie,
+            request_merchant_id(request),
+            asset_id,
+            payload.tags,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="素材不存在") from exc
+    except AMClientError as exc:
+        raise am_http_error(exc) from exc
 
 
 @router.get("/{asset_id}/file")

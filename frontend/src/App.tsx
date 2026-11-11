@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import AssetLibrary from './components/AssetLibrary'
 import BrandStudio from './components/BrandStudio'
 import Sidebar, { type AppView } from './components/Sidebar'
@@ -178,6 +178,9 @@ export default function App() {
   const [assetsError, setAssetsError] = useState<string | null>(null)
   const [assetTotal, setAssetTotal] = useState(0)
   const [assetQuery, setAssetQuery] = useState('')
+  const [assetTagQuery, setAssetTagQuery] = useState('')
+  // Bumped per asset request so a slow response for an old filter cannot land on new results.
+  const assetRequestRef = useRef(0)
   const [loadingMoreAssets, setLoadingMoreAssets] = useState(false)
   const [uploadingAsset, setUploadingAsset] = useState(false)
   const [context, setContext] = useState<MerchantContext | null>(null)
@@ -214,22 +217,29 @@ export default function App() {
     append = false,
     skip = 0,
     showLoading = true,
+    tag = '',
   ) => {
+    const requestId = assetRequestRef.current + 1
+    assetRequestRef.current = requestId
     if (append) {
       setLoadingMoreAssets(true)
     } else if (showLoading) {
       setAssetsLoading(true)
     }
     try {
-      const page = await listAssetPage(keyword, skip, 24)
+      const page = await listAssetPage(keyword, skip, 24, tag)
+      if (requestId !== assetRequestRef.current) return
       setAssets((previous) => append ? [...previous, ...page.items] : page.items)
       setAssetTotal(page.total)
       setAssetsError(null)
     } catch (reason: unknown) {
+      if (requestId !== assetRequestRef.current) return
       setAssetsError(errorMessage(reason))
     } finally {
-      setAssetsLoading(false)
-      setLoadingMoreAssets(false)
+      if (requestId === assetRequestRef.current) {
+        setAssetsLoading(false)
+        setLoadingMoreAssets(false)
+      }
     }
   }, [])
 
@@ -305,6 +315,11 @@ export default function App() {
     setAssetsError(null)
     try {
       const uploaded = await uploadAsset(file)
+      if (assetQuery || assetTagQuery) {
+        // Filters are active: the new image may not match them, so show the filtered truth.
+        void loadAssets(assetQuery, false, 0, false, assetTagQuery)
+        return true
+      }
       setAssets((previous) => [uploaded, ...previous.filter((item) => item.id !== uploaded.id)])
       setAssetTotal((current) => current + 1)
       return true
@@ -425,28 +440,37 @@ export default function App() {
             error={assetsError}
             total={assetTotal}
             query={assetQuery}
+            tagQuery={assetTagQuery}
+            amMediaLibrary={context?.features?.am_media_library === true}
             onSearch={handleSearchAssets}
             onLoadMore={handleLoadMoreAssets}
             loadingMore={loadingMoreAssets}
             uploading={uploadingAsset}
             onUpload={handleUploadAsset}
             onDeleted={handleDeleteAsset}
+            onTagsSaved={handleTagsSaved}
           />
         )}
 
         <footer className="app-footer">
-          {view === 'whole' ? (
+          {visibleView === 'whole' ? (
             <>
               <span>提示词直出整图 · 模型直接改图，每轮结果自动保存为新版本</span>
               <span className="footer-sep" aria-hidden="true" />
               <span>原照替换结果需确认后应用</span>
             </>
-          ) : view === 'tasks' ? (
+          ) : visibleView === 'tasks' ? (
             <span>任务按候选批次归档 · 点击封面回到工作台继续编辑</span>
-          ) : view === 'agent-tests' ? (
+          ) : visibleView === 'material-filters' ? (
+            <span>SMB 严格只读 · 通过的原图复制到本机输出目录 · 待复核需人工确认</span>
+          ) : visibleView === 'agent-tests' ? (
             <span>原始输入 · 独立运行 · Trace 与耗时记录</span>
-          ) : view === 'brands' ? null : (
-            <span>资源库来自 AM Console 只读 · 临时上传保存在商家专属媒体目录</span>
+          ) : visibleView === 'brands' ? null : (
+            <span>
+              {context?.features?.am_media_library
+                ? '素材库与 AM Console 同步 · 上传的图片会登记为当前商户的正式素材'
+                : '本地开发模式 · 素材只保存在本机，不会写入 AM Console'}
+            </span>
           )}
         </footer>
       </div>

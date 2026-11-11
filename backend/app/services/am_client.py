@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -11,6 +12,14 @@ from app.config import Settings
 
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# AM stores the format as a short token rather than a MIME type.
+_MEDIA_FORMAT = {
+    "image/jpeg": "JPEG",
+    "image/png": "PNG",
+    "image/webp": "WEBP",
+    "image/gif": "GIF",
+}
 
 
 class AMClientError(Exception):
@@ -87,6 +96,7 @@ class AMClient:
         merchant_id: str,
         *,
         keyword: str = "",
+        tag: str = "",
         skip: int = 0,
         limit: int = 20,
     ) -> dict[str, Any]:
@@ -97,10 +107,58 @@ class AMClient:
             json={
                 "merchant_id": merchant_id,
                 "filename": keyword.strip() or None,
+                "tag": tag.strip() or None,
                 "skip": skip,
                 "limit": max(1, min(limit, 100)),
             },
         )
+
+    def update_media_tags(
+        self,
+        cookie: str,
+        merchant_id: str,
+        media_library_id: str,
+        tags: list[str],
+    ) -> dict[str, Any]:
+        """Replace the whole tag set of one AM media-library record.
+
+        An empty list clears every tag; AM has no partial update, so callers must always send
+        the complete set they want to keep.
+        """
+        payload = self._request(
+            "PUT",
+            f"/ajax/media-library/{quote(media_library_id, safe='')}/tags",
+            cookie=cookie,
+            json={"merchant_id": merchant_id, "tags": tags},
+        )
+        return self._media_library(payload, "AM 素材 Tag 更新响应格式无效")
+
+    def upload_media(
+        self,
+        cookie: str,
+        merchant_id: str,
+        *,
+        filename: str,
+        data: bytes,
+        mime_type: str,
+        tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Create a real media-library record, not just an uploaded file object."""
+        payload = self._request(
+            "POST",
+            "/ajax/media-library/upload",
+            cookie=cookie,
+            json={
+                "category": "MEDIA_LIBRARY",
+                "merchant_id": merchant_id,
+                "filename": filename,
+                "file_base64": base64.b64encode(data).decode("ascii"),
+                "media_library_type": "IMAGE",
+                "media_library_format": _MEDIA_FORMAT.get(mime_type, "PNG"),
+                "tags": list(tags or []),
+            },
+        )
+        return self._media_library(payload, "AM 素材上传响应格式无效")
 
     def get_media(self, cookie: str, merchant_id: str, media_library_id: str) -> dict[str, Any]:
         payload = self._get(
@@ -108,9 +166,13 @@ class AMClient:
             cookie=cookie,
             params={"merchant_id": merchant_id},
         )
+        return self._media_library(payload, "AM 素材详情响应格式无效")
+
+    @staticmethod
+    def _media_library(payload: Any, message: str) -> dict[str, Any]:
         media = payload.get("media_library") if isinstance(payload, dict) else None
-        if not isinstance(media, dict):
-            raise AMClientError(502, "am_invalid_response", "AM 素材详情响应格式无效")
+        if not isinstance(media, dict) or not media.get("id"):
+            raise AMClientError(502, "am_invalid_response", message)
         return media
 
     def initiate_media_upload(
