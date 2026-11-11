@@ -426,19 +426,20 @@ def runtime_scheme(db, scheme_id: str) -> dict[str, Any]:
 
 def mark_scheme_interrupted(db) -> list[str]:
     """Mark leftover runs interrupted; the operator resumes explicitly."""
-    run_ids = [
-        str(doc["_id"])
-        for doc in db[RUN_COLLECTION].find({"status": {"$in": list(ACTIVE_RUN_STATUSES)}})
-    ]
+    runs = list(db[RUN_COLLECTION].find({"status": {"$in": list(ACTIVE_RUN_STATUSES)}}))
+    run_ids = [str(doc["_id"]) for doc in runs]
     for run_id in run_ids:
         db[RUN_COLLECTION].update_one(
             {"_id": run_id},
             {"$set": {"status": "interrupted", "finished_at": now(), "error": "服务重启，任务已中断"}},
         )
-    db[SCHEME_COLLECTION].update_many(
-        {"active_run_id": {"$ne": None}},
-        {"$set": {"active_run_id": None}},
-    )
+    # Release only the schemes these runs owned; the cluster runs with notablescan,
+    # so an unfiltered update_many over active_run_id would be rejected.
+    for scheme_id in {str(doc.get("scheme_id") or "") for doc in runs if doc.get("scheme_id")}:
+        db[SCHEME_COLLECTION].update_one(
+            {"_id": scheme_id, "active_run_id": {"$in": run_ids}},
+            {"$set": {"active_run_id": None}},
+        )
     return run_ids
 
 

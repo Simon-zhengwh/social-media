@@ -90,6 +90,17 @@ def _initialize_indexes(db) -> None:
     db.material_filter_evaluations.create_index(
         [("merchant_id", 1), ("scheme_id", 1), ("effective_decision", 1), ("created_at", -1)]
     )
+    # The deployment cluster runs with notablescan: every filter needs an index.
+    db.material_filter_runs.create_index([("status", 1), ("merchant_id", 1)])
+    db.material_filter_runs.create_index([("merchant_id", 1), ("folder_id", 1), ("status", 1)])
+    db.material_filter_files.create_index([("merchant_id", 1), ("folder_id", 1)])
+    db.material_filter_evaluations.create_index([("merchant_id", 1), ("folder_id", 1)])
+    db.material_filter_evaluations.create_index(
+        [("merchant_id", 1), ("scheme_id", 1), ("manual_pick", 1), ("picked_at", -1)]
+    )
+    db.material_filter_evaluations.create_index(
+        [("merchant_id", 1), ("scheme_id", 1), ("copy_status", 1)]
+    )
 
 
 def _scoped_store(app: FastAPI, merchant_id: str, db):
