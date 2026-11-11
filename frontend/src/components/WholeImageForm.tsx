@@ -2,6 +2,7 @@ import type { ChangeEvent } from 'react'
 import PlatformSelector from './PlatformSelector'
 import BrandModeSelector from './BrandModeSelector'
 import CandidateCountSelector from './CandidateCountSelector'
+import ImageModelSelector from './ImageModelSelector'
 import PromptField from './PromptField'
 import LogoSelector from './LogoSelector'
 import StoreInfoSelector, { type StoreSelection } from './StoreInfoSelector'
@@ -11,6 +12,7 @@ import type {
   BrandMode,
   BrandStyle,
   BrandLogoImage,
+  ImageModel,
   MerchantStore,
   PlatformPreset,
   Ratio,
@@ -28,8 +30,6 @@ type Props = {
   styleReferencesUploading: boolean
   logoOptions: BrandLogoImage[]
   selectedLogoId: string
-  logoUploading: boolean
-  canAddLogo: boolean
   stores: MerchantStore[]
   storeSelection: StoreSelection
   onStoreSelectionChange: (next: StoreSelection) => void
@@ -44,14 +44,13 @@ type Props = {
   prompt: string
   promptOptimized: boolean
   candidateCount: number
+  imageModel: ImageModel
   busy: boolean
   onBrandChange: (brandId: string) => void
   onBrandModeChange: (mode: BrandMode) => void
   onUploadStyleReferences: (files: File[]) => void
   onRemoveStyleReference: (assetId: string) => void
-  onUploadLogos: (files: File[]) => void
-  onPickLogo: () => void
-  onRemoveLogo: (assetId: string) => void
+  onSelectLogo: (assetId: string) => void
   onPlatformChange: (platformId: string) => void
   onPlacementChange: (placementId: string) => void
   onRatioChange: (ratio: Ratio) => void
@@ -60,6 +59,7 @@ type Props = {
   onRemoveProduct: (id: string) => void
   onPromptChange: (value: string, optimized?: boolean) => void
   onCandidateCountChange: (value: number) => void
+  onImageModelChange: (value: ImageModel) => void
   onGenerate: () => void
 }
 
@@ -73,8 +73,6 @@ export default function WholeImageForm({
   styleReferencesUploading,
   logoOptions,
   selectedLogoId,
-  logoUploading,
-  canAddLogo,
   stores,
   storeSelection,
   onStoreSelectionChange,
@@ -89,14 +87,13 @@ export default function WholeImageForm({
   prompt,
   promptOptimized,
   candidateCount,
+  imageModel,
   busy,
   onBrandChange,
   onBrandModeChange,
   onUploadStyleReferences,
   onRemoveStyleReference,
-  onUploadLogos,
-  onPickLogo,
-  onRemoveLogo,
+  onSelectLogo,
   onPlatformChange,
   onPlacementChange,
   onRatioChange,
@@ -105,6 +102,7 @@ export default function WholeImageForm({
   onRemoveProduct,
   onPromptChange,
   onCandidateCountChange,
+  onImageModelChange,
   onGenerate,
 }: Props) {
   const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId)
@@ -167,11 +165,7 @@ export default function WholeImageForm({
         logos={logoOptions}
         selectedLogoId={selectedLogoId}
         busy={busy}
-        logoUploading={logoUploading}
-        canAddLogo={canAddLogo}
-        onUploadLogos={onUploadLogos}
-        onPickLogo={onPickLogo}
-        onRemoveLogo={onRemoveLogo}
+        onSelectLogo={onSelectLogo}
       />
 
       <StoreInfoSelector
@@ -184,73 +178,53 @@ export default function WholeImageForm({
       <div className="product-block">
         <div className="product-block-head">
           <strong>素材图</strong>
+          <span>{products.length}/{MAX_PRODUCTS}</span>
         </div>
-        {products.length > 0 ? (
-          <div className="product-strip">
-            {products.map((product, index) => (
-              <div className="product-thumb" key={product.id}>
-                <ZoomableImage
-                  className="product-thumb-preview"
-                  imageClassName="product-thumb-img"
-                  src={product.url}
-                  alt={product.original_name}
-                  title={product.original_name}
-                />
-                <span className="product-index">{index + 1}</span>
-                <button
-                  type="button"
-                  className="product-remove"
-                  onClick={() => onRemoveProduct(product.id)}
-                  aria-label={`移除 ${product.original_name}`}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            {products.length < MAX_PRODUCTS ? (
-              <>
-                <button type="button" className="product-add" onClick={onPickProducts} disabled={busy}>
-                  <span className="upload-plus" aria-hidden="true" />
-                  <span>添加</span>
-                </button>
-                <label
-                  className={`product-add${busy || productsUploading ? ' is-disabled' : ''}`}
-                  title="直接上传素材图（同步到素材库）"
-                >
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/png,image/jpeg,image/webp"
-                    disabled={busy || productsUploading}
-                    onChange={handleUploadFiles}
-                  />
-                  <span className="upload-plus" aria-hidden="true" />
-                  <span>{productsUploading ? '上传中' : '上传'}</span>
-                </label>
-              </>
-            ) : null}
-          </div>
-        ) : (
-          <>
-            <button type="button" className="product-empty" onClick={onPickProducts} disabled={busy}>
-              <span className="upload-plus" aria-hidden="true" />
-              <strong>从资产管理选择素材图</strong>
-              <span>可多选</span>
-            </button>
-            <label
-              className={`product-upload-link${busy || productsUploading ? ' is-disabled' : ''}`}
-            >
-              <input
-                type="file"
-                multiple
-                accept="image/png,image/jpeg,image/webp"
-                disabled={busy || productsUploading}
-                onChange={handleUploadFiles}
+        <div className="product-strip">
+          {products.map((product, index) => (
+            <div className="product-thumb" key={product.id}>
+              <ZoomableImage
+                className="product-thumb-preview"
+                imageClassName="product-thumb-img"
+                src={product.url}
+                alt={product.original_name}
+                title={product.original_name}
               />
-              {productsUploading ? '正在上传素材图…' : '或直接上传素材图（同步到素材库）'}
-            </label>
-          </>
-        )}
+              <span className="product-index">{index + 1}</span>
+              <button
+                type="button"
+                className="product-remove"
+                onClick={() => onRemoveProduct(product.id)}
+                aria-label={`移除 ${product.original_name}`}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          {products.length < MAX_PRODUCTS ? (
+            <>
+              {/* Same entries whether or not images are already chosen, matching the reference UI. */}
+              <label
+                className={`product-add${busy || productsUploading ? ' is-disabled' : ''}`}
+                title="上传素材图（部署环境会同步到素材库）"
+              >
+                <input
+                  type="file"
+                  multiple
+                  accept="image/png,image/jpeg,image/webp"
+                  disabled={busy || productsUploading}
+                  onChange={handleUploadFiles}
+                />
+                <span className="upload-plus" aria-hidden="true" />
+                <span>{productsUploading ? '上传中' : '上传'}</span>
+              </label>
+              <button type="button" className="product-add" onClick={onPickProducts} disabled={busy} title="从素材库选择素材图">
+                <span className="product-add-glyph" aria-hidden="true">▦</span>
+                <span>素材库</span>
+              </button>
+            </>
+          ) : null}
+        </div>
       </div>
 
       <PromptField
@@ -282,6 +256,12 @@ export default function WholeImageForm({
         value={candidateCount}
         busy={busy}
         onChange={onCandidateCountChange}
+      />
+
+      <ImageModelSelector
+        value={imageModel}
+        busy={busy}
+        onChange={onImageModelChange}
       />
 
 

@@ -16,7 +16,7 @@ from app.api_paths import asset_url, whole_download_url, merchant_base
 from app.request_context import request_db, request_merchant_id, request_store, request_profile
 from app.schemas import (WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
-from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
+from app.services import (original_replacement_runner, brand_rules, brand_style, image_provider, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
 from app.services.agent_image import artifacts_out as _artifacts_out
 from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
@@ -486,10 +486,19 @@ def _get_task_or_404(db: Any, task_id: str) -> dict[str, Any]:
     return doc
 
 
-def _require_configured(request: Request) -> None:
+def _require_configured(request: Request, image_model: str | None = None) -> None:
     settings = request.app.state.settings
+    if image_provider.is_minimax_model(image_model):
+        if not settings.minimax_image_api_key.strip():
+            raise HTTPException(status_code=503, detail="未配置 MINIMAX_IMAGE_API_KEY")
+        return
     if not settings.core_ai_api_key.strip():
         raise HTTPException(status_code=503, detail="未配置 CORE_AI_API_KEY")
+
+
+def _require_task_image_model(request: Request, doc: dict[str, Any]) -> None:
+    """Edits and retries reuse the model stored on the task, so check that provider."""
+    _require_configured(request, _task_input(doc).get("image_model"))
 
 
 @router.post("/tasks", status_code=202)
@@ -498,7 +507,7 @@ def create_task(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    _require_configured(request)
+    _require_configured(request, payload.image_model)
     db = request_db(request)
     settings = request.app.state.settings
 
@@ -602,7 +611,7 @@ def create_task(
         "brand_rules": brand_rules.get_rules(db),
         "canvas": {"width": width, "height": height},
         "provider": {
-            "name": "core-ai",
+            "name": image_provider.provider_name(payload.image_model),
             "model": payload.image_model,
             "status": "queued",
         },
@@ -716,8 +725,9 @@ def retry_task(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    _require_configured(request)
     db = request_db(request)
+    doc = _get_task_or_404(db, task_id)
+    _require_task_image_model(request, doc)
 
     retried_generation = db.whole_tasks.find_one_and_update(
         {"_id": task_id, "status": "failed"},
@@ -748,7 +758,6 @@ def retry_task(
         )
         return task_out(db, retried_generation)
 
-    doc = _get_task_or_404(db, task_id)
     if _task_is_active(doc):
         raise HTTPException(status_code=409, detail="任务正在执行，请稍候")
     edit = doc.get("edit") if isinstance(doc.get("edit"), dict) else {}
@@ -806,9 +815,9 @@ def create_edit(
     request: Request,
     background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    _require_configured(request)
     db = request_db(request)
     doc = _get_task_or_404(db, task_id)
+    _require_task_image_model(request, doc)
     if doc.get("status") != "succeeded":
         raise HTTPException(status_code=409, detail="任务尚未生成可编辑的图片")
     reference_asset_ids = request_assets.resolve_asset_ids(request, payload.reference_asset_ids)

@@ -14,6 +14,7 @@ from pymongo.database import Database
 
 from app.config import Settings
 from app.services import brand_rules, platform_presets, storage
+from app.services import image_provider
 from app.services.canvas import canvas_size, gateway_image_size
 from app.services.core_ai import CoreAIClient, CoreAIError
 from app.services.image_ref import ImageRef, cleanup_image_refs, image_ref_from_asset
@@ -591,6 +592,7 @@ def run_generation(
         )
         endpoint = "/images/edits" if reference_images else "/images/generations"
         model_input = {
+            "provider": image_provider.provider_name(image_model),
             "endpoint": endpoint,
             "model": image_model,
             "prompt": prompt,
@@ -616,9 +618,13 @@ def run_generation(
             },
         )
         if reference_images:
-            data = client.edit_image(prompt, reference_images, size=size, model=image_model)
+            data = image_provider.image_client(settings, client, image_model).edit_image(
+                prompt, reference_images, size=size, model=image_model
+            )
         else:
-            data = client.generate_image(prompt, size=size, model=image_model)
+            data = image_provider.image_client(settings, client, image_model).generate_image(
+                prompt, size=size, model=image_model
+            )
         saved = _save_output_asset(
             db,
             settings,
@@ -715,7 +721,7 @@ def _gateway_edit_branch(
             image_ref_from_asset(db, store, reference_asset_id)
             for reference_asset_id in reference_asset_ids
         ]
-        data = client.edit_image(
+        data = image_provider.image_client(settings, client, image_model).edit_image(
             prompt,
             [*original_refs, source_ref, *edit_refs],
             size=size,
@@ -876,6 +882,7 @@ def run_edit(
         )
         gateway_input = {
             "channel": "gateway",
+            "provider": image_provider.provider_name(image_model),
             "endpoint": "/images/edits",
             "model": image_model,
             "prompt": prompt,

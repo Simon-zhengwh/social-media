@@ -357,6 +357,7 @@ def test_generation_exposes_model_input_snapshot_with_reference_preview(
     version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
     snapshot = version["model_input"]
     assert snapshot == {
+        "provider": "core-ai",
         "endpoint": "/images/edits",
         "model": "gpt-image-2.5-sunburst",
         "prompt": fake.edit_calls[0]["prompt"],
@@ -785,7 +786,11 @@ def test_six_products_reach_generation_and_edit_in_order(settings, store, produc
 
 @pytest.mark.parametrize(
     "model",
-    ["gemini-3.1-flash-image", "seedream-5-pro-image-to-image"],
+    [
+        "gemini-3.1-flash-image",
+        "seedream-5-pro-image-to-image",
+        "seedream-5.5-image-to-image",
+    ],
 )
 def test_task_accepts_added_image_models(model):
     assert WholeImageTaskCreate(prompt="test", image_model=model).image_model == model
@@ -1779,3 +1784,34 @@ def test_outputs_without_artifacts_serialize_as_empty_list(settings, store):
         {"status": "completed", "outputs": [{"role": "gateway_result"}]},
     )
     assert branch["outputs"][0]["artifacts"] == []
+
+
+def test_minimax_model_generation_routes_to_the_minimax_client(settings, store, monkeypatch):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    recorded: list[str] = []
+
+    def routed(config, core_ai, image_model):
+        recorded.append(str(image_model))
+        return fake
+
+    monkeypatch.setattr(whole_service.image_provider, "image_client", routed)
+    created = _create(db, settings, store, fake, image_model="minimax-h3-image")
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    task = db.whole_tasks.find_one({"_id": created["id"]})
+    assert recorded == ["minimax-h3-image"]
+    assert task["status"] == "succeeded"
+    assert task["provider"]["name"] == "minimax"
+    assert fake.generation_calls[0]["model"] == "minimax-h3-image"
+
+
+def test_minimax_generate_requires_its_own_api_key(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    settings.minimax_image_api_key = ""
+    with pytest.raises(HTTPException) as error:
+        _create(db, settings, store, fake, image_model="minimax-h3-image")
+    assert error.value.status_code == 503
+    assert "MINIMAX_IMAGE_API_KEY" in error.value.detail

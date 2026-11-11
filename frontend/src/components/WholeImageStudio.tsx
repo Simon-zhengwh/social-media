@@ -16,13 +16,16 @@ import {
   listWholeImageVersions,
   selectWholeImageOutput,
   selectWholeImageVersion,
+  merchantIdFromLocation,
   uploadAsset,
 } from '../api'
+import { readPosterPreference, savePosterPreference } from '../preferences'
 import type {
   Asset,
   BrandLogoImage,
   BrandMode,
   BrandStyle,
+  ImageModel,
   MerchantProfile,
   PlatformPreset,
   Ratio,
@@ -130,9 +133,12 @@ export default function WholeImageStudio({
   const [task, setTask] = useState<WholeImageTask | null>(null)
   const [versions, setVersions] = useState<WholeImageVersion[]>([])
   const [products, setProducts] = useState<Asset[]>([])
-  const [selectedPlatformId, setSelectedPlatformId] = useState('')
-  const [selectedPlacementId, setSelectedPlacementId] = useState('')
-  const [selectedRatio, setSelectedRatio] = useState<Ratio>('9:16')
+  // FB-006: the last poster selection is remembered per merchant on this browser.
+  const merchantId = merchantIdFromLocation()
+  const [preference] = useState(() => readPosterPreference(merchantId))
+  const [selectedPlatformId, setSelectedPlatformId] = useState(() => preference?.platform_id ?? '')
+  const [selectedPlacementId, setSelectedPlacementId] = useState(() => preference?.placement_id ?? '')
+  const [selectedRatio, setSelectedRatio] = useState<Ratio>(() => preference?.ratio ?? '9:16')
   // Store facts stay off until the operator asks for them: printing an address is a per-poster
   // decision, so the default must not put one on a poster nobody vetted.
   const [storeSelection, setStoreSelection] = useState<StoreSelection>({
@@ -145,16 +151,16 @@ export default function WholeImageStudio({
   const [prompt, setPrompt] = useState('')
   const [promptOptimized, setPromptOptimized] = useState(false)
   const [candidateCount, setCandidateCount] = useState(3)
+  const [imageModel, setImageModel] = useState<ImageModel>(DEFAULT_IMAGE_MODEL)
   const [candidateTasks, setCandidateTasks] = useState<WholeImageTask[]>([])
-  const [selectedBrandId, setSelectedBrandId] = useState('')
+  const [selectedBrandId, setSelectedBrandId] = useState(() => preference?.brand_id ?? '')
   const [selectedLogoId, setSelectedLogoId] = useState('')
   const [logoChoiceTouched, setLogoChoiceTouched] = useState(false)
-  const [brandMode, setBrandMode] = useState<BrandMode>('preset')
+  const [brandMode, setBrandMode] = useState<BrandMode>(() => preference?.brand_mode ?? 'preset')
   const [styleReferences, setStyleReferences] = useState<Asset[]>([])
   const [styleReferencesUploading, setStyleReferencesUploading] = useState(false)
-  const [logoUploading, setLogoUploading] = useState(false)
   const [productsUploading, setProductsUploading] = useState(false)
-  const [pickerPurpose, setPickerPurpose] = useState<'product' | 'logo' | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [studioTab, setStudioTab] = useState<StudioTab>(() =>
     new URLSearchParams(window.location.search).get('tab') === 'original_replace' ? 'original_replace' : 'chat')
   const [creating, setCreating] = useState(() => Boolean(readWholeTaskId()))
@@ -162,18 +168,40 @@ export default function WholeImageStudio({
   const [selectingOutput, setSelectingOutput] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const pollRef = useRef<number | null>(null)
+  // Set while a saved task is being restored, so its configuration never rewrites the preference.
+  const restoringRef = useRef(false)
+  // Only an explicit operator change writes the preference; restored or auto-derived values never do.
+  const preferenceTouchedRef = useRef(false)
+  const touchPreference = () => {
+    preferenceTouchedRef.current = true
+  }
   const inFlight = useRef(false)
   const submitLock = useRef(false)
   const lastVersionRef = useRef<string | null>(null)
 
+  // A remembered platform that no longer exists degrades to ``no platform`` while rendering, so no
+  // effect has to reset state once the lists arrive.
+  const platformResolved =
+    !selectedPlatformId || platformsLoading || platformsError
+      ? selectedPlatformId
+      : platforms.some((item) => item.id === selectedPlatformId)
+        ? selectedPlatformId
+        : ''
   const selectedPlatform =
-    platforms.find((item) => item.id === selectedPlatformId) ?? null
+    platforms.find((item) => item.id === platformResolved) ?? null
+  // A remembered placement outside the platform's own list falls back to the platform default.
+  const placementResolved =
+    selectedPlacementId &&
+    (!selectedPlatform ||
+      selectedPlatform.placements.some((item) => item.id === selectedPlacementId))
+      ? selectedPlacementId
+      : ''
   const effectivePlacementId =
-    selectedPlacementId || selectedPlatform?.default_placement_id || ''
-  const brandsForPlatform = selectedPlatformId
+    placementResolved || selectedPlatform?.default_placement_id || ''
+  const brandsForPlatform = platformResolved
     ? brands.filter(
         (brand) =>
-          brand.platform_id === selectedPlatformId &&
+          brand.platform_id === platformResolved &&
           brand.placement_id === effectivePlacementId,
       )
     : []
@@ -181,36 +209,26 @@ export default function WholeImageStudio({
     selectedBrandId && brandsForPlatform.some((brand) => brand.id === selectedBrandId)
       ? selectedBrandId
       : brandsForPlatform[0]?.id ?? ''
-  const availableLogos = [
-    ...merchantLogos,
-    ...assets.map(logoFromAsset),
-  ].filter(
-    (logo, index, logos) =>
-      logos.findIndex((candidate) => candidate.asset_id === logo.asset_id) === index,
-  )
-  // The merchant logo is the default in every brand mode; touching the choice clears it.
+  // Brand mode does not change the logo source: only the merchant's configured logos are offered.
+  const baseLogoOptions: BrandLogoImage[] = merchantLogos
+  // The first configured logo is the default in every brand mode; an explicit choice sticks.
   const effectiveLogoId = logoChoiceTouched
     ? selectedLogoId
     : merchantLogos[0]?.asset_id ?? ''
-  const baseLogoOptions: BrandLogoImage[] = availableLogos
+  // A saved task may still reference an older logo that is no longer in the merchant set; keep it
+  // selectable so opening that task does not silently drop its logo.
   const missingFromBase =
     Boolean(effectiveLogoId) &&
     !baseLogoOptions.some((logo) => logo.asset_id === effectiveLogoId)
   const selectedAssetLogo = missingFromBase
     ? assets.find((asset) => asset.id === effectiveLogoId) ?? null
     : null
-  const availableRestoredLogo = selectedAssetLogo
+  const taskRestoredAsset = missingFromBase && !selectedAssetLogo && task
+    ? assetFromTask(task, effectiveLogoId)
+    : null
+  const restoredLogo: BrandLogoImage | null = selectedAssetLogo
     ? logoFromAsset(selectedAssetLogo)
-    : missingFromBase
-      ? availableLogos.find((logo) => logo.asset_id === effectiveLogoId) ?? null
-      : null
-  const taskRestoredAsset =
-    missingFromBase && !availableRestoredLogo && task
-      ? assetFromTask(task, effectiveLogoId)
-      : null
-  const restoredLogo: BrandLogoImage | null =
-    availableRestoredLogo ??
-    (taskRestoredAsset
+    : taskRestoredAsset
       ? {
           asset_id: taskRestoredAsset.id,
           original_name: taskRestoredAsset.original_name,
@@ -218,7 +236,7 @@ export default function WholeImageStudio({
           width: taskRestoredAsset.width,
           height: taskRestoredAsset.height,
         }
-      : null)
+      : null
   // The submit and the form both read these, so they are derived once, after all state.
   const selectedStoreId = storeSelection.placeId || stores[0]?.place_id || ''
   const storeEnabled = storeSelection.enabled && Boolean(selectedStoreId)
@@ -230,6 +248,32 @@ export default function WholeImageStudio({
     selectedPlatform?.placements.find((item) => item.id === effectivePlacementId) ??
     selectedPlatform?.placements.find((item) => item.id === selectedPlatform.default_placement_id) ??
     null
+
+  /*
+    Only explicit choices are persisted: browsing a saved task must not overwrite the pair the
+    operator picked last. List loading also gates the write so an unresolved default cannot
+    erase a valid cached platform, placement or style.
+  */
+  useEffect(() => {
+    if (!preferenceTouchedRef.current) return
+    if (restoringRef.current || platformsLoading || brandsLoading) return
+    savePosterPreference(merchantId, {
+      platform_id: platformResolved,
+      placement_id: effectivePlacementId,
+      ratio: selectedRatio,
+      brand_mode: brandMode,
+      brand_id: brandMode === 'preset' ? effectiveBrandId : '',
+    })
+  }, [
+    brandMode,
+    brandsLoading,
+    effectiveBrandId,
+    effectivePlacementId,
+    merchantId,
+    platformResolved,
+    platformsLoading,
+    selectedRatio,
+  ])
 
   const loadVersions = useCallback(async (taskId: string) => {
     setVersionsLoading(true)
@@ -248,6 +292,7 @@ export default function WholeImageStudio({
       return
     }
     let cancelled = false
+    restoringRef.current = true
     getWholeImageTask(taskId)
       .then(async (restored) => {
         if (cancelled) {
@@ -256,12 +301,16 @@ export default function WholeImageStudio({
         setTask(restored)
         setPrompt(restored.input.prompt ?? '')
         setPromptOptimized(restored.input.prompt_optimized === true)
+        // A saved task is authoritative: "no platform" must clear a remembered platform too.
         setSelectedRatio(restored.input.ratio ?? '9:16')
         setCandidateCount(restored.input.candidate_count ?? 3)
-        if (restored.platform?.id) {
-          setSelectedPlatformId(restored.platform.id)
-          setSelectedPlacementId(restored.placement?.id ?? restored.platform.default_placement_id)
-        }
+        setImageModel(restored.input.image_model ?? DEFAULT_IMAGE_MODEL)
+        setSelectedPlatformId(restored.platform?.id ?? '')
+        setSelectedPlacementId(
+          restored.platform
+            ? restored.placement?.id ?? restored.platform.default_placement_id
+            : '',
+        )
         setSelectedBrandId(restored.input.brand_id ?? '')
         setSelectedLogoId(restored.input.logo_asset_id ?? '')
         setLogoChoiceTouched(true)
@@ -294,6 +343,7 @@ export default function WholeImageStudio({
         }
       })
       .finally(() => {
+        restoringRef.current = false
         if (!cancelled) {
           setCreating(false)
         }
@@ -375,7 +425,7 @@ export default function WholeImageStudio({
   const active = Boolean(task && (task.status === 'queued' || task.status === 'running'))
   const studioReady = Boolean(task?.status === 'succeeded' && task.current_version_id)
   const showStudioInspector = Boolean(studioReady || task?.model_input)
-  const busy = creating || active || editRunning || logoUploading || productsUploading || selectingOutput
+  const busy = creating || active || editRunning || productsUploading || selectingOutput
   const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id && task.current_output_id)
 
   const handleGenerate = async (
@@ -397,7 +447,7 @@ export default function WholeImageStudio({
       setError('请选择一个预设品牌风格')
       return
     }
-    if (selectedPlatformId && (!selectedPlatform || !selectedPlacement)) {
+    if (platformResolved && (!selectedPlatform || !selectedPlacement)) {
       setError('发布平台配置尚未就绪，请稍后重试或选择“由 AI 自由发挥”')
       return
     }
@@ -413,7 +463,7 @@ export default function WholeImageStudio({
       const created = await Promise.all(
         Array.from({ length: candidateCount }, (_, index) =>
           createWholeImageTask({
-            image_model: DEFAULT_IMAGE_MODEL,
+            image_model: imageModel,
             prompt: promptOverride,
             prompt_optimized: optimizedOverride,
             brand_id: brandMode === 'preset' ? effectiveBrandId : null,
@@ -530,11 +580,10 @@ export default function WholeImageStudio({
   }
 
   const handleBrandChange = (brandId: string) => {
+    touchPreference()
     const brand = brands.find((item) => item.id === brandId)
     setSelectedBrandId(brandId)
     setBrandMode('preset')
-    setSelectedLogoId('')
-    setLogoChoiceTouched(false)
     if (brand?.platform_id) {
       const nextPlatform = platforms.find((item) => item.id === brand.platform_id)
       setSelectedPlatformId(brand.platform_id)
@@ -546,11 +595,9 @@ export default function WholeImageStudio({
   }
 
   const handleBrandModeChange = (mode: BrandMode) => {
+    touchPreference()
     setBrandMode(mode)
     setPromptOptimized(false)
-    setSelectedLogoId('')
-    // The merchant logo is the default in every mode; the operator's × clears it explicitly.
-    setLogoChoiceTouched(false)
     if (mode === 'preset' && !selectedBrandId) {
       const next = brandsForPlatform.find((brand) => brand.is_default) ?? brandsForPlatform[0]
       setSelectedBrandId(next?.id ?? '')
@@ -582,26 +629,6 @@ export default function WholeImageStudio({
     }
   }
 
-  const handleUploadLogos = async (files: File[]) => {
-    const file = files[0]
-    if (!file) {
-      return
-    }
-
-    setLogoUploading(true)
-    setError(null)
-    try {
-      const uploaded = await uploadAsset(file)
-      setSelectedLogoId(uploaded.id)
-      setLogoChoiceTouched(true)
-      setPromptOptimized(false)
-      onLoadAssets()
-    } catch (reason: unknown) {
-      setError(errorMessage(reason))
-    } finally {
-      setLogoUploading(false)
-    }
-  }
   const handleUploadProducts = async (files: File[]) => {
     const accepted = files.slice(0, Math.max(0, MAX_PRODUCTS - products.length))
     if (!accepted.length) return
@@ -621,24 +648,20 @@ export default function WholeImageStudio({
   }
 
   /*
-    The logos are merchant-level: dropping one from a poster only means "do not use it here".
-    Deleting it outright belongs to the brand page, where the operator sees the shared scope.
+    The logos are merchant-level: clearing one here only means "this poster does not use a logo".
+    Selecting the active tile again clears it; deleting a logo belongs to the brand page.
   */
-  const handleRemoveLogo = () => {
-    setSelectedLogoId('')
+  const handleSelectLogo = (assetId: string) => {
+    setSelectedLogoId(assetId)
     setLogoChoiceTouched(true)
     setPromptOptimized(false)
   }
+
   const openPicker = () => {
-    setPickerPurpose('product')
+    setPickerOpen(true)
     if (assets.length === 0) {
       onLoadAssets()
     }
-  }
-
- const openLogoPicker = () => {
-    setPickerPurpose('logo')
-    onLoadAssets()
   }
 
   return (
@@ -653,15 +676,13 @@ export default function WholeImageStudio({
         styleReferencesUploading={styleReferencesUploading}
         logoOptions={logoOptions}
         selectedLogoId={effectiveLogoId}
-        logoUploading={logoUploading}
-        canAddLogo
         stores={stores}
         storeSelection={storeSelection}
         onStoreSelectionChange={(next) => setStoreSelection(next)}
         platforms={platforms}
         platformsLoading={platformsLoading}
         platformsError={platformsError}
-        selectedPlatformId={selectedPlatformId}
+        selectedPlatformId={platformResolved}
         selectedPlacementId={effectivePlacementId}
         selectedRatio={selectedRatio}
         products={products}
@@ -669,6 +690,7 @@ export default function WholeImageStudio({
         prompt={prompt}
         promptOptimized={promptOptimized}
         candidateCount={candidateCount}
+        imageModel={imageModel}
         busy={busy}
         onBrandChange={handleBrandChange}
         onBrandModeChange={handleBrandModeChange}
@@ -677,27 +699,24 @@ export default function WholeImageStudio({
           setStyleReferences((previous) => previous.filter((asset) => asset.id !== assetId))
           setPromptOptimized(false)
         }}
-        onUploadLogos={(files) => void handleUploadLogos(files)}
-        onPickLogo={openLogoPicker}
-        onRemoveLogo={handleRemoveLogo}
+        onSelectLogo={handleSelectLogo}
         onUploadProducts={(files) => void handleUploadProducts(files)}
         onPlatformChange={(platformId) => {
+          touchPreference()
           const next = platforms.find((item) => item.id === platformId)
           setSelectedPlatformId(platformId)
           setSelectedPlacementId(next?.default_placement_id ?? '')
           setSelectedBrandId('')
-          setSelectedLogoId('')
-          setLogoChoiceTouched(false)
           setPromptOptimized(false)
         }}
         onPlacementChange={(value) => {
+          touchPreference()
           setSelectedBrandId('')
-          setSelectedLogoId('')
-          setLogoChoiceTouched(false)
           setSelectedPlacementId(value)
           setPromptOptimized(false)
         }}
         onRatioChange={(value) => {
+          touchPreference()
           setSelectedRatio(value)
           setPromptOptimized(false)
         }}
@@ -711,6 +730,7 @@ export default function WholeImageStudio({
           setPromptOptimized(optimized === true)
         }}
         onCandidateCountChange={setCandidateCount}
+        onImageModelChange={setImageModel}
         onGenerate={() => void handleGenerate()}
       />
 
@@ -810,31 +830,22 @@ export default function WholeImageStudio({
       ) : null}
 
       <AssetPicker
-        key={pickerPurpose ?? 'whole-closed'}
-        open={pickerPurpose !== null}
-        purpose={pickerPurpose ?? 'product'}
+        key={pickerOpen ? 'whole-picker' : 'whole-closed'}
+        open={pickerOpen}
+        purpose="product"
         assets={assets}
         loading={assetsLoading}
-        multi={pickerPurpose !== 'logo'}
-        selectedIds={pickerPurpose === 'logo' ? [] : products.map((asset) => asset.id)}
-        max={pickerPurpose === 'logo' ? 1 : 6}
-        onClose={() => setPickerPurpose(null)}
-        onSelect={(asset) => {
-          if (pickerPurpose !== 'logo') {
-            return
-          }
-          setSelectedLogoId(asset.id)
-          setLogoChoiceTouched(true)
-          setPromptOptimized(false)
-          setPickerPurpose(null)
-        }}
+        multi
+        selectedIds={products.map((asset) => asset.id)}
+        max={MAX_PRODUCTS}
+        onClose={() => setPickerOpen(false)}
         onConfirm={(selected) => {
           setProducts(selected)
           setPromptOptimized(false)
-          setPickerPurpose(null)
+          setPickerOpen(false)
         }}
         onGoAssets={() => {
-          setPickerPurpose(null)
+          setPickerOpen(false)
           onGoAssets()
         }}
       />

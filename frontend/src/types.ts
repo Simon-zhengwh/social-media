@@ -4,6 +4,9 @@ export type ImageModel =
   | 'gpt-image-2.5-sunburst'
   | 'gemini-3.1-flash-image'
   | 'seedream-5-pro-image-to-image'
+  | 'seedream-5.5-image-to-image'
+  // Temporary direct MiniMax model until core-ai serves it through the gateway.
+  | 'minimax-h3-image'
 
 export type PlatformPlacement = {
   id: string
@@ -157,6 +160,8 @@ export type WholeImageMessage = {
 
 export type WholeImageModelInput = {
   channel?: 'gateway' | 'agent'
+  // 'minimax' marks the temporary direct MiniMax call instead of the core-ai gateway.
+  provider?: 'core-ai' | 'minimax'
   endpoint: string
   model: string
   prompt: string

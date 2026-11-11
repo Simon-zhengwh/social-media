@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import io
 import hashlib
 import ipaddress
 import json
@@ -15,13 +14,14 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
-from PIL import Image, ImageOps
+from PIL import Image
 
 from app.config import Settings
+from app.services import image_payload
 from app.services.image_ref import ImageRef
 
-MAX_REFERENCE_BYTES = 1_500_000
-MAX_TOTAL_REFERENCE_BYTES = 8_000_000
+MAX_REFERENCE_BYTES = image_payload.MAX_REFERENCE_BYTES
+MAX_TOTAL_REFERENCE_BYTES = image_payload.MAX_TOTAL_REFERENCE_BYTES
 
 
 @dataclass(frozen=True)
@@ -58,6 +58,37 @@ class CoreAIError(Exception):
         self.code = code
         self.message = message
         self.status_code = status_code
+
+
+def validate_public_url(url: str) -> None:
+    """Reject non-HTTPS and internal addresses before downloading a provider result."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise CoreAIError("unsafe_download", "生图结果地址不是合法的 HTTPS URL")
+    if parsed.username or parsed.password:
+        raise CoreAIError("unsafe_download", "生图结果地址不能包含认证信息")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise CoreAIError(
+            "download_failed",
+            f"无法解析生图结果地址：{parsed.hostname}",
+        ) from exc
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
+        candidates = [ip]
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            candidates.append(ip.ipv4_mapped)
+        if any(
+            value.is_private
+            or value.is_loopback
+            or value.is_link_local
+            or value.is_multicast
+            or value.is_reserved
+            or value.is_unspecified
+            for value in candidates
+        ):
+            raise CoreAIError("unsafe_download", "生图结果地址指向内网，已拒绝下载")
 
 
 class CoreAIClient:
@@ -655,59 +686,13 @@ class CoreAIClient:
         return payload
 
     def _reference_data_url(self, path: Path, *, keep_alpha: bool | None = None) -> str:
-        try:
-            with Image.open(path) as source:
-                image = ImageOps.exif_transpose(source)
-                image.load()
-                has_alpha = (
-                    "A" in image.getbands()
-                    and image.convert("RGBA").getchannel("A").getextrema()[0] < 250
-                )
-                if keep_alpha is None:
-                    keep_alpha = has_alpha
-                image = image.convert("RGBA" if keep_alpha else "RGB")
-        except Exception as exc:  # noqa: BLE001 - provider input is untrusted
-            raise CoreAIError("invalid_reference", f"参考图无法读取：{path.name}", 422) from exc
-
-        if keep_alpha:
-            data, mime = self._encode_png(image), "image/png"
-        else:
-            data, mime = self._encode_jpeg(image), "image/jpeg"
-        encoded = base64.b64encode(data).decode("ascii")
-        return f"data:{mime};base64,{encoded}"
+        return image_payload.reference_data_url(path, keep_alpha=keep_alpha)
 
     def _encode_jpeg(self, image: Image.Image) -> bytes:
-        current = image.copy()
-        current.thumbnail((1536, 1536), Image.Resampling.LANCZOS)
-        for _ in range(6):
-            for quality in (88, 82, 76, 70, 64):
-                buffer = io.BytesIO()
-                current.save(buffer, format="JPEG", quality=quality, optimize=True)
-                data = buffer.getvalue()
-                if len(data) <= MAX_REFERENCE_BYTES:
-                    return data
-            current.thumbnail(
-                (max(256, int(current.width * 0.85)), max(256, int(current.height * 0.85))),
-                Image.Resampling.LANCZOS,
-            )
-        buffer = io.BytesIO()
-        current.save(buffer, format="JPEG", quality=60, optimize=True)
-        return buffer.getvalue()
+        return image_payload.encode_jpeg(image)
 
     def _encode_png(self, image: Image.Image) -> bytes:
-        current = image.copy()
-        current.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
-        for _ in range(6):
-            buffer = io.BytesIO()
-            current.save(buffer, format="PNG", optimize=True)
-            data = buffer.getvalue()
-            if len(data) <= MAX_REFERENCE_BYTES:
-                return data
-            current.thumbnail(
-                (max(128, int(current.width * 0.8)), max(128, int(current.height * 0.8))),
-                Image.Resampling.LANCZOS,
-            )
-        return data
+        return image_payload.encode_png(image)
 
     def _image_bytes(self, payload: dict[str, Any]) -> bytes:
         data = payload.get("data")
@@ -767,30 +752,4 @@ class CoreAIClient:
         )
 
     def _validate_public_url(self, url: str) -> None:
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise CoreAIError("unsafe_download", "生图结果地址不是合法的 HTTPS URL")
-        if parsed.username or parsed.password:
-            raise CoreAIError("unsafe_download", "生图结果地址不能包含认证信息")
-        try:
-            addresses = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
-        except OSError as exc:
-            raise CoreAIError(
-                "download_failed",
-                f"无法解析生图结果地址：{parsed.hostname}",
-            ) from exc
-        for address in addresses:
-            ip = ipaddress.ip_address(address[4][0].split("%", 1)[0])
-            candidates = [ip]
-            if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-                candidates.append(ip.ipv4_mapped)
-            if any(
-                value.is_private
-                or value.is_loopback
-                or value.is_link_local
-                or value.is_multicast
-                or value.is_reserved
-                or value.is_unspecified
-                for value in candidates
-            ):
-                raise CoreAIError("unsafe_download", "生图结果地址指向内网，已拒绝下载")
+        validate_public_url(url)

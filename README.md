@@ -25,7 +25,8 @@
 - 发布平台为选填项：选择平台后可指定用途，比例、尺寸和安全区规则由平台预设统一提供；不选择时可手动指定画幅比例。
 - 当前包含小红书、Instagram、TikTok、Google Business Profile 和 Meta 广告，支持 3:4、4:3、1:1、4:5、9:16、16:9 画布。
 - 小红书平台预设禁止出现地址、电话号码和二维码；用户文案包含相关内容时，生成提示词会要求省略。
-- 支持 `gpt-image-2.5-sunburst`、`gemini-3.1-flash-image`、`seedream-5-pro-image-to-image`，默认使用 `gpt-image-2.5-sunburst`。
+- 生成页「图片模型」提供 `gpt-image-2.5-sunburst`（默认）、`seedream-5-pro-image-to-image`、`seedream-5.5-image-to-image` 与 `minimax-h3-image`；`gemini-3.1-flash-image` 接口仍接受（兼容历史任务），页面不再展示。选择后按任务保存，改图沿用该任务的模型。
+- 为临时验证 MiniMax，另提供 `minimax-h3-image` 模型（不含高速版）：后端直连 MiniMax H3 Image（`/v1/images/generations`、`/v1/images/edits`），不经过 core-ai。参考图统一以 base64 data URI 内联，尺寸自动收敛到 MiniMax 的 655,360–20,000,000 像素区间；文生图默认关闭 prompt 增强以保留项目保真规则，改图不支持蒙版。core-ai 接入同一模型后删除 `app/services/minimax_image.py`、`app/services/image_provider.py` 与 `MINIMAX_*` 配置即可回退到纯网关。
 - 提示词输入框支持 AI 优化，会根据当前品牌、素材、平台规则和商家信息生成可直接用于整图生成的提示词。
 - 优化 Agent 使用 `.agents/skills/image-gen-prompt/`：从官方 `imagegen` skill 抽取提示词编写原则、可选字段和示例，按任务需要组织提示词。
 - 图片默认保存在项目内 `local_media/objects/`；提示词优化按需把本地图片上传到自建图床，使用永久 443 公网直链供外部模型读取。
@@ -200,6 +201,12 @@ CORE_AI_DESIGN_MODEL=gpt-6.1-sol
 CORE_AI_IMAGE_QUALITY=high
 CORE_AI_IMAGE_TIMEOUT_SECONDS=300
 LLM_TIMEOUT_SECONDS=120
+
+# 临时直连 MiniMax 图片模型（core-ai 暂未接入）。
+MINIMAX_IMAGE_BASE_URL=https://api.minimax.cn/v1
+MINIMAX_IMAGE_API_KEY=replace_me
+MINIMAX_IMAGE_MODEL=MiniMax-H3-Image
+MINIMAX_IMAGE_TIMEOUT_SECONDS=600
 
 IMAGE_HOST_BASE_URL=https://43.139.235.133:5002
 IMAGE_HOST_UPLOAD_TOKEN=replace_me

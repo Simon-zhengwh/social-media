@@ -15,8 +15,9 @@ const IMAGE_ROLE_LABELS: Record<string, string> = {
   current_design: '当前设计',
 }
 
-function channelLabel(channel?: string) {
-  return channel === 'agent' ? '图片 Agent' : 'Core AI 接口'
+function channelLabel(input: WholeImageModelInput) {
+  if (input.channel === 'agent') return '图片 Agent'
+  return input.provider === 'minimax' ? 'MiniMax 接口' : 'Core AI 接口'
 }
 
 function InputView({ input }: { input: WholeImageModelInput }) {
@@ -25,7 +26,7 @@ function InputView({ input }: { input: WholeImageModelInput }) {
       <dl className="model-input-meta">
         <div>
           <dt>渠道</dt>
-          <dd>{channelLabel(input.channel)}</dd>
+          <dd>{channelLabel(input)}</dd>
         </div>
         <div>
           <dt>接口</dt>
@@ -118,7 +119,7 @@ export default function WholeModelInputPanel({ modelInput, outputs = [], branche
   if (!entries.length && modelInput) {
     entries.push({
       key: 'current',
-      label: channelLabel(modelInput.channel),
+      label: channelLabel(modelInput),
       status: 'completed',
       input: modelInput,
     })
@@ -140,7 +141,7 @@ export default function WholeModelInputPanel({ modelInput, outputs = [], branche
             <details className="model-output-card" key={entry.key} open={index === 0}>
               <summary>
                 <span className={`model-output-channel ${entry.input?.channel === 'agent' ? 'is-agent' : ''}`}>
-                  {channelLabel(entry.input?.channel)}
+                  {entry.input ? channelLabel(entry.input) : '—'}
                 </span>
                 <span className="model-output-title">{entry.label}</span>
                 {entry.previewUrl ? <img src={entry.previewUrl} alt="" /> : null}

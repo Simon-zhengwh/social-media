@@ -47,6 +47,24 @@ class Settings(BaseSettings):
     core_ai_image_timeout_seconds: int = 300
     llm_timeout_seconds: int = 120
 
+    # Temporary direct MiniMax image integration: core-ai has no MiniMax model yet, so the
+    # poster workbench can call MiniMax H3 Image itself. Delete this block (and
+    # app/services/minimax_image.py) once the gateway exposes the same models.
+    minimax_image_base_url: str = "https://api.minimax.cn/v1"
+    minimax_image_api_key: str = ""
+    minimax_image_model: str = "MiniMax-H3-Image"
+    minimax_image_timeout_seconds: int = 600
+    # Our prompts already carry the fidelity rules; enhancement would rewrite them.
+    minimax_disable_prompt_enhanced: bool = True
+
+    # Local SMB material filtering: its own model and limits, so poster models stay untouched.
+    material_filter_model: str = "deepseek-v4-flash"
+    material_filter_timeout_seconds: int = 120
+    material_filter_concurrency: int = 2
+    material_filter_max_files_per_run: int = 2000
+    material_filter_max_source_bytes: int = 40_000_000
+    material_filter_model_image_max_side: int = 1536
+
     am_base_url: str = "https://am.connexup-uat.net"
     am_timeout_seconds: int = 30
     am_media_storage_service_key: str = ""
