@@ -23,3 +23,10 @@ def test_initialize_indexes_covers_merchant_scoped_brand_rules() -> None:
     _initialize_indexes(db)
     keys = {tuple(index["key"].keys()) for index in db.brand_rules.list_indexes()}
     assert ("merchant_id",) in keys
+
+
+def test_initialize_indexes_covers_unified_task_references() -> None:
+    db = mongomock.MongoClient().db
+    _initialize_indexes(db)
+    keys = {tuple(index["key"].keys()) for index in db.whole_tasks.list_indexes()}
+    assert ("merchant_id", "input.reference_asset_ids") in keys

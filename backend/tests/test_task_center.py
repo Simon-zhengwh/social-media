@@ -18,6 +18,8 @@ def _task(
     task_id: str,
     *,
     batch_id: str | None = None,
+    workspace_id: str | None = None,
+    image_model: str = "gpt-image-2.5-sunburst",
     candidate_index: int = 0,
     status: str = "succeeded",
     created_at: datetime = BASE_TIME,
@@ -37,6 +39,8 @@ def _task(
         "input": {
             "prompt": prompt,
             "candidate_batch_id": batch_id,
+            "generation_workspace_id": workspace_id,
+            "image_model": image_model,
             "candidate_index": candidate_index,
         },
         "brand": {"name": brand_name},
@@ -80,6 +84,59 @@ def _retry_request(db):
             )
         )
     )
+
+
+@pytest.mark.parametrize("route", ["whole", "center"])
+def test_models_and_repeated_rounds_stay_in_one_design_task(route):
+    db = mongomock.MongoClient().db
+    db.whole_tasks.insert_many([
+        _task("gpt-1", workspace_id="design-a", batch_id="gpt-round-1"),
+        _task("seed-1", workspace_id="design-a", batch_id="seed-round-1",
+              image_model="seedream-5-pro-image-to-image", status="running"),
+        _task("gpt-2", workspace_id="design-a", batch_id="gpt-round-2", status="failed"),
+        _task("another-design", workspace_id="design-b", batch_id="separate-round"),
+    ])
+    def listed():
+        req = _list_request(db)
+        return whole_routes.list_tasks(req) if route == "whole" else task_center_routes.list_task_center(req, kind="generate")
+
+    result = listed()
+    assert result["total"] == 2
+    group = next(item for item in result["items"] if item["id"] == "design-a")
+    assert group["candidate_count"] == 3
+    assert (group["active_count"], group["succeeded_count"], group["failed_count"]) == (1, 1, 1)
+    assert group["status"] == "active"
+    assert set(group["image_models"]) == {"gpt-image-2.5-sunburst", "seedream-5-pro-image-to-image"}
+    assert group["representative_task_id"] == "gpt-1"
+
+    whole_routes.retry_task("gpt-2", _retry_request(db), BackgroundTasks())
+    db.whole_tasks.insert_one(_task("gpt-3", workspace_id="design-a", batch_id="gpt-round-3"))
+    result = listed()
+    assert result["total"] == 2
+    group = next(item for item in result["items"] if item["id"] == "design-a")
+    assert group["candidate_count"] == 4
+    assert group["active_count"] == 2
+
+    db.whole_tasks.update_one({"_id": "seed-1"}, {"$set": {"status": "succeeded"}})
+    whole_routes.delete_candidate("seed-1", _list_request(db))
+    group = next(item for item in listed()["items"] if item["id"] == "design-a")
+    assert group["candidate_count"] == 3
+    assert group["image_models"] == ["gpt-image-2.5-sunburst"]
+
+
+def test_workspace_group_pagination_keeps_all_models_together():
+    db = mongomock.MongoClient().db
+    db.whole_tasks.insert_many([
+        _task("gpt", workspace_id="new", batch_id="one", created_at=BASE_TIME + timedelta(minutes=1)),
+        _task("seed", workspace_id="new", batch_id="two", image_model="seedream-5.5-image-to-image", created_at=BASE_TIME + timedelta(minutes=2)),
+        _task("old", workspace_id="old", batch_id="three", created_at=BASE_TIME),
+    ])
+    first = task_center_routes.list_task_center(_list_request(db), limit=1)
+    assert len(first["items"]) == 1
+    assert first["items"][0]["id"] == "new"
+    assert first["items"][0]["candidate_count"] == 2
+    second = task_center_routes.list_task_center(_list_request(db), limit=1, cursor=first["next_cursor"])
+    assert [item["id"] for item in second["items"]] == ["old"]
 
 
 def test_task_groups_aggregate_batches_filter_and_choose_representative():

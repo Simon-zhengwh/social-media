@@ -57,6 +57,7 @@ def _initialize_indexes(db) -> None:
     db.whole_tasks.create_index([("merchant_id", 1), ("input.candidate_batch_id", 1), ("input.candidate_index", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.generation_workspace_id", 1), ("created_at", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.product_asset_ids", 1)])
+    db.whole_tasks.create_index([("merchant_id", 1), ("input.reference_asset_ids", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.style_reference_asset_ids", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.logo_asset_id", 1)])
     db.whole_tasks.create_index([("status", 1), ("created_at", -1)])

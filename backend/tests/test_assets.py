@@ -170,8 +170,9 @@ def test_delete_asset_can_force_remove_referenced_asset(settings, store, product
     assert not store.exists(prepared.prepared_path)
 
 
+@pytest.mark.parametrize("reference_field", ["product_asset_ids", "reference_asset_ids"])
 def test_delete_asset_is_blocked_when_whole_image_task_uses_it(
-    settings, store, product_png
+    settings, store, product_png, reference_field
 ):
     prepared = storage.prepare_upload(settings, store, product_png, "dish.png")
     db = mongomock.MongoClient().db
@@ -184,7 +185,7 @@ def test_delete_asset_is_blocked_when_whole_image_task_uses_it(
         }
     )
     db.whole_tasks.insert_one(
-        {"_id": "wtask_1", "input": {"product_asset_ids": [prepared.id]}}
+        {"_id": "wtask_1", "input": {reference_field: [prepared.id]}}
     )
     request = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(db=db, store=store))
@@ -194,6 +195,41 @@ def test_delete_asset_is_blocked_when_whole_image_task_uses_it(
         delete_asset(prepared.id, request)
 
     assert exc.value.status_code == 409
+
+
+@pytest.mark.parametrize("location", ["running_edit", "failed_edit", "message", "version", "version_output"])
+def test_delete_asset_preserves_edit_retries_and_reference_history(
+    settings, store, product_png, location,
+):
+    prepared = storage.prepare_upload(settings, store, product_png, "edit-reference.png")
+    db = mongomock.MongoClient().db
+    db.assets.insert_one({
+        "_id": prepared.id, "source": "upload", "path": prepared.path,
+        "prepared_path": prepared.prepared_path,
+    })
+    if location.endswith("_edit"):
+        db.whole_tasks.insert_one({"_id": "task", "edit": {
+            "status": location.removesuffix("_edit"), "reference_asset_ids": [prepared.id],
+        }})
+    elif location == "message":
+        # A later edit replaces edit.reference_asset_ids; the earlier chat still needs its image.
+        db.whole_tasks.insert_one({"_id": "task", "edit": {"reference_asset_ids": []}, "messages": [{
+            "role": "user", "attachments": [{"asset_id": prepared.id}],
+        }]})
+    else:
+        model_input = {"images": [{"asset_id": prepared.id, "role": "edit_reference"}]}
+        history = {"model_input": model_input} if location == "version" else {"outputs": [{"model_input": model_input}]}
+        db.whole_versions.insert_one({"_id": "version", "task_id": "task", **history})
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=db, store=store)))
+
+    with pytest.raises(HTTPException) as exc:
+        delete_asset(prepared.id, request)
+    assert exc.value.status_code == 409
+    assert db.assets.find_one({"_id": prepared.id}) is not None
+    assert store.exists(prepared.path)
+
+    assert delete_asset(prepared.id, request, force=True).status_code == 204
+    assert db.assets.find_one({"_id": prepared.id}) is None
 
 
 def test_delete_asset_is_blocked_when_brand_logo_uses_it(settings, store, logo_png):

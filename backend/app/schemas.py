@@ -3,6 +3,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+
+def _normalize_unified_reference_ids(value: Any) -> Any:
+    if value is None or not isinstance(value, (list, tuple)):
+        return value
+    ids = [str(item).strip() for item in value]
+    if any(not item for item in ids):
+        raise ValueError("参考图 ID 不能为空")
+    if len(set(ids)) != len(ids):
+        raise ValueError("参考图不能重复")
+    return ids
+
 ImageModel = Literal[
     "gpt-image-2.5-sunburst",
     "gemini-3.1-flash-image",
@@ -128,12 +139,14 @@ class WholeImageTaskCreate(BaseModel):
     prompt_optimized: bool = False
     ratio: Literal["1:1", "9:16", "4:5", "16:9", "3:4", "4:3"] = "9:16"
     product_asset_ids: list[str] = Field(default_factory=list, max_length=6)
+    reference_asset_ids: list[str] | None = Field(default=None, max_length=6)
     brand_id: str | None = Field(default=None, max_length=64)
     brand_mode: Literal["preset", "reference", "none"] | None = None
     logo_asset_id: str | None = Field(default=None, max_length=128)
     style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)
     candidate_count: int = Field(default=3, ge=1, le=6)
     candidate_batch_id: str | None = Field(default=None, max_length=128)
+    generation_workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
     candidate_index: int = Field(default=0, ge=0, le=5)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)
@@ -161,6 +174,11 @@ class WholeImageTaskCreate(BaseModel):
     def normalize_logo_asset_id(cls, value: Any) -> str | None:
         text = str(value or "").strip()
         return text or None
+
+    @field_validator("reference_asset_ids", mode="before")
+    @classmethod
+    def normalize_reference_assets(cls, value: Any) -> Any:
+        return _normalize_unified_reference_ids(value)
 
 
 class OriginalReplacementItem(BaseModel):
@@ -204,6 +222,17 @@ class WholeImageEditRequest(BaseModel):
     source_version_id: str = Field(min_length=1, max_length=128)
     source_output_id: str | None = Field(default=None, max_length=128)
     reference_asset_ids: list[str] = Field(default_factory=list, max_length=5)
+    reference_mode: Literal["legacy", "unified"] = "legacy"
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_unified_reference_numbering(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("reference_mode") == "unified":
+            references = _normalize_unified_reference_ids(value.get("reference_asset_ids"))
+            if references is not None and not isinstance(references, list):
+                raise ValueError("参考图必须为图片 ID 列表")
+            return {**value, "reference_asset_ids": references or []}
+        return value
 
     @field_validator("instruction", "source_version_id", mode="before")
     @classmethod
@@ -252,6 +281,7 @@ class PromptOptimizeRequest(BaseModel):
     logo_asset_id: str | None = Field(default=None, max_length=128)
     style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)
     product_asset_ids: list[str] = Field(default_factory=list, max_length=6)
+    reference_asset_ids: list[str] | None = Field(default=None, max_length=6)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)
     include_store_address: bool = False
@@ -283,3 +313,8 @@ class PromptOptimizeRequest(BaseModel):
     @classmethod
     def normalize_optimizer_asset_ids(cls, value: list[str]) -> list[str]:
         return [str(item).strip() for item in value if str(item).strip()]
+
+    @field_validator("reference_asset_ids", mode="before")
+    @classmethod
+    def normalize_reference_assets(cls, value: Any) -> Any:
+        return _normalize_unified_reference_ids(value)

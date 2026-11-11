@@ -409,13 +409,9 @@ def test_generation_separates_subject_images_from_style_only_references(
     whole_service.run_generation(db, settings, store, fake, created["id"])
 
     prompt = fake.edit_calls[0]["prompt"]
-    assert "Subject/content reference image(s): 1." in prompt
-    assert "Style-only reference image(s): 2." in prompt
-    assert (
-        "Never reuse people, faces, identities, poses, clothing, or subjects from style references"
-        in prompt
-    )
-    assert "Do not take food content from style-only references" in prompt
+    assert "图1：内容素材" in prompt
+    assert "图2：风格参考" in prompt
+    assert "不复制其中的主体、文案或标识" in prompt
     assert fake.edit_calls[0]["reference_names"] == [
         "person.png",
         "style-with-person.png",
@@ -454,8 +450,8 @@ def test_optimized_prompt_is_sent_without_duplicate_style_context(
     assert sent["prompt"].endswith(optimized)
     assert "TEST LAYOUT GUIDE" not in sent["prompt"]
     assert "TEST BACKGROUND GUIDE" not in sent["prompt"]
-    assert "Style-only reference image" not in sent["prompt"]
-    assert "following the user's prompt and the assigned roles of attached images" in sent["prompt"]
+    assert "风格参考，只借鉴" not in sent["prompt"]
+    assert "按用户要求生成一张完整海报" in sent["prompt"]
     assert "Text section" not in sent["prompt"]
     assert "1080×1440" in sent["prompt"]
     assert "禁止出现地址、电话号码或二维码" in sent["prompt"]
@@ -503,17 +499,81 @@ def test_generation_protects_food_photos_in_raw_and_optimized_prompts(
     sent = fake.edit_calls[0]
     prompt = sent["prompt"]
     assert "full creative freedom" not in prompt
-    assert "Food-photo preservation:" in prompt
-    assert "crop, uniformly scale, or move" in prompt
-    assert "plating, tableware, lighting, and relative positions" in prompt
-    assert "Do not redraw, retouch, replace, rearrange, add, or remove food" in prompt
+    assert "Food-photo preservation:" not in prompt
+    for constraint in ("整体裁切", "等比缩放", "禁止重绘", "摆盘、餐具、光影及内部相对位置"):
+        assert constraint in prompt
     assert "only when the user explicitly requests that specific change" not in prompt
     for constraint in ("严格小于 30°", "禁止 30° 及以上", "生成式补画或扩图", "不得编造", "摄影场景及其他内容素材"):
         assert constraint in prompt
+    assert "素材保真不限定海报整体构图，版式由模型自主组织" in prompt
     assert prompt.endswith(request_text)
     assert sent["reference_bytes"] == [store.get_bytes(product.prepared_path)]
     saved = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
     assert saved["model_input"]["prompt"] == prompt
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_generation_has_one_preservation_rule_and_a_concise_wrapper(
+    settings, store, product_png, optimized
+):
+    from app.services import brand_rules
+
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    products = [_seed_product(db, settings, store, product_png, f"content-{i}.png") for i in range(3)]
+    styles = [_seed_style_reference(db, settings, store, product_png, f"style-{i}.png") for i in range(3)]
+    user_prompt = "参考风格图，用素材生成一张小红书海报，标题为『今日招牌』"
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt=user_prompt, prompt_optimized=optimized,
+            product_asset_ids=[item.id for item in products], brand_mode="reference",
+            style_reference_asset_ids=[item.id for item in styles], platform_id="xiaohongshu",
+        ),
+        _request(db, settings, store, fake), BackgroundTasks(),
+    )
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    sent = fake.edit_calls[0]
+    prompt = sent["prompt"]
+    assert prompt.count(brand_rules.ASSET_PRESERVATION_RULE) == 1
+    assert len(prompt) - len(user_prompt) < 1000
+    assert "明确指定的上图文案" in prompt
+    assert "设计指令不要印在图上" in prompt
+    assert "1080×1440" in prompt
+    assert "禁止出现地址、电话号码或二维码" in prompt
+    assert prompt.endswith(user_prompt)
+    assert sent["reference_names"] == [item.original_name for item in products + ([] if optimized else styles)]
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+@pytest.mark.parametrize("historical", [False, True])
+def test_generation_preserves_custom_rules_and_supplies_missing_asset_protection(
+    settings, store, product_png, optimized, historical
+):
+    from app.services import brand_rules
+
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    product = _seed_product(db, settings, store, product_png, "scene.png")
+    custom = dict(brand_rules.DEFAULT_RULES, asset_usage="CUSTOM_ASSET_RULE")
+    db.brand_rules.insert_one({"_id": "default", **custom})
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="门店海报", prompt_optimized=optimized,
+            product_asset_ids=[product.id], brand_mode="none",
+        ),
+        _request(db, settings, store, fake), BackgroundTasks(),
+    )
+    if historical:
+        db.whole_tasks.update_one({"_id": created["id"]}, {"$unset": {"brand_rules": ""}})
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    prompt = fake.edit_calls[0]["prompt"]
+    assert prompt.count(brand_rules.ASSET_PRESERVATION_RULE) == 1
+    assert prompt.count("CUSTOM_ASSET_RULE") == (0 if historical else 1)
+    assert "Food-photo preservation:" not in prompt
 
 
 def test_text_edit_protects_food_in_the_model_prompt(settings, store, product_png):
@@ -717,6 +777,154 @@ def test_task_rejects_invalid_image_model_and_candidate_limits():
     assert WholeImageTaskCreate(prompt="test").candidate_count == 3
 
 
+def test_workspace_appends_model_rounds_and_scopes_merchant(settings, store):
+    from app.services.scoped_db import ScopedDatabase
+
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    ids = []
+    for index, (merchant, workspace, model, batch) in enumerate([
+        ("a", "shared", "gpt-image-2.5-sunburst", "gpt-1"),
+        ("a", "shared", "seedream-5-pro-image-to-image", "seed-1"),
+        ("a", "shared", "gpt-image-2.5-sunburst", "gpt-2"),
+        ("b", "shared", "gpt-image-2.5-sunburst", "other-merchant"),
+        ("a", "other", "gpt-image-2.5-sunburst", "other-workspace"),
+    ]):
+        req = _request(db, settings, store, fake)
+        req.state = SimpleNamespace(db=ScopedDatabase(db, merchant), merchant_id=merchant)
+        created = whole_routes.create_task(WholeImageTaskCreate(
+            prompt="test", brand_mode="none", image_model=model,
+            generation_workspace_id=workspace, candidate_batch_id=batch, candidate_count=1,
+        ), req, BackgroundTasks())
+        ids.append(created["id"])
+        db.whole_tasks.update_one({"_id": created["id"]}, {"$set": {
+            "created_at": datetime(2026, 11, 11, 0, 0, index, tzinfo=timezone.utc),
+        }})
+        assert created["input"]["generation_workspace_id"] == workspace
+
+    req.state = SimpleNamespace(db=ScopedDatabase(db, "a"), merchant_id="a")
+    with pytest.raises(HTTPException) as exc:
+        whole_routes.delete_candidate(ids[3], req)
+    assert exc.value.status_code == 404
+    tasks = whole_routes.get_workspace_tasks("shared", req)
+    assert [task["id"] for task in tasks] == ids[:3]
+    assert [task["input"]["candidate_batch_id"] for task in tasks] == ["gpt-1", "seed-1", "gpt-2"]
+    from app.routes.task_center import list_task_center
+    grouped = list_task_center(req)
+    assert grouped["total"] == 2
+    shared = next(group for group in grouped["items"] if group["id"] == "shared")
+    assert shared["candidate_count"] == 3
+    assert {candidate["id"] for candidate in shared["candidates"]} == set(ids[:3])
+    req.state = SimpleNamespace(db=ScopedDatabase(db, "c"), merchant_id="c")
+    with pytest.raises(HTTPException) as exc:
+        whole_routes.get_workspace_tasks("shared", req)
+    assert exc.value.status_code == 404
+
+
+def test_delete_candidate_preserves_other_models_and_rejects_running(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    req = _request(db, settings, store, fake)
+    tasks = [whole_routes.create_task(WholeImageTaskCreate(
+        prompt="test", brand_mode="none", image_model=model, candidate_count=1,
+        generation_workspace_id="delete-workspace", candidate_batch_id=f"round-{index}",
+    ), req, BackgroundTasks()) for index, model in enumerate([
+        "gpt-image-2.5-sunburst", "seedream-5-pro-image-to-image",
+    ])]
+    with pytest.raises(HTTPException) as exc:
+        whole_routes.delete_candidate(tasks[0]["id"], req)
+    assert exc.value.status_code == 409
+    whole_service.run_generation(db, settings, store, fake, tasks[0]["id"])
+    db.whole_tasks.update_one({"_id": tasks[0]["id"]}, {"$set": {"edit.status": "running"}})
+    with pytest.raises(HTTPException) as exc:
+        whole_routes.delete_candidate(tasks[0]["id"], req)
+    assert exc.value.status_code == 409
+    db.whole_tasks.update_one({"_id": tasks[0]["id"]}, {"$set": {"edit.status": "idle"}})
+    version_count = db.whole_versions.count_documents({})
+    whole_routes.delete_candidate(tasks[0]["id"], req)
+    assert [task["id"] for task in whole_routes.get_workspace_tasks("delete-workspace", req)] == [tasks[1]["id"]]
+    assert db.whole_versions.count_documents({}) == version_count
+    assert whole_routes.list_tasks(req)["total"] == 1
+    from app.routes.task_center import list_task_center
+    assert list_task_center(req)["total"] == 1
+    with pytest.raises(HTTPException) as exc:
+        whole_routes.get_task(tasks[0]["id"], req)
+    assert exc.value.status_code == 404
+
+
+def test_legacy_batch_can_be_continued_without_migrating_tasks(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    req = _request(db, settings, store, fake)
+    legacy = whole_routes.create_task(WholeImageTaskCreate(
+        prompt="old", brand_mode="none", candidate_batch_id="legacy-batch",
+    ), req, BackgroundTasks())
+    added = whole_routes.create_task(WholeImageTaskCreate(
+        prompt="new", brand_mode="none", candidate_batch_id="new-batch",
+        generation_workspace_id="legacy-batch", image_model="seedream-5.5-image-to-image",
+    ), req, BackgroundTasks())
+    assert {task["id"] for task in whole_routes.get_workspace_tasks("legacy-batch", req)} == {legacy["id"], added["id"]}
+    from app.routes.task_center import list_task_center
+    grouped = list_task_center(req)
+    assert grouped["total"] == 1
+    assert grouped["items"][0]["candidate_count"] == 2
+
+
+@pytest.mark.parametrize("model", ["gpt-image-2.5-sunburst", "seedream-5-pro-image-to-image", "seedream-5.5-image-to-image"])
+def test_chat_edit_keeps_each_candidate_model_in_mixed_workspace(settings, store, model):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    req = _request(db, settings, store, fake)
+    created = whole_routes.create_task(WholeImageTaskCreate(
+        prompt="test", brand_mode="none", image_model=model,
+        generation_workspace_id="mixed", candidate_count=1,
+    ), req, BackgroundTasks())
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+    assert fake.generation_calls[-1]["model"] == model
+    version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    # Another model's subsequent submission cannot change this candidate's edit model.
+    _create(db, settings, store, fake, image_model="gemini-3.1-flash-image")
+    whole_routes.create_edit(created["id"], WholeImageEditRequest(
+        instruction="只改标题", source_version_id=version["_id"],
+    ), req, BackgroundTasks())
+    whole_service.run_edit(db, settings, store, fake, created["id"], "只改标题", version["_id"])
+    assert fake.edit_calls[-1]["model"] == model
+    updated = db.whole_tasks.find_one({"_id": created["id"]})
+    assert updated["input"]["image_model"] == model
+    assert updated["model_input_latest"]["model"] == model
+
+
+@pytest.mark.parametrize("operation", ["edit", "retry_generation", "retry_edit"])
+def test_deleted_candidate_cannot_start_work_after_concurrent_read(settings, store, monkeypatch, operation):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    task_id, _ = _generate(db, settings, store, fake)
+    req = _request(db, settings, store, fake)
+    version = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    if operation == "retry_generation":
+        db.whole_tasks.update_one({"_id": task_id}, {"$set": {"status": "failed"}})
+    elif operation == "retry_edit":
+        db.whole_tasks.update_one({"_id": task_id}, {"$set": {"edit": {
+            "status": "failed", "instruction": "test", "source_version_id": version["_id"],
+        }}})
+    require = whole_routes._require_task_image_model
+
+    def delete_after_read(request, doc):
+        require(request, doc)
+        whole_routes.delete_candidate(task_id, req)
+
+    monkeypatch.setattr(whole_routes, "_require_task_image_model", delete_after_read)
+    background = BackgroundTasks()
+    with pytest.raises(HTTPException):
+        if operation == "edit":
+            whole_routes.create_edit(task_id, WholeImageEditRequest(
+                instruction="test", source_version_id=version["_id"],
+            ), req, background)
+        else:
+            whole_routes.retry_task(task_id, req, background)
+    assert background.tasks == []
+
+
 def test_task_accepts_six_product_images_and_rejects_seven():
     products = [f"product_{index}" for index in range(6)]
     assert WholeImageTaskCreate(prompt="test", product_asset_ids=products).product_asset_ids == products
@@ -753,8 +961,9 @@ def test_six_products_reach_generation_and_edit_in_order(settings, store, produc
     whole_service.run_generation(db, settings, store, fake, task_id)
     sent = fake.edit_calls[-1]
     assert sent["reference_names"] == content_names + ([] if optimized else ["brand-style.png"])
-    assert "Subject/content reference image(s): 1-6." in sent["prompt"]
-    assert "Logo image 7." in sent["prompt"]
+    assert "图1-6：内容素材" in sent["prompt"]
+    assert "图7：Logo" in sent["prompt"]
+    assert "保留图形、文字、比例和原色" in sent["prompt"]
     task = db.whole_tasks.find_one({"_id": task_id})
     assert task["status"] == "succeeded"
     assert [image["asset_id"] for image in task["model_input_latest"]["images"]] == (
@@ -861,8 +1070,7 @@ def test_preset_brand_references_reach_model_without_hidden_guides(settings, sto
 
     assert "TEST LAYOUT GUIDE" not in fake.edit_calls[0]["prompt"]
     assert "TEST BACKGROUND GUIDE" not in fake.edit_calls[0]["prompt"]
-    assert "Use attached brand reference images" in fake.edit_calls[0]["prompt"]
-    assert "Style-only reference image(s): 1." in fake.edit_calls[0]["prompt"]
+    assert "图1：风格参考" in fake.edit_calls[0]["prompt"]
     assert fake.edit_calls[0]["reference_bytes"] == [
         store.get_bytes(brand_reference.prepared_path)
     ]
@@ -915,11 +1123,50 @@ def test_selected_logo_purpose_and_palette_reach_generation(
     assert task["brand"]["purpose"] == "Story / Reels 封面"
     assert task["brand"]["colors"][0]["hex"] == "#0D4317"
     assert sent["reference_names"] == ["dish.png", "merchant-logo.png"]
-    assert "Logo image 2" in sent["prompt"]
+    assert "图2：Logo" in sent["prompt"]
+    assert "必须在成图中完整清晰展示且无遮挡" in sent["prompt"]
+    assert "位置随构图安排" in sent["prompt"]
     if not optimized:
-        assert "Brand purpose: Story / Reels 封面" in sent["prompt"]
-        assert "#0D4317" in sent["prompt"]
+        assert "品牌用途：Story / Reels 封面" in sent["prompt"]
+        assert sent["prompt"].count("#0D4317") == 1
+        assert "品牌主色优先于参考配色" in sent["prompt"]
     assert task["model_input_latest"]["images"][1]["role"] == "logo"
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+def test_generation_requires_selected_logo_without_content_images(
+    settings, store, product_png, optimized
+):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    logo = _seed_product(db, settings, store, product_png, "merchant-logo.png")
+    created = whole_routes.create_task(
+        WholeImageTaskCreate(
+            prompt="品牌海报", prompt_optimized=optimized,
+            brand_mode="none", logo_asset_id=logo.id,
+        ),
+        _request(db, settings, store, fake), BackgroundTasks(),
+    )
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    sent = fake.edit_calls[0]
+    assert sent["reference_names"] == ["merchant-logo.png"]
+    assert "图1：Logo" in sent["prompt"]
+    assert "必须在成图中完整清晰展示且无遮挡" in sent["prompt"]
+    assert "位置随构图安排" in sent["prompt"]
+    assert "素材保真不限定海报整体构图" not in sent["prompt"]
+
+
+@pytest.mark.parametrize("product_count,reference_count", [(0, 0), (1, 1), (0, 1)])
+def test_reference_roles_do_not_require_a_logo_without_a_selection(
+    product_count, reference_count
+):
+    guidance = whole_service._reference_role_guidance(product_count, reference_count)
+
+    assert "：Logo" not in guidance
+    assert "必须在成图中完整清晰展示且无遮挡" not in guidance
+    assert "位置随构图安排" not in guidance
 
 
 def test_task_accepts_asset_library_logo_with_preset_brand(settings, store, product_png):
@@ -1805,6 +2052,14 @@ def test_minimax_model_generation_routes_to_the_minimax_client(settings, store, 
     assert task["status"] == "succeeded"
     assert task["provider"]["name"] == "minimax"
     assert fake.generation_calls[0]["model"] == "minimax-h3-image"
+
+    version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    whole_routes.create_edit(created["id"], WholeImageEditRequest(
+        instruction="只改标题", source_version_id=version["_id"],
+    ), _request(db, settings, store, fake), BackgroundTasks())
+    whole_service.run_edit(db, settings, store, fake, created["id"], "只改标题", version["_id"])
+    assert recorded == ["minimax-h3-image", "minimax-h3-image"]
+    assert fake.edit_calls[-1]["model"] == "minimax-h3-image"
 
 
 def test_minimax_generate_requires_its_own_api_key(settings, store):

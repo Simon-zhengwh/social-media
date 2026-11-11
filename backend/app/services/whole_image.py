@@ -23,19 +23,8 @@ from app.services.object_store import ObjectStore
 logger = logging.getLogger(__name__)
 
 GENERATION_SYSTEM_PROMPT = (
-    "You are an expert visual designer. Create one polished, visually compelling, "
-    "complete design based on the user's request. Design the composition, typography, "
-    "color, visual hierarchy, and art direction within the user's constraints and "
-    "the image-preservation rules below. Follow the "
-    "requested content and constraints accurately. Reproduce any user-provided text "
-    "verbatim; do not add, omit, translate, or rewrite text. Follow the explicit "
-    "roles assigned to each input image; never treat a style reference as a source "
-    "of subjects or identity. "
-    "Return the final complete image only."
-)
-OPTIMIZED_GENERATION_SYSTEM_PROMPT = (
-    "Create one finished image following the user's prompt and the assigned roles of attached images. "
-    "Return the final image only."
+    "按用户要求生成一张完整海报，未指定的设计细节自主决定。"
+    "仅将明确指定的上图文案逐字呈现，设计指令不要印在图上。只输出最终成图。"
 )
 FOOD_PRESERVATION_PROMPT = (
     "Food-photo preservation: treat each food photo or complete plate in the content "
@@ -190,6 +179,11 @@ def _next_version(db: Database, task_id: str) -> int:
     return int((latest or {}).get("version") or 0) + 1
 
 
+def _manual_reference_ids(input_data: dict[str, Any]) -> list[str]:
+    unified = input_data.get("reference_asset_ids")
+    return list(unified if unified is not None else input_data.get("product_asset_ids") or [])[:6]
+
+
 def _load_reference_images(
     db: Database,
     store: ObjectStore,
@@ -199,7 +193,8 @@ def _load_reference_images(
     include_style: bool = True,
 ) -> list[ImageRef]:
     references: list[ImageRef] = []
-    for asset_id in list(input_data.get("product_asset_ids") or [])[:6]:
+    unified = input_data.get("reference_asset_ids") is not None
+    for asset_id in _manual_reference_ids(input_data):
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:
             raise StudioError("reference_missing", "素材图不存在", 422)
@@ -218,7 +213,7 @@ def _load_reference_images(
             raise StudioError("logo_missing", str(exc), 422) from exc
     if not include_style:
         return references
-    explicit_style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
+    explicit_style_ids = [] if unified else list(input_data.get("style_reference_asset_ids") or [])[:3]
     for asset_id in dict.fromkeys(explicit_style_ids):
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:
@@ -243,17 +238,23 @@ def _reference_role_guidance(
     product_count: int,
     reference_count: int,
     logo_count: int = 0,
+    *,
+    unified_references: bool = False,
 ) -> str:
     if not reference_count:
         return ""
 
-    lines = ["Image roles, in the exact order the input images are attached:"]
-    if product_count:
+    lines = ["输入图片（按附件顺序编号）："]
+    if unified_references:
+        lines.extend(
+            f"- 图片{index}：用户参考图，用途由用户要求及 @图片{index} 的引用决定，不预设为内容素材或风格参考。"
+            for index in range(1, product_count + 1)
+        )
+    elif product_count:
         product_range = "1" if product_count == 1 else f"1-{product_count}"
         lines.append(
-            f"- Subject/content reference image(s): {product_range}. Use these as "
-            "the only source of featured people, faces, identities, and requested "
-            "subjects. Preserve their identity and details."
+            f"- 图{product_range}：内容素材，主体及身份以这些图为准。"
+            "素材保真不限定海报整体构图，版式由模型自主组织。"
         )
     if logo_count:
         logo_start = product_count + 1
@@ -263,9 +264,8 @@ def _reference_role_guidance(
             else f"{logo_start}-{logo_start + logo_count - 1}"
         )
         lines.append(
-            f"- Logo image {logo_range}. Preserve the merchant mark exactly: "
-            "keep its visible shape, wording, proportions, and original colors. "
-            "Do not substitute a logo from a style reference."
+            f"- 图{logo_range}：Logo，必须在成图中完整清晰展示且无遮挡，"
+            "保留图形、文字、比例和原色；位置随构图安排。"
         )
     if reference_count > product_count + logo_count:
         style_start = product_count + logo_count + 1
@@ -275,34 +275,18 @@ def _reference_role_guidance(
             else f"{style_start}-{reference_count}"
         )
         lines.append(
-            f"- Style-only reference image(s): {style_range}. Learn only their "
-            "color palette, lighting, typography feel, broad composition, and "
-            "atmosphere; do not take content from them."
+            f"- 图{style_range}：风格参考，只借鉴配色、构图、字体和氛围，"
+            "不复制其中的主体、文案或标识。"
         )
-        lines.append(
-            "Never reuse people, faces, identities, poses, clothing, or subjects "
-            "from style references, and do not introduce or substitute a person "
-            "from a style reference."
-        )
-    if product_count:
-        lines.append(FOOD_PRESERVATION_PROMPT)
     return "\n".join(lines)
 
 
 def _brand_style_context(brand: dict[str, Any]) -> str:
     purpose = str(brand.get("purpose") or "").strip()
-    colors = [
-        str(item.get("hex"))
-        for item in brand.get("colors") or []
-        if isinstance(item, dict) and item.get("hex")
-    ]
-    return (
-        f"Brand purpose: {purpose or 'unspecified'}\n"
-        "Brand palette (explicit priority over reference colors): "
-        f"{', '.join(colors) or 'unspecified'}\n"
-        "Apply the palette to backgrounds, typography, and decoration while "
-        "preserving the original colors of products and the merchant logo."
-    )
+    lines = [f"品牌用途：{purpose}"] if purpose else []
+    if any(isinstance(item, dict) and item.get("hex") for item in brand.get("colors") or []):
+        lines.append("品牌主色优先于参考配色，用于背景、文字和装饰；素材与 Logo 保留原色。")
+    return "\n".join(lines)
 
 
 def _model_input_images(
@@ -313,28 +297,27 @@ def _model_input_images(
     *,
     include_style: bool = True,
     extra_reference_asset_ids: list[str] | None = None,
+    reference_mode: str = "legacy",
 ) -> list[dict[str, str]]:
     images: list[dict[str, str]] = []
     asset_ids = [
-        (asset_id, "product")
-        for asset_id in list(input_data.get("product_asset_ids") or [])[:6]
+        (asset_id, "reference" if input_data.get("reference_asset_ids") is not None else "product")
+        for asset_id in _manual_reference_ids(input_data)
     ]
     logo_id = str(input_data.get("logo_asset_id") or "").strip()
     if logo_id:
         asset_ids.append((logo_id, "logo"))
     if include_style:
-        style_ids = list(input_data.get("style_reference_asset_ids") or [])[:3]
+        style_ids = [] if input_data.get("reference_asset_ids") is not None else list(input_data.get("style_reference_asset_ids") or [])[:3]
         if input_data.get("brand_mode") == "preset" and brand:
             style_ids.extend(list(brand.get("reference_asset_ids") or [])[:5])
         asset_ids.extend(
             (asset_id, "style_reference") for asset_id in dict.fromkeys(style_ids)
         )
-    if source_asset_id:
-        asset_ids.append((source_asset_id, "current_design"))
-    asset_ids.extend(
-        (asset_id, "edit_reference")
-        for asset_id in dict.fromkeys(extra_reference_asset_ids or [])
-    )
+    edit_ids = ([(source_asset_id, "current_design")] if source_asset_id else []) + [
+        (asset_id, "edit_reference") for asset_id in dict.fromkeys(extra_reference_asset_ids or [])
+    ]
+    asset_ids = [*edit_ids, *asset_ids] if reference_mode == "unified" else [*asset_ids, *edit_ids]
 
     for asset_id, role in asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
@@ -544,45 +527,38 @@ def run_generation(
         reference_images = _load_reference_images(
             db, store, input_data, brand, include_style=not optimized
         )
-        product_count = min(len(input_data.get("product_asset_ids") or []), 6)
+        product_count = len(_manual_reference_ids(input_data))
         logo_count = 1 if input_data.get("logo_asset_id") else 0
         reference_role_block = _reference_role_guidance(
-            product_count, len(reference_images), logo_count
+            product_count, len(reference_images), logo_count,
+            unified_references=input_data.get("reference_asset_ids") is not None,
         )
         reference_role_block = (
             f"\n\n{reference_role_block}" if reference_role_block else ""
         )
         brand_context = ""
         if not optimized and brand.get("name"):
-            brand_context = (
-                f"\n\n{brand_rules.brand_context(brand)}\n"
-                f"{_brand_style_context(brand)}\n"
-                + (
-                    "\nUse attached brand reference images for brand colors, typography, "
-                    "composition, and decorative style. Keep product details faithful "
-                    "to the product reference images."
-                    if brand.get("reference_asset_ids")
-                    else ""
-                )
+            brand_context = "\n\n" + "\n".join(
+                part for part in (brand_rules.brand_context(brand), _brand_style_context(brand)) if part
             )
         merchant_context = str(brand.get("merchant_context") or "").strip()
         merchant_block = f"\n\n{merchant_context}" if merchant_context else ""
         platform_context = platform_presets.prompt_from_task(
             claimed.get("platform"), claimed.get("placement")
         )
-        if optimized:
-            canvas = claimed.get("canvas") or {}
-            platform_context = (
-                f"Canvas: {canvas.get('width')}×{canvas.get('height')}; "
-                f"aspect ratio {input_data.get('ratio')}.\n\n{platform_context}"
-            )
         platform_block = f"\n\n{platform_context}" if platform_context else ""
         common_context = brand_rules.rules_context(claimed.get("brand_rules"))
+        # Default snapshots already include this rule. Keep custom rules intact,
+        # and supply the protection for custom or historical snapshots that omit it.
+        if product_count and brand_rules.ASSET_PRESERVATION_RULE not in common_context:
+            common_context = "\n\n".join(
+                part for part in (common_context, brand_rules.ASSET_PRESERVATION_RULE) if part
+            )
         common_block = f"\n\n{common_context}" if common_context else ""
         prompt = (
-            f"{OPTIMIZED_GENERATION_SYSTEM_PROMPT if optimized else GENERATION_SYSTEM_PROMPT}"
+            f"{GENERATION_SYSTEM_PROMPT}"
             f"{reference_role_block}"
-            f"{common_block}{brand_context}{merchant_block}{platform_block}\n\nUser request:\n"
+            f"{common_block}{brand_context}{merchant_block}{platform_block}\n\n用户要求：\n"
             f"{str(input_data.get('prompt') or '').strip()}"
         ).strip()
         canvas = claimed.get("canvas") or {}
@@ -703,6 +679,7 @@ def _gateway_edit_branch(
     prompt: str,
     target_size: tuple[int, int],
     reference_asset_ids: list[str],
+    reference_mode: str = "legacy",
 ) -> list[dict[str, Any]]:
     original_refs: list[ImageRef] = []
     source_ref: ImageRef | None = None
@@ -723,7 +700,7 @@ def _gateway_edit_branch(
         ]
         data = image_provider.image_client(settings, client, image_model).edit_image(
             prompt,
-            [*original_refs, source_ref, *edit_refs],
+            [source_ref, *edit_refs, *original_refs] if reference_mode == "unified" else [*original_refs, source_ref, *edit_refs],
             size=size,
             model=image_model,
         )
@@ -796,6 +773,7 @@ def run_edit(
     source_version_id: str,
     source_output_id: str | None = None,
     reference_asset_ids: list[str] | None = None,
+    reference_mode: str = "legacy",
 ) -> None:
     reference_asset_ids = list(
         dict.fromkeys(
@@ -809,6 +787,8 @@ def run_edit(
     )
     if task is None:
         return
+    if reference_mode == "legacy":
+        reference_mode = str((task.get("edit") or {}).get("reference_mode") or "legacy")
     try:
         source = db.whole_versions.find_one(
             {"_id": source_version_id, "task_id": task_id}
@@ -840,7 +820,7 @@ def run_edit(
         task_brand = task.get("brand") if isinstance(task.get("brand"), dict) else {}
         merchant_context = str(task_brand.get("merchant_context") or "").strip()
         image_model = str(task_input.get("image_model") or settings.core_ai_image_model)
-        product_count = min(len(task_input.get("product_asset_ids") or []), 6)
+        product_count = len(_manual_reference_ids(task_input))
         original_count = product_count + (1 if task_input.get("logo_asset_id") else 0)
         image_roles: list[str] = []
         if product_count:
@@ -874,6 +854,24 @@ def run_edit(
                     "Use them only as references for the requested change; do not replace "
                     "the current poster wholesale."
                 )
+        if reference_mode == "unified":
+            image_roles = [
+                "图片1：当前海报，作为本次改图底图；只修改用户指定部分，其他内容与排版保持不变。",
+                *[
+                    f"图片{index}：用户本轮参考图，用途由用户要求及 @图片{index} 的引用决定。"
+                    for index in range(2, len(reference_asset_ids) + 2)
+                ],
+            ]
+            if original_count:
+                first_original = len(reference_asset_ids) + 2
+                image_roles.append(
+                    f"图片{first_original}-{first_original + original_count - 1}：历史任务参考图，"
+                    "仅供核对主体及品牌细节，不得据此重新构建当前海报。"
+                )
+            if task_input.get("logo_asset_id"):
+                image_roles.append(
+                    f"图片{len(reference_asset_ids) + 2 + product_count}：原任务 Logo，保留图形、文字、比例和原色。"
+                )
         merchant_block = f"\n\n{merchant_context}" if merchant_context else ""
         prompt = (
             "\n".join(image_roles)
@@ -898,6 +896,7 @@ def run_edit(
                 source_asset_id=str(source_asset["_id"]),
                 include_style=False,
                 extra_reference_asset_ids=reference_asset_ids,
+                reference_mode=reference_mode,
             ),
         }
         version = _next_version(db, task_id)
@@ -915,6 +914,7 @@ def run_edit(
                         "source_version_id": source_version_id,
                         "source_output_id": source_output_id,
                         "reference_asset_ids": reference_asset_ids,
+                        "reference_mode": reference_mode,
                         "error": None,
                         "outcome": None,
                         "branches": {
@@ -946,6 +946,7 @@ def run_edit(
             prompt=prompt,
             target_size=(width, height),
             reference_asset_ids=reference_asset_ids,
+            reference_mode=reference_mode,
         )
         updated = db.whole_tasks.find_one({"_id": task_id}) or {}
         gateway = ((updated.get("edit") or {}).get("branches") or {}).get("gateway") or {}

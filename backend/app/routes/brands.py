@@ -35,17 +35,20 @@ def _brand_document(db: Any, brand_id: str) -> dict[str, Any]:
     return document
 
 
-def _brand_detail(request: Request, db: Any, document: dict[str, Any]) -> dict[str, Any]:
-    merchant_id = str(document.get("merchant_id") or request_merchant_id(request))
-    brand = brand_style.brand_from_document(document)
-    reference_ids = list(brand.reference_asset_ids)
+def _reference_images(db: Any, merchant_id: str, brand: brand_style.BrandStyle) -> list[dict[str, Any]]:
+    """Every reference of a style, in the order the operator arranged them.
+
+    The list endpoint and the detail endpoint share this shape, because the style picker shows
+    all references and the detail page manages them.
+    """
+    reference_ids = list(brand.reference_asset_ids)[: brand_style.MAX_BRAND_REFERENCES]
     cover_asset_id = brand.cover_asset_id or (reference_ids[0] if reference_ids else None)
-    references: list[dict[str, Any]] = []
+    images: list[dict[str, Any]] = []
     for asset_id in reference_ids:
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:
             continue
-        references.append({
+        images.append({
             "asset_id": asset_id,
             "original_name": asset.get("original_name") or "",
             "url": asset.get("prepared_url") or asset.get("url") or asset_url(merchant_id, asset_id),
@@ -53,6 +56,15 @@ def _brand_detail(request: Request, db: Any, document: dict[str, Any]) -> dict[s
             "height": int(asset.get("height") or 0),
             "is_cover": asset_id == cover_asset_id,
         })
+    return images
+
+
+def _brand_detail(request: Request, db: Any, document: dict[str, Any]) -> dict[str, Any]:
+    merchant_id = str(document.get("merchant_id") or request_merchant_id(request))
+    brand = brand_style.brand_from_document(document)
+    reference_ids = list(brand.reference_asset_ids)
+    cover_asset_id = brand.cover_asset_id or (reference_ids[0] if reference_ids else None)
+    references = _reference_images(db, merchant_id, brand)
     logo_images = merchant_logos.images(db, merchant_id)
     return {
         "id": brand.id,
@@ -128,6 +140,8 @@ def list_brands(request: Request) -> list[dict[str, Any]]:
         )
         item["logo_images"] = [dict(image) for image in logo_images]
         item["logo_asset_ids"] = [image["asset_id"] for image in logo_images]
+        # The style picker previews every reference, not just the cover, so the list carries them.
+        item["reference_images"] = _reference_images(db, merchant_id, brand)
         items.append(item)
     return items
 

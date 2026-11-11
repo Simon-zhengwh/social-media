@@ -37,6 +37,7 @@ def _edit_state(doc: dict[str, Any]) -> dict[str, Any]:
             "source_version_id": None,
             "source_output_id": None,
             "reference_asset_ids": [],
+            "reference_mode": "legacy",
             "error": None,
         }
     return {
@@ -45,6 +46,7 @@ def _edit_state(doc: dict[str, Any]) -> dict[str, Any]:
         "source_version_id": edit.get("source_version_id"),
         "source_output_id": edit.get("source_output_id"),
         "reference_asset_ids": list(edit.get("reference_asset_ids") or []),
+        "reference_mode": edit.get("reference_mode") or "legacy",
         "error": edit.get("error"),
     }
 
@@ -55,8 +57,10 @@ def _task_input(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def _task_group_key(doc: dict[str, Any]) -> str:
-    batch_id = str(_task_input(doc).get("candidate_batch_id") or "").strip()
-    return batch_id or str(doc["_id"])
+    input_data = _task_input(doc)
+    workspace_id = str(input_data.get("generation_workspace_id") or "").strip()
+    batch_id = str(input_data.get("candidate_batch_id") or "").strip()
+    return workspace_id or batch_id or str(doc["_id"])
 
 
 def _task_is_active(doc: dict[str, Any]) -> bool:
@@ -96,6 +100,7 @@ def _candidate_summary(doc: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": doc["_id"],
         "candidate_index": int(input_data.get("candidate_index") or 0),
+        "image_model": input_data.get("image_model") or (doc.get("provider") or {}).get("model"),
         "status": str(doc.get("status") or "failed"),
         "stage": str(doc.get("stage") or "failed"),
         "progress": int(doc.get("progress") or 0),
@@ -188,6 +193,10 @@ def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, 
             "height": int(canvas.get("height") or 0),
         },
         "candidate_count": len(tasks),
+        "image_models": list(dict.fromkeys(
+            str(model) for doc in tasks
+            if (model := _task_input(doc).get("image_model") or (doc.get("provider") or {}).get("model"))
+        )),
         "active_count": active_count,
         "succeeded_count": succeeded_count,
         "failed_count": failed_count,
@@ -481,13 +490,14 @@ def _version_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
 
 def _get_task_or_404(db: Any, task_id: str) -> dict[str, Any]:
     doc = db.whole_tasks.find_one({"_id": task_id})
-    if doc is None:
+    if doc is None or doc.get("candidate_deleted_at"):
         raise HTTPException(status_code=404, detail="整图任务不存在")
     return doc
 
 
 def _require_configured(request: Request, image_model: str | None = None) -> None:
     settings = request.app.state.settings
+
     if image_provider.is_minimax_model(image_model):
         if not settings.minimax_image_api_key.strip():
             raise HTTPException(status_code=503, detail="未配置 MINIMAX_IMAGE_API_KEY")
@@ -510,6 +520,15 @@ def create_task(
     _require_configured(request, payload.image_model)
     db = request_db(request)
     settings = request.app.state.settings
+
+    reference_ids = None
+    if payload.reference_asset_ids is not None:
+        reference_ids = request_assets.resolve_asset_ids(request, payload.reference_asset_ids)
+        if len(reference_ids) != len(payload.reference_asset_ids):
+            raise HTTPException(status_code=422, detail="参考图不能重复")
+        for reference_id in reference_ids:
+            if db.assets.find_one({"_id": reference_id}) is None:
+                raise HTTPException(status_code=422, detail="参考图不存在")
 
     product_ids = list(dict.fromkeys(payload.product_asset_ids))
     if len(product_ids) != len(payload.product_asset_ids):
@@ -595,12 +614,14 @@ def create_task(
             "prompt_optimized": payload.prompt_optimized,
             "ratio": ratio,
             "product_asset_ids": product_ids,
+            "reference_asset_ids": reference_ids,
             "brand_id": brand.id if brand else None,
             "brand_mode": brand_mode,
             "logo_asset_id": logo_asset_id,
             "style_reference_asset_ids": style_reference_ids,
             "candidate_count": payload.candidate_count,
             "candidate_batch_id": payload.candidate_batch_id,
+            "generation_workspace_id": payload.generation_workspace_id,
             "candidate_index": payload.candidate_index,
             "platform_id": platform_id,
             "placement_id": (platform_config or {}).get("placement", {}).get("id"),
@@ -669,7 +690,7 @@ def list_tasks(
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
     db = request_db(request)
-    docs = list(db.whole_tasks.find({}).sort("created_at", -1))
+    docs = list(db.whole_tasks.find({"candidate_deleted_at": {"$exists": False}}).sort("created_at", -1))
     items = _build_task_groups(docs)
     if status != "all":
         items = [item for item in items if item["status"] == status]
@@ -710,7 +731,38 @@ def get_task_batch(batch_id: str, request: Request) -> list[dict[str, Any]]:
     )
     if not docs:
         raise HTTPException(status_code=404, detail="候选批次不存在")
-    return [task_out(db, doc) for doc in docs]
+    return [task_out(db, doc) for doc in docs if not doc.get("candidate_deleted_at")]
+
+
+@router.get("/workspaces/{workspace_id}/tasks")
+def get_workspace_tasks(workspace_id: str, request: Request) -> list[dict[str, Any]]:
+    db = request_db(request)
+    docs = list(db.whole_tasks.find({"$or": [
+        {"input.generation_workspace_id": workspace_id},
+        {"input.candidate_batch_id": workspace_id, "input.generation_workspace_id": None},
+        {"_id": workspace_id, "input.generation_workspace_id": None},
+    ]}).sort(
+        [("created_at", 1), ("input.candidate_index", 1), ("_id", 1)]
+    ))
+    if not docs:
+        raise HTTPException(status_code=404, detail="生成工作区不存在")
+    return [task_out(db, doc) for doc in docs if not doc.get("candidate_deleted_at")]
+
+
+@router.delete("/tasks/{task_id}/candidate", status_code=204)
+def delete_candidate(task_id: str, request: Request) -> Response:
+    db = request_db(request)
+    _get_task_or_404(db, task_id)
+    deleted = db.whole_tasks.find_one_and_update({
+        "_id": task_id,
+        "status": {"$nin": ["queued", "running"]},
+        "edit.status": {"$ne": "running"},
+        "candidate_deleted_at": {"$exists": False},
+    }, {"$set": {"candidate_deleted_at": whole_image.utcnow()}}, return_document=True)
+    if deleted is None:
+        raise HTTPException(status_code=409, detail="生成或改图中的候选不能删除，请等待完成")
+    # Keep version assets and references intact; remove only this candidate from the workspace/history.
+    return Response(status_code=204)
 
 
 @router.get("/tasks/{task_id}")
@@ -730,7 +782,7 @@ def retry_task(
     _require_task_image_model(request, doc)
 
     retried_generation = db.whole_tasks.find_one_and_update(
-        {"_id": task_id, "status": "failed"},
+        {"_id": task_id, "status": "failed", "candidate_deleted_at": {"$exists": False}},
         {
             "$set": {
                 "status": "queued",
@@ -779,6 +831,7 @@ def retry_task(
             "_id": task_id,
             "status": "succeeded",
             "edit.status": "failed",
+            "candidate_deleted_at": {"$exists": False},
         },
         {
             "$set": {
@@ -804,6 +857,7 @@ def retry_task(
         source_version_id,
         source_output_id,
         reference_asset_ids,
+        reference_mode=str(edit.get("reference_mode") or "legacy"),
     )
     return task_out(db, retried_edit)
 
@@ -821,6 +875,8 @@ def create_edit(
     if doc.get("status") != "succeeded":
         raise HTTPException(status_code=409, detail="任务尚未生成可编辑的图片")
     reference_asset_ids = request_assets.resolve_asset_ids(request, payload.reference_asset_ids)
+    if payload.reference_mode == "unified" and len(reference_asset_ids) != len(payload.reference_asset_ids):
+        raise HTTPException(status_code=422, detail="参考图不能重复")
     source = db.whole_versions.find_one(
         {"_id": payload.source_version_id, "task_id": task_id}
     )
@@ -843,6 +899,7 @@ def create_edit(
             "_id": task_id,
             "status": "succeeded",
             "edit.status": {"$ne": "running"},
+            "candidate_deleted_at": {"$exists": False},
         },
         {
             "$set": {
@@ -852,6 +909,7 @@ def create_edit(
                     "source_version_id": payload.source_version_id,
                     "source_output_id": payload.source_output_id,
                     "reference_asset_ids": reference_asset_ids,
+                    "reference_mode": payload.reference_mode,
                     "error": None,
                 },
                 "stage": "editing",
@@ -881,6 +939,7 @@ def create_edit(
         payload.source_version_id,
         payload.source_output_id,
         reference_asset_ids,
+        reference_mode=payload.reference_mode,
     )
     return task_out(db, _get_task_or_404(db, task_id))
 

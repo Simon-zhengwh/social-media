@@ -125,8 +125,16 @@ def optimize_prompt(
     revision_guidance: str | None = None,
     profile: dict[str, Any] | None = None,
 ) -> str:
-    product_ids = _unique_ids(request.product_asset_ids, "素材图")
-    _validate_products(db, product_ids)
+    unified = request.reference_asset_ids is not None
+    reference_ids = _unique_ids(request.reference_asset_ids or [], "参考图") if unified else []
+    if unified:
+        for asset_id in reference_ids:
+            if db.assets.find_one({"_id": asset_id}) is None:
+                raise PromptOptimizerError("reference_missing", "参考图不存在", 422)
+        product_ids = []
+    else:
+        product_ids = _unique_ids(request.product_asset_ids, "素材图")
+        _validate_products(db, product_ids)
 
     brand: brand_style.BrandStyle | None = None
     style_reference_ids: list[str] = []
@@ -137,7 +145,7 @@ def optimize_prompt(
             brand = brand_style.get_brand(db, request.brand_id)
         except brand_style.BrandError as exc:
             raise PromptOptimizerError("brand_missing", exc.message, 422) from exc
-    elif request.brand_mode == "reference":
+    elif request.brand_mode == "reference" and not unified:
         style_reference_ids = _validate_style_refs(
             db, _unique_ids(request.style_reference_asset_ids, "风格参考图")
         )
@@ -200,9 +208,22 @@ def optimize_prompt(
         "下游会附 content_images 和所选 logo_images，请将风格观察转化为提示词中的视觉描述。"
         "按 image-gen-prompt skill 编写提示词，返回 JSON：{\"prompt\":\"完整提示词\"}。",
     ]
+    if unified:
+        input_parts[-1] = (
+            "图片清单中 reference_images 是按图片1、图片2顺序提供的用户参考图，"
+            "用途由用户要求和 @图片N 引用决定，不预设为内容素材或风格参考。"
+            "原样保留用户 @图片N 的编号，不得重排、重编号或凭空新增图片引用。"
+            "logo_images 是需保留的商家标识，style_images 是预设品牌附带的风格信息。"
+            "下游会按顺序附上 reference_images 和所选 logo_images，品牌风格观察应转化为视觉描述。"
+            "按 image-gen-prompt skill 编写提示词，返回 JSON：{\"prompt\":\"完整提示词\"}。"
+        )
     content_images: list[dict[str, str]] = []
     style_images: list[dict[str, str]] = []
     logo_images: list[dict[str, str]] = []
+    reference_images = [
+        {"label": f"图片{index}", "url": _reference_url(db, settings, store, asset_id)}
+        for index, asset_id in enumerate(reference_ids, start=1)
+    ]
     for index, asset_id in enumerate(product_ids, start=1):
         url = _reference_url(db, settings, store, asset_id)
         content_images.append({"label": f"素材图 {index}", "url": url})
@@ -210,7 +231,7 @@ def optimize_prompt(
     for index, asset_id in enumerate(brand_ids, start=1):
         url = _reference_url(db, settings, store, asset_id)
         style_images.append({"label": f"品牌参考图 {index}", "url": url})
-    if request.brand_mode == "reference":
+    if request.brand_mode == "reference" and not unified:
         for index, asset_id in enumerate(style_reference_ids, start=1):
             url = _reference_url(db, settings, store, asset_id)
             style_images.append({"label": f"风格参考图 {index}", "url": url})
@@ -219,12 +240,20 @@ def optimize_prompt(
             "label": "商家 Logo（必须保留）",
             "url": _reference_url(db, settings, store, logo_asset_id),
         })
-    input_parts.append("图片清单（JSON）：\n" + json.dumps(
-        {
-            "content_images": content_images,
-            "style_images": style_images,
+    manifest = {
+        "content_images": content_images,
+        "style_images": style_images,
+        "logo_images": logo_images,
+    }
+    if unified:
+        manifest = {
+            "reference_images": reference_images,
             "logo_images": logo_images,
-        },
+            "style_images": style_images,
+            "content_images": content_images,
+        }
+    input_parts.append("图片清单（JSON）：\n" + json.dumps(
+        manifest,
         ensure_ascii=False,
     ))
 

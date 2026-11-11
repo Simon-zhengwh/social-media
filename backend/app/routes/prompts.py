@@ -15,10 +15,16 @@ def optimize_prompt(payload: PromptOptimizeRequest, request: Request) -> dict[st
     settings = request.app.state.settings
     if not settings.core_ai_api_key.strip():
         raise HTTPException(status_code=503, detail="未配置 CORE_AI_API_KEY")
+    reference_ids = None
+    if payload.reference_asset_ids is not None:
+        reference_ids = request_assets.resolve_asset_ids(request, payload.reference_asset_ids)
+        if len(reference_ids) != len(payload.reference_asset_ids):
+            raise HTTPException(status_code=422, detail="参考图不能重复")
     payload = payload.model_copy(update={
         "logo_asset_id": request_assets.resolve_asset_id(request, payload.logo_asset_id),
         "style_reference_asset_ids": request_assets.resolve_asset_ids(request, payload.style_reference_asset_ids),
         "product_asset_ids": request_assets.resolve_asset_ids(request, payload.product_asset_ids),
+        "reference_asset_ids": reference_ids,
     })
     try:
         prompt = prompt_optimizer.optimize_prompt(

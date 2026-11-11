@@ -254,6 +254,25 @@ def test_brand_routes_return_cover_and_options(settings, store):
     assert exc.value.status_code == 404
 
 
+def test_brand_list_returns_every_reference_for_the_style_picker(tmp_path, settings, store):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    brand_routes.upload_reference("custom", request, _upload_png())
+
+    items = brand_routes.list_brands(request)
+    listed = items[0]["reference_images"]
+    detail = brand_routes.get_brand("custom", request)
+
+    assert [item["asset_id"] for item in listed] == [
+        item["asset_id"] for item in detail["reference_images"]
+    ]
+    assert len(listed) == 2
+    assert sum(1 for item in listed if item["is_cover"]) == 1
+    assert all(item["url"] for item in listed)
+
+
 def test_brand_cover_falls_back_to_first_reference(tmp_path, settings, store):
     db = mongomock.MongoClient().db
     _write_skill(tmp_path, "custom", "custom", is_default=True)

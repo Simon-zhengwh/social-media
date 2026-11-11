@@ -88,7 +88,7 @@ def list_task_center(
     db = request_db(request)
     items: list[dict[str, Any]] = []
     if kind in {"all", "generate"}:
-        whole_docs = list(db.whole_tasks.find({}).sort("created_at", -1))
+        whole_docs = list(db.whole_tasks.find({"candidate_deleted_at": {"$exists": False}}).sort("created_at", -1))
         for group in whole_routes._build_task_groups(whole_docs):
             group["kind"] = "generate"
             items.append(group)

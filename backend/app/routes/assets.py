@@ -156,11 +156,19 @@ def _asset_referenced(db: Any, asset_id: str) -> bool:
         {
             "$or": [
                 {"input.product_asset_ids": asset_id},
+                {"input.reference_asset_ids": asset_id},
                 {"input.style_reference_asset_ids": asset_id},
                 {"input.logo_asset_id": asset_id},
+                {"edit.reference_asset_ids": asset_id},
+                {"messages.attachments.asset_id": asset_id},
             ]
         }
     ):
+        return True
+    if db.whole_versions.find_one({"$or": [
+        {"model_input.images.asset_id": asset_id},
+        {"outputs.model_input.images.asset_id": asset_id},
+    ]}):
         return True
     if db.merchant_logos.find_one({"logo_asset_ids": asset_id}):
         return True
