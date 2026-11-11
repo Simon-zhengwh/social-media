@@ -19,10 +19,16 @@ import {
   merchantIdFromLocation,
   uploadAsset,
 } from './api'
+import {
+  clearStoredMerchantId,
+  readStoredMerchantId,
+  storeMerchantId,
+} from './preferences'
 import type { Asset, BrandLogoImage, BrandStyle, MerchantProfile, PlatformPreset } from './types'
 
 function readView(): AppView {
   const value = new URLSearchParams(window.location.search).get('view')
+  if (value === 'material-filters') return 'material-filters'
   if (value === 'agent-tests') return 'agent-tests'
   if (value === 'assets') {
     return 'assets'
@@ -66,6 +72,32 @@ function errorMessage(error: unknown): string {
   return '请求失败，请稍后重试'
 }
 
+/**
+ * Only an explicit 404/403 means the merchant is gone or not ours.
+ * A 401 from an expired session, a 5xx or a network failure must keep the record intact:
+ * the operator may just need to sign in again.
+ */
+function merchantRejected(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 404 || error.status === 403)
+}
+
+/**
+ * Resolve the merchant to open, in priority order: the URL, then this browser's last choice.
+ *
+ * A restored id is written back into the address bar *before* any request, because the existing
+ * API path helper, sub-pages and preview links all read the merchant from the URL.
+ */
+function resolveStartupMerchant(): { id: string; restored: boolean } {
+  const fromUrl = merchantIdFromLocation()
+  if (fromUrl) return { id: fromUrl, restored: false }
+  const stored = readStoredMerchantId()
+  if (!stored) return { id: '', restored: false }
+  const url = new URL(window.location.href)
+  url.searchParams.set('merchant_id', stored)
+  window.history.replaceState({}, '', url)
+  return { id: stored, restored: true }
+}
+
 const VIEW_META: Record<
   AppView,
   { kicker: string; title: string; meta: string | null }
@@ -103,10 +135,13 @@ const VIEW_META: Record<
 }
 
 export default function App() {
-  const [initialMerchantId, setInitialMerchantId] = useState(() => merchantIdFromLocation())
+  const [startup] = useState(resolveStartupMerchant)
+  // The view the page opened with decides whether a saved agent-tests URL is still allowed.
+  const [startupView] = useState<AppView>(() => readView())
+  const [initialMerchantId, setInitialMerchantId] = useState(startup.id)
   // Local runs have no merchant in the URL yet; waiting for the backend answer
   // keeps the AM login error from flashing before the bypass settles.
-  const [resolvingMerchant, setResolvingMerchant] = useState(() => !merchantIdFromLocation())
+  const [resolvingMerchant, setResolvingMerchant] = useState(() => !startup.id)
   // Set when local dev cannot even reach the backend, so the error screen can say so.
   const [backendUnreachable, setBackendUnreachable] = useState(false)
 

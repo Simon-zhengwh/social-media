@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Query, Request
 
+from app.api_errors import am_http_error
 from app.middleware import is_local_bypass as _local_bypass
 from app.request_context import request_db
 from app.services import am_assets, merchant_profile
@@ -31,7 +32,7 @@ def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
     try:
         payload = am.search_merchants(request.headers.get("cookie", ""), keyword=keyword)
     except AMClientError as exc:
-        raise _am_http_error(exc) from exc
+        raise am_http_error(exc) from exc
     merchants = [
         {"id": str(item.get("merchant_id") or ""), "name": str(item.get("name") or "")}
         for item in payload.get("merchants") or []
@@ -49,13 +50,20 @@ def get_merchant_context(merchant_id: str, request: Request) -> dict[str, Any]:
         try:
             profile = merchant_profile.load_profile(request.app.state.am, request.state.am_cookie, merchant_id)
         except AMClientError as exc:
-            raise _am_http_error(exc) from exc
+            raise am_http_error(exc) from exc
         projected = merchant_profile.project_profile(profile)
         request.state.merchant_profile = projected
     return {
         "merchant": request.state.merchant_context,
         "profile": projected,
-        "features": {"am_media_library": not bypass, "maintenance_cli": True},
+        "features": {
+            "am_media_library": not bypass,
+            "maintenance_cli": True,
+            # Agent benchmarks only make sense against the local model/session wiring.
+            "agent_tests": bypass,
+            # SMB material filtering reads this machine's folders, so it is local-only.
+            "material_filters": bypass,
+        },
     }
 
 
@@ -83,13 +91,10 @@ def list_am_assets(
             request.state.am_cookie,
             merchant_id,
             keyword=keyword,
+            tag=tag,
             skip=skip,
             limit=limit,
         )
     except AMClientError as exc:
-        raise _am_http_error(exc) from exc
+        raise am_http_error(exc) from exc
 
-
-def _am_http_error(exc: AMClientError) -> HTTPException:
-    status = exc.status_code if exc.status_code in {401, 403, 404, 413, 503} else 502
-    return HTTPException(status_code=status, detail=exc.message)

@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.local.example
 
 # Dependencies and generated files.
 .venv/
@@ -33,3 +34,6 @@ docs/superpowers/
 # Additional local material directories.
 *素材/
 *菜单/
+
+# Local AI tooling cache (media scratch files).
+.core-ai/

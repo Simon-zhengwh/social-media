@@ -1,10 +1,24 @@
 from functools import lru_cache
+import os
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 PROJECT_DIR = BACKEND_DIR.parent
+
+
+def local_bypass_enabled(settings: Any) -> bool:
+    """Share the same local-mode boundary for requests, storage and recovery."""
+    if not getattr(settings, "am_bypass_local", False):
+        return False
+    origin = urlsplit(str(getattr(settings, "social_media_origin", "")).strip().rstrip("/"))
+    return (
+        origin.scheme in {"http", "https"}
+        and origin.hostname in {"127.0.0.1", "localhost", "::1"}
+    )
 
 
 class Settings(BaseSettings):
@@ -93,4 +107,12 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    selected = os.environ.get("SOCIAL_MEDIA_ENV_FILE", "").strip()
+    if selected:
+        path = Path(selected)
+        path = (path if path.is_absolute() else BACKEND_DIR / path).resolve()
+        if not path.is_file():
+            raise ValueError(f"SOCIAL_MEDIA_ENV_FILE 指定的配置文件不存在：{path}")
+        # Explicit selection replaces .env; process environment still takes precedence.
+        return Settings(_env_file=path)
     return Settings()

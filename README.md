@@ -102,6 +102,52 @@ Agent 测试页的固定素材不随 Git 或镜像发布；未准备 `agent-test
 
 ## 启动
 
+### 本地开发模式（推荐）
+
+在当前项目中开发和调试，复用已有 demo 的本机 MongoDB 与图片，不必把业务代码在两个项目之间来回迁移。
+本地模式跳过 AM 登录，商户资料、素材和历史任务读取本机数据库；图片及 HTML/ZIP 使用本地磁盘，包括后台任务恢复。
+生图、改图、原照替换和提示词优化仍调用真实 Core AI；提示词优化读取本地图片时仍需配置图床，实际模型调用会消耗额度。
+
+首次使用，按下面的后端、前端说明安装依赖，然后创建独立配置：
+
+```powershell
+Copy-Item backend/.env.local.example backend/.env.local
+# 编辑 backend/.env.local，填写已有数据库名称、数据所属商户 ID、模型和图床凭据。
+# 过渡期可设置 STORAGE_DIR=D:/ai_project/social-media/local_media，保留 demo 的现有文件。
+```
+
+`backend/.env.local` 不进入 Git，且仅由本地启动入口显式加载。它替代 `backend/.env`，不会合并读取其中的线上凭据；进程环境变量仍然优先。
+部署时沿用原启动命令和环境变量，不设置 `SOCIAL_MEDIA_ENV_FILE`，不会自动读取本地配置。保持部署环境 `AM_BYPASS_LOCAL=0`。
+本地入口仅允许连接本机 MongoDB；它不会自动创建、清空、迁移或导入数据库。
+
+在项目根目录执行：
+
+```powershell
+.\start-local.ps1 -Check  # 只读检查配置、商户数据和文件完整性，不启动服务或调用模型。
+.\start-local.ps1         # 同时启动前后端，打开 http://127.0.0.1:5173。
+```
+
+启动前请先结束 demo 中的运行任务并停止旧后端。两个目录共用数据库时，不要同时运行两个后端：应用启动会处理已有的运行中任务。
+入口检测到运行中任务或端口占用时会停止启动，不会替你终止已有服务。按 `Ctrl+C` 会停止本次启动的前后端。
+若上次后端异常退出或在任务执行期间停止，确认旧后端已退出后，可用 `./start-local.ps1 -Recover`（Python 入口为 `--recover`）处理遗留任务。
+该选项允许现有启动恢复逻辑运行：普通生图和改图标记中断，已有 Agent run 沿用原流程恢复，不表示所有任务都会自动重新生成。`-Check -Recover` 仍然只读。
+前端使用 Vite 热更新；修改 Python 后端后需停止并重新启动，避免热重载打断生成任务。
+历史文件缺失会列出数量，不会删除数据库记录；缺少固定 Agent 测试素材只影响对应测试页。
+
+需要其他端口时，可执行 `./start-local.ps1 -BackendPort 8001 -FrontendPort 5174`，前端代理与本地请求来源会一起调整。
+如果 PowerShell 的执行策略阻止脚本，可直接使用后端虚拟环境：
+
+```powershell
+Set-Location backend
+.\.venv\Scripts\python.exe -X utf8 -m scripts.local_dev --check
+.\.venv\Scripts\python.exe -X utf8 -m scripts.local_dev
+```
+
+后续停止使用 demo 后，可以将 `local_media` 复制到当前项目并把 `STORAGE_DIR` 改为 `../local_media`，数据库仍可沿用原库。
+素材、品牌和任务修改会写入这份共用的本机数据库；图片上传、生成与删除也会操作配置指定的图片目录。
+
+### 手动启动和依赖准备
+
 在项目根目录启动 MongoDB：
 
 ```powershell

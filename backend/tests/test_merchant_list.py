@@ -135,6 +135,21 @@ class _ExplodingAM:
         raise AssertionError("AM media must not be called under the local bypass")
 
 
+def _deployed_request():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": "merchant-a", "name": "Alpha", "brand": {}})
+
+    settings = Settings(social_media_origin="https://social.example", am_bypass_local=False)
+    request = SimpleNamespace(
+        headers={"cookie": "AMSessionId=abc"},
+        app=SimpleNamespace(
+            state=SimpleNamespace(settings=settings, am=_client(handler)),
+        ),
+        state=SimpleNamespace(merchant_context={"merchant_id": "merchant-a"}, am_cookie="AMSessionId=abc"),
+    )
+    return request
+
+
 def _bypass_request(merchant_id: str, raw):
     settings = Settings(
         social_media_origin="http://127.0.0.1:5173",
@@ -169,4 +184,40 @@ def test_assets_route_lists_uploads_without_calling_am_under_the_local_bypass():
     )
     assert [item["id"] for item in page["items"]] == ["asset-1"]
     assert page["total"] == 1
+
+
+def test_context_reports_agent_benchmarks_only_for_the_local_bypass():
+    raw = mongomock.MongoClient().db
+    bypass = merchant_context.get_merchant_context(
+        "local-merchant", _bypass_request("local-merchant", raw)
+    )
+    assert bypass["features"]["agent_tests"] is True
+    assert bypass["features"]["am_media_library"] is False
+    assert bypass["features"]["maintenance_cli"] is True
+
+    deployed = merchant_context.get_merchant_context(
+        "merchant-a", _deployed_request()
+    )
+    # The benchmark page is a local-only tool: a deployed browser must not offer it.
+    assert deployed["features"]["agent_tests"] is False
+    assert deployed["features"]["am_media_library"] is True
+    assert deployed["features"]["maintenance_cli"] is True
+
+
+def test_local_library_includes_legacy_uploads_but_excludes_outputs_and_other_merchants():
+    from app.services.scoped_db import ScopedDatabase
+
+    raw = mongomock.MongoClient().db
+    raw.assets.insert_many([
+        {"_id": "legacy", "merchant_id": "local-merchant", "original_name": "Dish [1].png"},
+        {"_id": "generated", "merchant_id": "local-merchant", "source": "generated", "original_name": "Dish.png"},
+        {"_id": "output", "merchant_id": "local-merchant", "kind": "output", "original_name": "Dish.png"},
+        {"_id": "other", "merchant_id": "another-merchant", "original_name": "Dish [1].png"},
+    ])
+    request = _bypass_request("local-merchant", raw)
+    request.state.db = ScopedDatabase(raw, "local-merchant")
+    page = merchant_context.list_am_assets("local-merchant", request, keyword="[1]", skip=0, limit=10)
+    assert page["total"] == 1
+    assert [item["id"] for item in page["items"]] == ["legacy"]
+    assert page["items"][0]["url"] == "/api/merchants/local-merchant/assets/legacy/file"
 

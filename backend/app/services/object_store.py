@@ -9,7 +9,7 @@ from typing import Protocol
 
 from qcloud_cos import CosConfig, CosS3Client, CosServiceError
 
-from app.config import Settings
+from app.config import Settings, local_bypass_enabled
 
 
 logger = logging.getLogger(__name__)
@@ -249,6 +249,6 @@ class LocalObjectStore:
 
 
 def create_object_store(settings: Settings) -> ObjectStore:
-    if settings.cos_enabled:
+    if settings.cos_enabled and not local_bypass_enabled(settings):
         return CosObjectStore(settings)
     return LocalObjectStore(settings.storage_path / "objects")

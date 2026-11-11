@@ -82,10 +82,13 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
 
 export class ApiError extends Error {
   code: string
+  /** HTTP status when the failure came from a response; 0 for local validation errors. */
+  status: number
 
-  constructor(message: string, code = 'request_failed') {
+  constructor(message: string, code = 'request_failed', status = 0) {
     super(message)
     this.code = code
+    this.status = status
   }
 }
 
@@ -114,15 +117,20 @@ async function parseResponse<T>(response: Response): Promise<T> {
         )
         .join('；')
     }
-    throw new ApiError(message, body?.error?.code ?? `http_${response.status}`)
+    throw new ApiError(message, body?.error?.code ?? `http_${response.status}`, response.status)
   }
   return payload as T
 }
 
 export type AssetPage = { items: Asset[]; total: number; skip: number; limit: number }
 
-export async function listAssetPage(keyword = '', skip = 0, limit = 24): Promise<AssetPage> {
-  const params = new URLSearchParams({ keyword, skip: String(skip), limit: String(limit) })
+export async function listAssetPage(
+  keyword = '',
+  skip = 0,
+  limit = 24,
+  tag = '',
+): Promise<AssetPage> {
+  const params = new URLSearchParams({ keyword, skip: String(skip), limit: String(limit), tag })
   const response = await apiFetch(`/api/am-assets?${params.toString()}`)
   return parseResponse<AssetPage>(response)
 }
@@ -132,9 +140,20 @@ export async function listAssets(): Promise<Asset[]> {
   return page.items
 }
 
+export type MerchantFeatures = {
+  /** True when AM Console's media library is reachable, so uploads are real AM resources. */
+  am_media_library?: boolean
+  maintenance_cli?: boolean
+  /** Agent benchmark pages are a local-dev tool and stay hidden on deployed sites. */
+  agent_tests?: boolean
+  /** SMB material filtering reads this machine's folders, so it is local-only. */
+  material_filters?: boolean
+}
+
 export type MerchantContext = {
   merchant: { user_id: string; user_name: string; merchant_id: string; merchant_name: string }
   profile: unknown
+  features?: MerchantFeatures
 }
 
 export type MerchantOption = { id: string; name: string }

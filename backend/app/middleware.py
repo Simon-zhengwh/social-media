@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import re
-from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from app.config import local_bypass_enabled
 from app.services import maintenance, merchant_profile
 from app.services.am_client import AMClientError
 from app.services.media_object_store import create_merchant_store
@@ -15,18 +15,6 @@ from app.services.scoped_db import ScopedDatabase
 MERCHANT_PATH = re.compile(r"^/api/merchants/([^/]+)(?:/|$)")
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 LOCAL_ORIGINS = frozenset({"http://127.0.0.1:5173", "http://localhost:5173"})
-
-
-def _is_loopback_origin(origin: str) -> bool:
-    parsed = urlsplit(origin.strip().rstrip("/"))
-    return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-
-
-def local_bypass_enabled(settings: Any) -> bool:
-    """True when this process may run without an AM Console session."""
-    return bool(getattr(settings, "am_bypass_local", False)) and _is_loopback_origin(
-        str(getattr(settings, "social_media_origin", ""))
-    )
 
 
 def _local_bypass_context(request: Request) -> dict[str, object] | None:
