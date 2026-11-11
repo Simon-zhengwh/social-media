@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import AssetPicker from './AssetPicker'
+import ConfirmDialog from './ConfirmDialog'
 import WholeChatPanel from './WholeChatPanel'
 import WholeImageForm from './WholeImageForm'
 import ImageModelSelector from './ImageModelSelector'
@@ -171,6 +172,8 @@ export default function WholeImageStudio({
   const modelLocks = useRef(new Set<ImageModel>())
   const deletedCandidates = useRef(new Set<string>())
   const [deletingCandidateId, setDeletingCandidateId] = useState<string | null>(null)
+  // Deleting a candidate switches the current poster, so it asks first in an in-app dialog.
+  const [pendingCandidateDelete, setPendingCandidateDelete] = useState<WholeImageTask | null>(null)
   const deleteLock = useRef(false)
   const [candidateTasks, setCandidateTasks] = useState<WholeImageTask[]>([])
   const [selectedBrandId, setSelectedBrandId] = useState(() => preference?.brand_id ?? '')
@@ -652,9 +655,14 @@ export default function WholeImageStudio({
     if (next?.current_version) void loadVersions(next.id)
   }
 
-  const handleDeleteCandidate = async (candidate: WholeImageTask) => {
+  const handleDeleteCandidate = (candidate: WholeImageTask) => {
     if (deleteLock.current || submitLock.current || candidate.status === 'queued' || candidate.status === 'running' || candidate.edit.status === 'running') return
-    if (!window.confirm(candidate.id === task?.id ? '删除当前主图候选？将切换到剩余候选，其他图片不受影响。' : '删除这张候选图？其他图片不受影响。')) return
+    setPendingCandidateDelete(candidate)
+  }
+
+  const confirmDeleteCandidate = async () => {
+    const candidate = pendingCandidateDelete
+    if (!candidate) return
     deleteLock.current = true
     setDeletingCandidateId(candidate.id)
     try {
@@ -674,7 +682,7 @@ export default function WholeImageStudio({
         if (next?.current_version) void loadVersions(next.id)
       }
     } catch (reason: unknown) { setError(errorMessage(reason)) }
-    finally { deleteLock.current = false; setDeletingCandidateId(null) }
+    finally { deleteLock.current = false; setDeletingCandidateId(null); setPendingCandidateDelete(null) }
   }
 
   const handleBrandChange = (brandId: string) => {
@@ -949,6 +957,22 @@ export default function WholeImageStudio({
           </div>
         </aside>
       </div>
+
+      {pendingCandidateDelete ? (
+        <ConfirmDialog
+          title={pendingCandidateDelete.id === task?.id ? '删除当前主图候选？' : '删除这张候选图？'}
+          description={
+            pendingCandidateDelete.id === task?.id
+              ? '删除后会切换到剩余候选，其他模型和版本不受影响。'
+              : '删除后这张候选不再出现在工作台和任务中心，其他图片不受影响。'
+          }
+          confirmLabel="删除候选"
+          busyLabel="删除中…"
+          busy={deletingCandidateId !== null}
+          onConfirm={() => void confirmDeleteCandidate()}
+          onCancel={() => { if (deletingCandidateId === null) setPendingCandidateDelete(null) }}
+        />
+      ) : null}
 
       {error ? (
         <div className="global-error whole-image-error" role="alert">
