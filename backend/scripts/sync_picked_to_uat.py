@@ -185,6 +185,41 @@ def upload(
     return response.json()
 
 
+def desired_tags(row: dict[str, Any], *, include_model: bool) -> list[str]:
+    """Deployed assets allow at most five tags; keep four model tags plus the marker."""
+    tags = [] if not include_model else [str(tag).strip() for tag in row.get("tags") or [] if str(tag).strip()]
+    tags = list(dict.fromkeys(tags))[:4]
+    tags.append("素材筛选")
+    return list(dict.fromkeys(tag for tag in tags if tag))[:5]
+
+
+def find_existing_am_media(
+    client: httpx.Client,
+    base_url: str,
+    merchant_id: str,
+    original_name: str,
+) -> dict[str, Any] | None:
+    """The AM library may already hold the same photo from an earlier import."""
+    stem = Path(original_name).stem.casefold()
+    if not stem:
+        return None
+    try:
+        response = client.get(
+            f"{base_url}/api/merchants/{merchant_id}/am-assets",
+            params={"keyword": stem, "limit": 50},
+        )
+        if response.status_code != 200:
+            return None
+        items = (response.json() or {}).get("items") or []
+    except Exception:  # noqa: BLE001
+        return None
+    for item in items:
+        name = str(item.get("original_name") or "").casefold()
+        if stem and stem in name:
+            return item
+    return None
+
+
 def apply_tags(client: httpx.Client, base_url: str, merchant_id: str, asset_id: str, tags: list[str]) -> None:
     response = client.put(
         f"{base_url}/api/merchants/{merchant_id}/assets/{asset_id}/tags",
@@ -212,6 +247,7 @@ def main() -> int:
     parser.add_argument("--merchant", default="", help="默认取本地配置的商户")
     parser.add_argument("--cookie", default=os.environ.get("AM_SESSION_COOKIE", ""))
     parser.add_argument("--orca-auto", action="store_true", help="从 Orca 已打开的 UAT 标签页读取会话")
+    parser.add_argument("--retag", action="store_true", help="只为已同步的素材补写标签（最多 5 个）")
     parser.add_argument("--report", default="", help="CSV 报告输出路径")
     args = parser.parse_args()
 
@@ -234,6 +270,43 @@ def main() -> int:
         raise SystemExit("请用 --scheme 指定方案（可先 --list 查看）。")
 
     scheme = resolve_scheme(db, args.scheme)
+
+    if args.retag:
+        cookie = args.cookie.strip()
+        if not cookie and args.orca_auto:
+            cookie = cookie_from_orca(args.base_url)
+        if not cookie:
+            raise SystemExit("缺少 AM 会话：用 --orca-auto 读取浏览器会话，或设置 AM_SESSION_COOKIE。")
+        headers = {"Cookie": cookie, "Origin": args.base_url, "X-Media-Request": "1", "Accept": "application/json"}
+        rows = list(
+            db.material_filter_evaluations.find(
+                {"scheme_id": scheme["_id"], "uat_asset_id": {"$ne": None}}
+            )
+        )
+        updated = failed_tags = 0
+        with httpx.Client(headers=headers, timeout=120, follow_redirects=True) as client:
+            for index, row in enumerate(rows, start=1):
+                asset_id = str(row.get("uat_asset_id") or "")
+                if not asset_id.startswith("asset_"):
+                    # Linked AM records carry the AM id; the tag route needs our local asset id.
+                    failed_tags += 1
+                    continue
+                tags = desired_tags(row, include_model=not args.no_model_tags)
+                try:
+                    apply_tags(client, args.base_url, merchant_id, asset_id, tags)
+                    db.material_filter_evaluations.update_one(
+                        {"_id": row["_id"]}, {"$set": {"uat_tag_error": None}}
+                    )
+                    updated += 1
+                except Exception as exc:  # noqa: BLE001
+                    failed_tags += 1
+                    db.material_filter_evaluations.update_one(
+                        {"_id": row["_id"]}, {"$set": {"uat_tag_error": str(exc)[:300]}}
+                    )
+                if index % 10 == 0:
+                    print(f"  已处理 {index}/{len(rows)}")
+        print(f"标签更新完成：成功 {updated}，失败 {failed_tags}")
+        return 0 if failed_tags == 0 else 1
     rows = pending_rows(db, scheme, all_passed=args.all_passed, force=args.force, limit=args.limit)
     if not rows:
         print("没有待上传的图片。提示：先在页面里点「☆ 入选」，或用 --all-passed。")
@@ -310,9 +383,7 @@ def main() -> int:
                 file_name = upload_name(row, suffix, used_names)
                 asset = upload(client, args.base_url, merchant_id, path, file_name=file_name)
                 asset_id = str(asset.get("id") or "")
-                tags = [] if args.no_model_tags else [str(tag) for tag in row.get("tags") or []]
-                tags.append("素材筛选")
-                tags = list(dict.fromkeys(tag for tag in tags if tag))
+                tags = desired_tags(row, include_model=not args.no_model_tags)
                 tag_error = ""
                 if tags:
                     try:
@@ -341,6 +412,33 @@ def main() -> int:
                 )
                 print(f"{label} -> {file_name} ({asset_id})")
             except Exception as exc:  # noqa: BLE001 - keep going, report at the end
+                text = str(exc)
+                # AM returns 400 when the same bytes already exist in the media library
+                # (usually imported earlier as seejoy-gbp-*). Link that record instead.
+                if "AM Console" in text or "HTTP 502" in text:
+                    existing = find_existing_am_media(client, args.base_url, merchant_id, row["original_name"])
+                    if existing:
+                        db.material_filter_evaluations.update_one(
+                            {"_id": row["_id"]},
+                            {
+                                "$set": {
+                                    "uat_asset_id": str(existing.get("id") or ""),
+                                    "uat_asset_name": existing.get("original_name"),
+                                    "uat_asset_url": existing.get("url"),
+                                    "uat_synced_at": now(),
+                                    "uat_sync_error": None,
+                                    "uat_sync_note": "AM 资源库已存在同内容素材，已关联",
+                                }
+                            },
+                        )
+                        report.append(
+                            {"original_name": row["original_name"], "output_name": row.get("output_name"),
+                             "uat_name": existing.get("original_name") or "",
+                             "asset_id": str(existing.get("id") or ""), "status": "linked-existing",
+                             "error": ""}
+                        )
+                        print(f"{label} 已存在于 AM 资源库，已关联：{existing.get('original_name')}")
+                        continue
                 failed += 1
                 db.material_filter_evaluations.update_one(
                     {"_id": row["_id"]}, {"$set": {"uat_sync_error": str(exc)[:500]}}
