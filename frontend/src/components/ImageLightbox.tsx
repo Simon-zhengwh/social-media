@@ -32,7 +32,7 @@ function MagnifierIcon() {
 }
 
 export function ImageLightboxProvider({ children }: { children: ReactNode }) {
-  const [preview, setPreview] = useState<PreviewImage | null>(null)
+  const [preview, setPreview] = useState<(PreviewImage & { portalRoot: Element }) | null>(null)
   const [imageFailed, setImageFailed] = useState(false)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -42,7 +42,7 @@ export function ImageLightboxProvider({ children }: { children: ReactNode }) {
     triggerRef.current =
       trigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
     setImageFailed(false)
-    setPreview(image)
+    setPreview({ ...image, portalRoot: trigger?.closest('dialog[open]') ?? document.body })
   }, [])
 
   const close = useCallback(() => {
@@ -149,7 +149,7 @@ export function ImageLightboxProvider({ children }: { children: ReactNode }) {
                 )}
               </div>
             </div>,
-            document.body,
+            preview.portalRoot,
           )
         : null}
     </ImageLightboxContext.Provider>

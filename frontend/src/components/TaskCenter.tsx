@@ -80,7 +80,9 @@ function TaskCard({
     group.canvas.width > 0 && group.canvas.height > 0
       ? `${group.canvas.width} : ${group.canvas.height}`
       : '—'
-  const progress = Math.max(0, ...group.candidates.map((item) => item.progress))
+  const progress = group.candidates.length ? Math.round(group.candidates.reduce((sum, item) =>
+    sum + (item.status === 'failed' || (item.status === 'succeeded' && item.edit_status !== 'running')
+      ? 100 : Math.min(100, Math.max(0, item.progress))), 0) / group.candidates.length) : 0
   return (
     <article className={`task-card task-card-${group.status}`}>
       <div className="task-cover">
@@ -131,6 +133,7 @@ function TaskCard({
         </strong>
         <div className="task-tags">
           <span>{group.kind === 'original_replace' ? '原照替换' : '海报设计'}</span>
+          {(group.image_models?.length ?? 0) > 1 ? <span>{group.image_models?.length} 个模型</span> : null}
           {group.brand_name ? <span>{group.brand_name}</span> : null}
           {group.platform_name ? (
             <span>
@@ -285,7 +288,7 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, onCreate }: 
           <span className="eyebrow">TASK CENTER</span>
           <h1>任务中心</h1>
           <p className="panel-lead">
-            按候选批次查看生成记录，点击封面回到工作台继续改图。
+            每个设计任务包含多个模型和多轮候选，点击封面继续对比或改图。
           </p>
         </div>
         <div className="asset-head-actions task-stats">

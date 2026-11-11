@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 import type { MerchantBrandInfo, MerchantProfile, MerchantStore } from '../types'
 
 const EMPTY = '资料未提供'
@@ -10,12 +12,12 @@ function storeLine(store: MerchantStore): string {
 /**
  * Brand facts the operator needs to see but the model must not be told.
  *
- * Year is brand-wide; address and phone belong to each store, so a multi-store merchant lists
- * every store instead of letting the first one speak for the brand. Rendered as its own card
- * above the profile because it is the first thing a reader checks, not an appendix.
+ * Address and phone belong to each store, so a multi-store merchant lists every store instead of
+ * letting the first one speak for the brand. Rendered as its own card above the profile because
+ * it is the first thing a reader checks, not an appendix. The shared logo set sits in the same
+ * card as the first slot, since both are merchant-level identity, not style configuration.
  */
-export function MerchantBrandInfoCard({ info }: { info: MerchantBrandInfo }) {
-  const year = info.year_established
+export function MerchantBrandInfoCard({ info, logo }: { info: MerchantBrandInfo; logo?: ReactNode }) {
   const stores = info.stores ?? []
   return (
     <section className="brand-form-section merchant-info-card" aria-label="品牌信息">
@@ -25,12 +27,7 @@ export function MerchantBrandInfoCard({ info }: { info: MerchantBrandInfo }) {
           <h2>品牌信息</h2>
         </div>
       </div>
-      <dl className="merchant-info-list">
-        <div>
-          <dt>开业时间</dt>
-          <dd>{year ? `${year}年` : EMPTY}</dd>
-        </div>
-      </dl>
+      {logo ? <div className="merchant-info-logo">{logo}</div> : null}
       {stores.length ? (
         <div className="merchant-info-stores">
           <span className="merchant-info-stores-title">门店（{stores.length}）</span>

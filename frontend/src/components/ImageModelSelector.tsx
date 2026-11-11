@@ -1,35 +1,72 @@
-import type { ImageModel } from '../types'
+import type { ImageModel, WholeImageTask } from '../types'
 import { IMAGE_MODEL_OPTIONS } from '../imageModels'
+import { modelGenerationState, imageModelLabel, type ModelCounts, type ModelSubmission } from '../modelGeneration'
 
 type Props = {
-  value: ImageModel
-  busy: boolean
-  onChange: (value: ImageModel) => void
+  counts: ModelCounts
+  tasks: WholeImageTask[]
+  submissions: Partial<Record<ImageModel, ModelSubmission>>
+  disabled: boolean
+  onChange: (model: ImageModel, count: number) => void
+  onGenerate: (model: ImageModel) => void
+  selectedModel: ImageModel
+  selectionDisabled: boolean
+  onSelectModel: (model: ImageModel) => void
 }
 
-export default function ImageModelSelector({ value, busy, onChange }: Props) {
+export default function ImageModelSelector({ counts, tasks, submissions, disabled, onChange, onGenerate,
+  selectedModel, selectionDisabled, onSelectModel }: Props) {
+  const historicalModels = [...new Set(tasks.flatMap(task => task.input.image_model &&
+    !IMAGE_MODEL_OPTIONS.some(option => option.value === task.input.image_model) ? [task.input.image_model] : []))]
+  const models = [...IMAGE_MODEL_OPTIONS, ...historicalModels.map(value => ({ value, label: imageModelLabel(value) }))]
+  const available = IMAGE_MODEL_OPTIONS.some(option => option.value === selectedModel)
+  const countOptions = (model: ImageModel) => (
+    <div className="model-count-options" role="radiogroup" aria-label={`${imageModelLabel(model)} 生成张数`}>
+      {[0, 1, 2, 3].map(count => (
+        <button key={count} type="button" role="radio" aria-checked={(counts[model] ?? 0) === count}
+          aria-label={`${imageModelLabel(model)} ${count} 张`}
+          className={(counts[model] ?? 0) === count ? 'is-active' : ''}
+          disabled={modelGenerationState(tasks, model).running || Boolean(submissions[model] && !submissions[model]?.error) || !available}
+          onClick={() => onChange(model, count)}>{count}</button>
+      ))}
+    </div>
+  )
+  const generateButton = (model: ImageModel) => {
+    const state = modelGenerationState(tasks, model)
+    const submission = submissions[model]
+    const running = Boolean(submission && !submission.error) || state.running
+    const count = counts[model] ?? 0
+    // The count sits in the pill row right after the button, so the button only carries the verb.
+    const action = state.hasHistory ? '再生成' : '生成'
+    const total = submission?.count ?? state.total
+    const completed = submission && !submission.error
+      ? tasks.filter(task => task.input.candidate_batch_id === submission.batchId && (task.status === 'succeeded' || task.status === 'failed')).length
+      : state.completed
+    return (
+      <button type="button" className="model-generate-button" disabled={disabled || running || !count || !available}
+        aria-label={`${imageModelLabel(model)} ${running ? '生成中' : action}`}
+        onClick={() => onGenerate(model)}>
+        {running ? `${submission && !submission.error ? '提交中' : '生成中'} ${completed}/${total}` : action}
+      </button>
+    )
+  }
   return (
-    <div className="candidate-count-field image-model-field">
-      <div className="brand-field-head">
-        <span className="prompt-field-label">图片模型</span>
-      </div>
-      <div className="candidate-count-options" role="radiogroup" aria-label="图片模型">
-        {IMAGE_MODEL_OPTIONS.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={value === option.value}
-            className={value === option.value ? 'is-active' : ''}
-            onClick={() => onChange(option.value)}
-            disabled={busy}
-            title={option.hint}
-          >
-            <strong>{option.label}</strong>
-            <span>{option.hint}</span>
+    <div className="model-toolbar" aria-label="图片模型与生成">
+      <div className="model-toolbar-tabs" role="group" aria-label="查看模型候选">
+        {models.map(option => (
+          <button type="button" key={option.value} className={`model-view-button${selectedModel === option.value ? ' is-active' : ''}`}
+            aria-label={`切换到 ${option.label}`} aria-pressed={selectedModel === option.value} disabled={selectionDisabled}
+            onClick={() => onSelectModel(option.value)}>
+            <span>{option.label}</span>
+            {modelGenerationState(tasks, option.value).running ? <span className="model-running-dot" aria-label="生成中" /> : null}
           </button>
         ))}
       </div>
+      <div className="model-toolbar-actions">
+        {generateButton(selectedModel)}
+        <div className="model-toolbar-count">{countOptions(selectedModel)}<span className="model-count-unit">张</span></div>
+      </div>
+      {submissions[selectedModel]?.error ? <p className="model-generation-error" role="alert">{submissions[selectedModel]?.error}</p> : null}
     </div>
   )
 }

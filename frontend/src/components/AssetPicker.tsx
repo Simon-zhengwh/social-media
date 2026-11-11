@@ -9,6 +9,7 @@ type Props = {
   multi?: boolean
   selectedIds?: string[]
   max?: number
+  title?: string
   onClose: () => void
   onSelect?: (asset: Asset) => void
   onConfirm?: (assets: Asset[]) => void
@@ -23,6 +24,7 @@ export default function AssetPicker({
   multi = false,
   selectedIds = [],
   max = 6,
+  title: customTitle,
   onClose,
   onSelect,
   onConfirm,
@@ -48,7 +50,7 @@ export default function AssetPicker({
   }
 
   const matching = assets
-  const title = purpose === 'product' ? '选择素材图' : '选择品牌 Logo'
+  const title = customTitle ?? (purpose === 'product' ? '选择素材图' : '选择品牌 Logo')
   const emptyCopy =
     purpose === 'product'
       ? '资产管理中还没有可用素材图'

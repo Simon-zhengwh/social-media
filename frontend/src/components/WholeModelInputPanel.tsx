@@ -9,6 +9,8 @@ type Props = {
 
 const IMAGE_ROLE_LABELS: Record<string, string> = {
   product: '内容素材',
+  reference: '参考图',
+  edit_reference: '本轮参考图',
   logo: 'Logo',
   style_reference: '风格参考',
   brand_reference: '品牌参考',

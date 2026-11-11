@@ -32,20 +32,20 @@ export default function StoreInfoSelector({ stores, value, disabled, onChange }:
 
   return (
     <div className="store-info-block">
-      <div className="store-info-head">
-        <strong>门店信息</strong>
-        <span>可选</span>
+      <div className="field-switch-row">
+        <span className="field-switch-caption"><strong>门店信息</strong></span>
+        <label className="field-switch">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="在海报中显示门店信息"
+            checked={value.enabled}
+            disabled={disabled}
+            onChange={(event) => patch({ enabled: event.target.checked })}
+          />
+          <span aria-hidden="true" />
+        </label>
       </div>
-
-      <label className="store-info-toggle">
-        <input
-          type="checkbox"
-          checked={value.enabled}
-          disabled={disabled}
-          onChange={(event) => patch({ enabled: event.target.checked })}
-        />
-        <span>把门店信息写进海报文案</span>
-      </label>
 
       {value.enabled ? (
         <>
@@ -84,7 +84,6 @@ export default function StoreInfoSelector({ stores, value, disabled, onChange }:
               <span>电话{hasPhone ? ` · ${selected.phone}` : '（资料未提供）'}</span>
             </label>
           </div>
-          <p className="store-info-hint">勾选的内容会作为文案依据交给模型，模型可能不会逐字呈现。</p>
         </>
       ) : null}
     </div>

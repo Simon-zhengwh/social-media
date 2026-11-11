@@ -238,7 +238,6 @@ export default function AssetLibrary({
                 </div>
                 <div className="asset-card-head">
                   <span className="asset-date">{formatDate(asset.created_at)}</span>
-                  <span className="asset-date">{asset.source === 'am' ? 'AM 只读' : label}</span>
                 </div>
                 <strong className="asset-name" title={asset.original_name}>
                   {asset.original_name}

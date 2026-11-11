@@ -41,9 +41,7 @@ export default function PlatformSelector({
   return (
     <div className="platform-field">
       <div className="brand-field-head">
-        <span className="prompt-field-label">
-          发布平台 <span>选填</span>
-        </span>
+        <span className="prompt-field-label">发布平台</span>
       </div>
 
       {error ? (

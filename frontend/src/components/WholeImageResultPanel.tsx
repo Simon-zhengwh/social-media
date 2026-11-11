@@ -1,15 +1,20 @@
 import { useState } from 'react'
-import type { WholeImageArtifact, WholeImageBranch, WholeImageOutput, WholeImageTask } from '../types'
+import type { ImageModel, WholeImageArtifact, WholeImageBranch, WholeImageOutput, WholeImageTask } from '../types'
 import WholeArtifactPreview from './WholeArtifactPreview'
+import ModelCandidateGroup from './ModelCandidateGroup'
 
 type Props = {
   task: WholeImageTask | null
   busy: boolean
-  onRetry: () => void
+  onRetry: (candidate: WholeImageTask) => void
+  selectedModel: ImageModel
   candidates?: WholeImageTask[]
   onSelectCandidate?: (candidate: WholeImageTask) => void
   onSelectOutput?: (versionId: string, outputId: string) => void
   selectingOutput?: boolean
+  selectingCandidateDisabled?: boolean
+  deletingCandidateId?: string | null
+  onDeleteCandidate: (candidate: WholeImageTask) => void
 }
 
 function GhostPreview() {
@@ -22,7 +27,6 @@ function GhostPreview() {
       </div>
       <div className="preview-empty-copy">
         <strong>选择素材后生成完整设计</strong>
-        <span>模型直接输出整张图片，不拆分图层。</span>
       </div>
     </div>
   )
@@ -163,27 +167,26 @@ export default function WholeImageResultPanel({
   task: confirmedTask,
   busy,
   onRetry,
+  selectedModel,
   candidates = [],
   onSelectCandidate,
   onSelectOutput,
   selectingOutput = false,
+  selectingCandidateDisabled = false,
+  deletingCandidateId = null,
+  onDeleteCandidate,
 }: Props) {
-  const [candidatePreviewId, setCandidatePreviewId] = useState<string | null>(null)
   const [artifactPreview, setArtifactPreview] = useState<WholeImageArtifact | null>(null)
-  const previewCandidate =
-    candidates.find((candidate) => candidate.id === candidatePreviewId) ??
-    candidates.find((candidate) => candidate.id === confirmedTask?.id) ??
-    null
-  const task = previewCandidate ?? confirmedTask
-  const isPreviewConfirmed = Boolean(task && confirmedTask && task.id === confirmedTask.id)
+  const task = candidates.find(candidate => candidate.id === confirmedTask?.id) ?? confirmedTask
+  const selectionDisabled = selectingCandidateDisabled || deletingCandidateId !== null
   const candidateIndex = Math.max(
     0,
     candidates.findIndex((candidate) => candidate.id === task?.id),
   )
   const moveCandidate = (offset: number) => {
-    if (candidates.length <= 1) return
+    if (candidates.length <= 1 || selectionDisabled) return
     const nextIndex = (candidateIndex + offset + candidates.length) % candidates.length
-    setCandidatePreviewId(candidates[nextIndex].id)
+    onSelectCandidate?.(candidates[nextIndex])
   }
   const isActive = Boolean(task && (task.status === 'queued' || task.status === 'running'))
   const isEditing = task?.edit.status === 'running'
@@ -199,27 +202,22 @@ export default function WholeImageResultPanel({
     task?.edit.status === 'failed'
       ? task.edit.error || '这次修改没有完成。'
       : task?.error?.message || '生成失败，请稍后重试。'
-  const canvas = task?.canvas ?? { width: 1, height: 1 }
-  const previewStyle = {
-    aspectRatio: `${canvas.width} / ${canvas.height}`,
-    maxWidth: `min(100%, ${((72 * canvas.width) / canvas.height).toFixed(2)}vh)`,
-  }
   const previewUrl = currentOutput?.preview_url ?? task?.preview_url
   const branches = task?.edit.branches
   const displayOutputs = isEditing
     ? branches?.gateway?.outputs ?? []
     : task?.outputs ?? []
   const comparisonVisible = Boolean(
-    task && (displayOutputs.length > 1 || isEditing || task.requires_output_selection),
+    task && (displayOutputs.length > 1 || task.requires_output_selection),
   )
 
   return (
-    <section className="studio-preview">
-      <div className={`preview-frame${isReady ? ' is-ready' : ''}`} style={previewStyle}>
+    <section className="studio-preview" aria-label="海报预览">
+      <div className={`preview-frame${isReady ? ' is-ready' : ''}`}>
         {candidates.length > 1 ? (
           <>
-            <button type="button" className="candidate-arrow candidate-arrow-left" onClick={() => moveCandidate(-1)} aria-label="上一张候选">‹</button>
-            <button type="button" className="candidate-arrow candidate-arrow-right" onClick={() => moveCandidate(1)} aria-label="下一张候选">›</button>
+            <button type="button" className="candidate-arrow candidate-arrow-left" disabled={selectionDisabled} onClick={() => moveCandidate(-1)} aria-label="上一张候选">‹</button>
+            <button type="button" className="candidate-arrow candidate-arrow-right" disabled={selectionDisabled} onClick={() => moveCandidate(1)} aria-label="下一张候选">›</button>
           </>
         ) : null}
         {isReady && previewUrl ? (
@@ -231,7 +229,7 @@ export default function WholeImageResultPanel({
         ) : (
           <GhostPreview />
         )}
-        {isPreviewConfirmed && isReady && isEditing ? (
+        {isReady && isEditing ? (
           <div className="preview-edit-overlay">
             <span className="scanline" aria-hidden="true" />
             <strong>修改中</strong>
@@ -240,38 +238,27 @@ export default function WholeImageResultPanel({
         ) : null}
       </div>
 
-      {candidates.length > 1 ? (
+      {candidates.length || task ? (
         <div className="candidate-carousel">
-          <div className="candidate-thumbnails">
-            {candidates.map((candidate, index) => (
-              <button
-                type="button"
-                key={candidate.id}
-                className={`candidate-thumbnail${candidate.id === task?.id ? ' is-active' : ''}`}
-                onClick={() => setCandidatePreviewId(candidate.id)}
-                disabled={candidate.status !== 'succeeded'}
-                aria-label={`查看候选 ${index + 1}`}
-                title={`候选 ${index + 1}`}
-              >
-                {candidate.preview_url ? <img src={candidate.preview_url} alt="" /> : <span>{candidate.status === 'failed' ? '失败' : '生成中'}</span>}
-              </button>
-            ))}
+          <div className="candidate-strip-heading">
+            {candidates.length ? (
+              <strong className="candidate-active-model">候选<span>{candidates.length} 张</span></strong>
+            ) : null}
+            {isReady && task && !comparisonVisible ? (
+              <div className="preview-actions">
+                <a className="mp-btn-ghost mp-btn-small" href={currentOutput?.download_url ?? task.download_url ?? '#'} download>
+                  <svg viewBox="0 0 20 20" aria-hidden="true" className="btn-icon"><path d="M10 3v9m0 0 3.5-3.5M10 12 6.5 8.5M4 15.5h12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  下载 PNG
+                </a>
+                {currentOutput ? <ArtifactActions output={currentOutput} onPreview={setArtifactPreview} /> : null}
+              </div>
+            ) : null}
           </div>
-          {task && !isPreviewConfirmed ? (
-            <button
-              type="button"
-              className="candidate-confirm-btn"
-              onClick={() => {
-                onSelectCandidate?.(task)
-                setCandidatePreviewId(task.id)
-              }}
-              disabled={task.status !== 'succeeded'}
-            >
-              就选这张
-            </button>
-          ) : (
-            <span className="candidate-confirmed">已定为当前主图</span>
-          )}
+          <div className="candidate-model-groups">
+            <ModelCandidateGroup model={selectedModel} candidates={candidates} selectedTaskId={task?.id}
+              selectionDisabled={selectionDisabled} deletingCandidateId={deletingCandidateId}
+              onSelect={candidate => onSelectCandidate?.(candidate)} onDelete={onDeleteCandidate} />
+          </div>
         </div>
       ) : null}
 
@@ -316,34 +303,17 @@ export default function WholeImageResultPanel({
         </div>
       ) : null}
 
-      {isReady && task && !comparisonVisible ? (
-        <div className="result-footer">
-          <div className="preview-actions">
-            <a className="mp-btn-dark" href={currentOutput?.download_url ?? task.download_url ?? '#'} download>
-              <svg viewBox="0 0 20 20" aria-hidden="true" className="btn-icon">
-                <path d="M10 3v9m0 0 3.5-3.5M10 12 6.5 8.5M4 15.5h12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              下载 PNG
-            </a>
-            {currentOutput ? (
-              <ArtifactActions output={currentOutput} onPreview={setArtifactPreview} />
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-
       {failed ? (
         <div className="result-error" role="alert">
           <strong>{task?.edit.status === 'failed' ? '修改未完成' : '生成失败'}</strong>
           <span>{errorText}</span>
-          <button type="button" className="mp-btn-secondary mp-btn-small" onClick={onRetry}>
+          <button type="button" className="mp-btn-secondary mp-btn-small" disabled={selectingCandidateDisabled || task?.status === 'running' || task?.status === 'queued'} onClick={() => task && onRetry(task)}>
             {task?.edit.status === 'failed' ? '重新尝试这次修改' : '重新生成'}
           </button>
         </div>
       ) : null}
 
       {busy && !task ? <p className="result-hint">正在创建任务…</p> : null}
-      {!task && !busy ? <p className="result-hint">填写左侧需求后，点击「生成设计」开始。</p> : null}
       <WholeArtifactPreview
         artifact={artifactPreview}
         onClose={() => setArtifactPreview(null)}

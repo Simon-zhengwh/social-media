@@ -11,7 +11,7 @@ type Props = {
 /**
  * Switch which merchant the workspace works for.
  *
- * Switching is a navigation, not an in-place state swap: every panel below the topbar reads the
+ * Switching is a navigation, not an in-place state swap: every panel in the workspace reads the
  * merchant from the URL, so a reload is what guarantees no task, asset or brand from the previous
  * merchant survives the switch. Only the merchant id changes; the current view is kept so the
  * operator lands back where they were.

@@ -1,4 +1,5 @@
 import type { Asset, BrandMode, BrandStyle } from '../types'
+import { stylePreviews } from '../brandPreviews'
 import { ZoomableImage } from './ImageLightbox'
 
 type Props = {
@@ -15,12 +16,12 @@ type Props = {
   onBrandChange: (brandId: string) => void
   onUploadReferences: (files: File[]) => void
   onRemoveReference: (assetId: string) => void
+  allowReferenceMode?: boolean
 }
 
-const MODE_OPTIONS: Array<{ value: BrandMode; label: string }> = [
+const MODE_OPTIONS: Array<{ value: Exclude<BrandMode, 'none'>; label: string }> = [
   { value: 'preset', label: '预设风格' },
   { value: 'reference', label: '参考图' },
-  { value: 'none', label: '无' },
 ]
 
 export default function BrandModeSelector({
@@ -37,16 +38,28 @@ export default function BrandModeSelector({
   onBrandChange,
   onUploadReferences,
   onRemoveReference,
+  allowReferenceMode = true,
 }: Props) {
   return (
     <div className="brand-field">
       <div className="brand-field-head">
-        <span className="prompt-field-label">
-          品牌风格 <span>可选</span>
-        </span>
+        <span className="prompt-field-label">品牌风格</span>
+        {!allowReferenceMode ? (
+          <label className="field-switch brand-style-switch">
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label="使用品牌风格"
+              checked={mode === 'preset'}
+              disabled={busy}
+              onChange={(event) => onModeChange(event.target.checked ? 'preset' : 'none')}
+            />
+            <span aria-hidden="true" />
+          </label>
+        ) : null}
       </div>
 
-      <div className="brand-mode-options" role="radiogroup" aria-label="品牌风格模式">
+      {allowReferenceMode ? <div className="brand-mode-options" role="radiogroup" aria-label="品牌风格模式">
         {MODE_OPTIONS.map((option) => (
           <button
             key={option.value}
@@ -54,13 +67,14 @@ export default function BrandModeSelector({
             role="radio"
             aria-checked={mode === option.value}
             className={`brand-mode-option${mode === option.value ? ' is-active' : ''}`}
-            onClick={() => onModeChange(option.value)}
+            // Re-clicking the active mode clears it, which replaces the removed 「无」 chip.
+            onClick={() => onModeChange(mode === option.value ? 'none' : option.value)}
             disabled={busy}
           >
             <strong>{option.label}</strong>
           </button>
         ))}
-      </div>
+      </div> : null}
 
       {mode === 'preset' ? (
         brandsError ? (
@@ -82,24 +96,31 @@ export default function BrandModeSelector({
           <div className="brand-options" role="radiogroup" aria-label="预设品牌风格">
             {brands.map((brand) => {
               const selected = brand.id === selectedBrandId
+              // A single option is not a choice: showing it as picked only adds noise, so the
+              // highlight and the 「当前」 badge appear only when there is something to pick between.
+              const highlighted = selected && brands.length > 1
               const displayName = brand.name.split(' · ')[0].trim() || brand.name
+              const previews = stylePreviews(brand)
               return (
                 <div
                   key={brand.id}
-                  className={`brand-option${selected ? ' is-active' : ''}${busy ? ' is-disabled' : ''}`}
+                  className={`brand-option${highlighted ? ' is-active' : ''}${busy ? ' is-disabled' : ''}`}
                 >
-                  <span className="brand-cover">
-                    {brand.cover_url ? (
-                      <ZoomableImage
-                        className="brand-cover-image"
-                        src={brand.cover_url}
-                        alt={`${brand.name} 风格参考`}
-                        title={brand.name}
-                      />
+                  <span className="brand-thumbs">
+                    {previews.length ? (
+                      previews.map((preview) => (
+                        <ZoomableImage
+                          key={preview.key}
+                          className="brand-thumb"
+                          src={preview.src}
+                          alt={preview.alt}
+                          title={preview.title}
+                        />
+                      ))
                     ) : (
                       <span className="brand-cover-placeholder">{brand.short_name.slice(0, 2)}</span>
                     )}
-                    {selected ? <span className="brand-selected-mark">当前</span> : null}
+                    {highlighted ? <span className="brand-selected-mark">当前</span> : null}
                   </span>
                   <button
                     type="button"
@@ -135,7 +156,7 @@ export default function BrandModeSelector({
         )
       ) : null}
 
-      {mode === 'reference' ? (
+      {allowReferenceMode && mode === 'reference' ? (
         <div className="style-reference-field">
           <div className="style-reference-head">
             <span>风格参考图 <em>可选</em></span>

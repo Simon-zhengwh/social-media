@@ -2,33 +2,44 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import { optimizePrompt, type PromptOptimizePayload } from '../api'
+import ImagePromptComposer from './ImagePromptComposer'
+import { hydrateImagePrompt, imagePromptIssue, serializeImagePrompt, type PromptImage } from '../imageMentions'
 
 type Props = {
   label: string
-  availability: string
+  /** Required fields mark the label with a red asterisk instead of a written hint. */
+  required?: boolean
   placeholder: string
   prompt: string
   promptOptimized: boolean
-  rows?: number
   busy: boolean
   canOptimize: boolean
   optimizationBlockedReason?: string
   optimizeContext: Omit<PromptOptimizePayload, 'prompt'>
   onPromptChange: (value: string, optimized?: boolean) => void
+  images: PromptImage[]
+  imagesUploading: boolean
+  onUploadImages: (files: File[]) => void
+  onPickImages: () => void
+  onRemoveImage: (assetId: string) => void
 }
 
 export default function PromptField({
   label,
-  availability,
+  required = false,
   placeholder,
   prompt,
   promptOptimized,
-  rows = 5,
   busy,
   canOptimize,
   optimizationBlockedReason,
   optimizeContext,
   onPromptChange,
+  images,
+  imagesUploading,
+  onUploadImages,
+  onPickImages,
+  onRemoveImage,
 }: Props) {
   const [optimizing, setOptimizing] = useState(false)
   const [optimizeError, setOptimizeError] = useState<string | null>(null)
@@ -57,7 +68,7 @@ export default function PromptField({
     }
   }, [previewOpen])
   const disabled = busy || optimizing
-  const optimizeDisabled = disabled || !canOptimize
+  const optimizeDisabled = disabled || !canOptimize || Boolean(imagePromptIssue(prompt, images))
 
   const handleChange = (value: string) => {
     setOptimizeError(null)
@@ -71,12 +82,12 @@ export default function PromptField({
     setOptimizing(true)
     setOptimizeError(null)
     try {
-      const result = await optimizePrompt({ ...optimizeContext, prompt })
+      const result = await optimizePrompt({ ...optimizeContext, prompt: serializeImagePrompt(prompt, images) })
       if (contextKey !== latestContextKey.current) {
         setOptimizeError('生成条件已变化，请重新优化提示词')
         return
       }
-      onPromptChange(result.prompt, true)
+      onPromptChange(hydrateImagePrompt(result.prompt, images), true)
     } catch (reason: unknown) {
       setOptimizeError(reason instanceof Error ? reason.message : '提示词优化失败，请稍后重试')
     } finally {
@@ -87,17 +98,12 @@ export default function PromptField({
   return (
     <div className="prompt-field">
       <span className="prompt-field-label">
-        {label} <span>{availability}</span>
+        {label}
+        {required ? <em className="prompt-field-required" aria-label="必填">*</em> : null}
       </span>
-      <textarea
-        aria-label={label}
-        value={prompt}
-        maxLength={5000}
-        rows={rows}
-        placeholder={placeholder}
-        onChange={(event) => handleChange(event.target.value)}
-        disabled={disabled}
-      />
+      <ImagePromptComposer label={label} value={prompt} images={images} maxImages={6} maxLength={5000}
+        placeholder={placeholder} disabled={disabled} uploading={imagesUploading} onChange={handleChange}
+        onUploadImages={onUploadImages} onPickImages={onPickImages} onRemoveImage={onRemoveImage} />
       <div className="prompt-field-actions">
         <button
           type="button"
@@ -107,7 +113,7 @@ export default function PromptField({
           aria-label={optimizing ? '正在优化提示词' : undefined}
           title={
             canOptimize
-              ? '根据当前风格、参考图和素材图优化提示词'
+              ? '根据当前品牌和参考图优化提示词'
               : (optimizationBlockedReason ?? '请先完善当前生成条件')
           }
         >
@@ -148,17 +154,10 @@ export default function PromptField({
                   关闭
                 </button>
               </div>
-              <textarea
-                className="prompt-preview-textarea"
-                aria-label="提示词内容"
-                value={draftPrompt}
-                maxLength={5000}
-                onChange={(event) => setDraftPrompt(event.target.value)}
-                disabled={disabled}
-                autoFocus
-              />
+              <ImagePromptComposer label="提示词内容" value={draftPrompt} images={images} maxImages={6} maxLength={5000}
+                placeholder={placeholder} onChange={setDraftPrompt} disabled={disabled} />
               <div className="prompt-preview-footer">
-                <span>{draftPrompt.length} / 5000</span>
+                <span>{imagePromptIssue(draftPrompt, images) ? '请检查图片引用或内容长度' : `${serializeImagePrompt(draftPrompt, images).length} / 5000`}</span>
                 <div className="prompt-preview-actions">
                   <button type="button" className="mp-btn-secondary" onClick={() => setDraftPrompt(null)}>
                     取消
@@ -166,7 +165,7 @@ export default function PromptField({
                   <button
                     type="button"
                     className="mp-btn-primary"
-                    disabled={disabled}
+                    disabled={disabled || Boolean(imagePromptIssue(draftPrompt, images))}
                     onClick={() => {
                       setOptimizeError(null)
                       onPromptChange(draftPrompt, promptOptimized)

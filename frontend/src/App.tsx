@@ -5,7 +5,6 @@ import Sidebar, { type AppView } from './components/Sidebar'
 import TaskCenter from './components/TaskCenter'
 import WholeImageStudio from './components/WholeImageStudio'
 import AgentTestPage from './components/AgentTestPage'
-import MerchantSwitcher from './components/MerchantSwitcher'
 import PosterEditStudio from './components/PosterEditStudio'
 import MaterialFilterPage from './components/MaterialFilterPage'
 import {
@@ -55,6 +54,8 @@ function updateUrl(next: AppView) {
   }
   url.searchParams.delete('task')
   url.searchParams.delete('whole')
+  url.searchParams.delete('whole_workspace')
+  url.searchParams.delete('whole_model')
   url.searchParams.delete('poster_batch')
   url.searchParams.delete('poster')
   url.searchParams.delete('candidate')
@@ -102,47 +103,6 @@ function resolveStartupMerchant(): { id: string; restored: boolean } {
   url.searchParams.set('merchant_id', stored)
   window.history.replaceState({}, '', url)
   return { id: stored, restored: true }
-}
-
-const VIEW_META: Record<
-  AppView,
-  { kicker: string; title: string; meta: string | null }
-> = {
-  'agent-tests': {
-    kicker: 'AGENT BENCHMARK',
-    title: 'Agent 测试',
-    meta: 'image-editor · 固定五例',
-  },
-  'material-filters': {
-    kicker: 'MATERIAL FILTER',
-    title: '素材筛选',
-    meta: '本机 SMB · 只读来源',
-  },
-  'poster-edit': {
-    kicker: 'POSTER EDIT',
-    title: '海报修改',
-    meta: '参考图 +文字 · image-editor',
-  },
-  whole: {
-    kicker: 'POSTER STUDIO',
-    title: '海报设计',
-    meta: 'core-ai · 整图生成与编辑',
-  },
-  tasks: {
-    kicker: 'TASK CENTER',
-    title: '任务中心',
-    meta: null,
-  },
-  assets: {
-    kicker: 'ASSET LIBRARY',
-    title: '资产管理',
-    meta: null,
-  },
-  brands: {
-    kicker: 'BRAND LIBRARY',
-    title: '品牌风格',
-    meta: null,
-  },
 }
 
 export default function App() {
@@ -421,8 +381,6 @@ export default function App() {
     )
   }
 
-  const viewMeta = VIEW_META[visibleView]
-
   return (
     <div className="app-layout">
       <Sidebar
@@ -430,19 +388,10 @@ export default function App() {
         onChange={handleViewChange}
         showAgentTests={agentTestsAllowed}
         showMaterialFilters={materialFiltersAllowed}
+        merchantId={initialMerchantId}
+        merchantName={context?.merchant.merchant_name ?? '商家工作区'}
       />
       <div className="app-main">
-        <header className="topbar">
-          <div className="topbar-title">
-            <span className="topbar-kicker">{viewMeta.kicker}</span>
-            <strong>{viewMeta.title}</strong>
-          </div>
-          <MerchantSwitcher
-            currentId={initialMerchantId}
-            currentName={context?.merchant.merchant_name ?? viewMeta.meta ?? '商家工作区'}
-          />
-        </header>
-
         {visibleView === 'material-filters' ? (
           <MaterialFilterPage />
         ) : visibleView === 'poster-edit' ? (

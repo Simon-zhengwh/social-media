@@ -6,6 +6,9 @@ import {
 } from 'react'
 import type { Asset, WholeImageEditState, WholeImageMessage } from '../types'
 import { parseServerDate } from '../time'
+import ImagePromptComposer from './ImagePromptComposer'
+import AssetPicker from './AssetPicker'
+import { imagePromptIssue, serializeImagePrompt, type PromptImage } from '../imageMentions'
 
 type Props = {
   messages: WholeImageMessage[]
@@ -14,6 +17,11 @@ type Props = {
   disabled: boolean
   onUpload: (files: File[]) => Promise<Asset[]>
   onSend: (instruction: string, attachments: Asset[]) => Promise<boolean>
+  currentImage: PromptImage | null
+  assets: Asset[]
+  assetsLoading: boolean
+  onLoadAssets: () => void
+  onGoAssets: () => void
 }
 
 const MAX_ATTACHMENTS = 5
@@ -75,6 +83,11 @@ export default function WholeChatPanel({
   disabled,
   onUpload,
   onSend,
+  currentImage,
+  assets,
+  assetsLoading,
+  onLoadAssets,
+  onGoAssets,
 }: Props) {
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Asset[]>([])
@@ -82,7 +95,10 @@ export default function WholeChatPanel({
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const listRef = useRef<HTMLUListElement | null>(null)
-  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const promptImages: PromptImage[] = [...(currentImage ? [currentImage] : []),
+    ...attachments.map(asset => ({ assetId: asset.id, name: asset.original_name, url: asset.url }))]
+  const promptIssue = imagePromptIssue(draft, promptImages, 1000)
   const running = edit.status === 'running' || sending
 
   useEffect(() => {
@@ -110,7 +126,7 @@ export default function WholeChatPanel({
     setAttachmentError(null)
     try {
       const uploaded = await onUpload(images.slice(0, remaining))
-      setAttachments((current) => [...current, ...uploaded].slice(0, MAX_ATTACHMENTS))
+      setAttachments((current) => [...new Map([...current, ...uploaded].map(asset => [asset.id, asset])).values()].slice(0, MAX_ATTACHMENTS))
       if (images.length > remaining) {
         setAttachmentError(`每轮最多附加 ${MAX_ATTACHMENTS} 张图片`)
       }
@@ -141,10 +157,12 @@ export default function WholeChatPanel({
     if (!instruction || disabled || running || uploading) {
       return
     }
+    const issue = imagePromptIssue(value, promptImages, 1000)
+    if (issue) { setAttachmentError(issue); return }
     setSending(true)
     setAttachmentError(null)
     try {
-      const accepted = await onSend(instruction, attachments)
+      const accepted = await onSend(serializeImagePrompt(value, promptImages, 1000).trim(), attachments)
       if (accepted) {
         setDraft('')
         setAttachments([])
@@ -186,14 +204,7 @@ export default function WholeChatPanel({
       ) : null}
 
       <ul className="chat-list" ref={listRef} aria-live="polite" aria-label="完整对话记录">
-        {messages.length === 0 ? (
-          <li className="chat-empty">
-            <strong>生成完成后，可以继续说想改什么</strong>
-            <span>可以上传或直接粘贴参考图，每轮最多 5 张；每次修改都会保存为新的完整图片版本。</span>
-          </li>
-        ) : (
-          messages.map((message) => <MessageItem key={message.id} message={message} />)
-        )}
+        {messages.map((message) => <MessageItem key={message.id} message={message} />)}
         {running && !sending ? (
           <li className="chat-message chat-assistant">
             <div className="chat-bubble chat-typing" aria-label="正在处理">
@@ -225,80 +236,25 @@ export default function WholeChatPanel({
           void send(draft)
         }}
       >
-        {attachments.length || uploading ? (
-          <div className="chat-composer-attachments" aria-label="本轮参考图">
-            {attachments.map((asset) => (
-              <span className="chat-attachment" key={asset.id}>
-                <img src={asset.url} alt={asset.original_name} title={asset.original_name} />
-                <button
-                  type="button"
-                  className="chat-attachment-remove"
-                  onClick={() => setAttachments((current) => current.filter((item) => item.id !== asset.id))}
-                  disabled={running}
-                  aria-label={`移除 ${asset.original_name}`}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-            {uploading ? (
-              <span className="chat-attachment chat-attachment-loading" aria-label="图片上传中">
-                <span className="spinner spinner-dark" aria-hidden="true" />
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-        <div className="chat-composer-row">
-          <button
-            type="button"
-            className="chat-attach-button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={disabled || running || uploading || attachments.length >= MAX_ATTACHMENTS}
-            aria-label="上传参考图"
-            title="上传参考图，也可以 Ctrl+V 粘贴"
-          >
-            <svg viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M7.5 10.5l4.3-4.3a2.4 2.4 0 013.4 3.4l-6.1 6.1a4 4 0 01-5.7-5.7l5.9-5.9" />
-            </svg>
-          </button>
-          <input
-            ref={fileInputRef}
-            className="chat-file-input"
-            type="file"
-            accept="image/*"
-            multiple
-            disabled={disabled || running || uploading}
-            onChange={(event) => {
-              void addImages(Array.from(event.target.files ?? []))
-              event.target.value = ''
-            }}
-          />
-          <textarea
-            value={draft}
-            rows={2}
-            maxLength={1000}
-            placeholder="描述想改什么，可上传或 Ctrl+V 粘贴参考图"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                void send(draft)
-              }
-            }}
-            disabled={disabled || running}
-          />
-          <button
-            type="submit"
-            className="chat-send"
-            disabled={disabled || running || uploading || !draft.trim()}
-            aria-label="发送修改"
-          >
-            <svg viewBox="0 0 20 20" aria-hidden="true">
-              <path d="M3 10h12M10 5l5 5-5 5" />
-            </svg>
-          </button>
-        </div>
+        <ImagePromptComposer
+          value={draft} onChange={setDraft} images={promptImages} label="修改要求"
+          placeholder="描述想改什么，输入 @ 选择图片" maxImages={MAX_ATTACHMENTS} addedCount={attachments.length} maxLength={1000}
+          disabled={disabled || running} uploading={uploading} onSubmit={() => void send(draft)}
+          onUploadImages={files => void addImages(files)}
+          onRemoveImage={assetId => setAttachments(current => current.filter(asset => asset.id !== assetId))}
+          onPickImages={() => { setPickerOpen(true); onLoadAssets() }}
+          footerActions={
+            <button type="submit" className="chat-send" disabled={disabled || running || uploading || !draft.trim() || Boolean(promptIssue)} aria-label="发送修改">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h12M10 5l5 5-5 5" /></svg>
+            </button>
+          }
+        />
       </form>
+      <AssetPicker key={pickerOpen ? 'chat-open' : 'chat-closed'} open={pickerOpen} purpose="product" title="选择改图参考图"
+        assets={[...new Map([...attachments, ...assets].map(asset => [asset.id, asset])).values()]} loading={assetsLoading}
+        multi selectedIds={attachments.map(asset => asset.id)} max={MAX_ATTACHMENTS}
+        onClose={() => setPickerOpen(false)} onGoAssets={onGoAssets}
+        onConfirm={selected => { setAttachments(selected); setPickerOpen(false) }} />
     </section>
   )
 }

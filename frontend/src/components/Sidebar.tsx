@@ -1,5 +1,7 @@
 import type { ReactElement } from 'react'
 
+import MerchantSwitcher from './MerchantSwitcher'
+
 export type AppView = 'whole' | 'poster-edit' | 'tasks' | 'assets' | 'brands' | 'agent-tests' | 'material-filters'
 
 type Props = {
@@ -9,6 +11,9 @@ type Props = {
   showAgentTests: boolean
   /** SMB material filtering reads this machine's folders, so it is local-only too. */
   showMaterialFilters: boolean
+  /** Merchant the workspace is scoped to; switching lives here so the page needs no header row. */
+  merchantId: string
+  merchantName: string
 }
 
 function FilterIcon() {
@@ -110,7 +115,14 @@ const NAV_ITEMS: Array<{
   },
 ]
 
-export default function Sidebar({ view, onChange, showAgentTests, showMaterialFilters }: Props) {
+export default function Sidebar({
+  view,
+  onChange,
+  showAgentTests,
+  showMaterialFilters,
+  merchantId,
+  merchantName,
+}: Props) {
   const items = NAV_ITEMS.filter((item) => {
     if (item.key === 'agent-tests') return showAgentTests
     if (item.key === 'material-filters') return showMaterialFilters
@@ -138,6 +150,10 @@ export default function Sidebar({ view, onChange, showAgentTests, showMaterialFi
         </span>
       </div>
 
+      <div className="sidebar-merchant">
+        <MerchantSwitcher currentId={merchantId} currentName={merchantName} />
+      </div>
+
       <nav className="sidebar-nav" aria-label="主导航">
         {items.map((item) => {
           const Icon = item.icon
@@ -162,8 +178,6 @@ export default function Sidebar({ view, onChange, showAgentTests, showMaterialFi
           )
         })}
       </nav>
-
-
     </aside>
   )
 }

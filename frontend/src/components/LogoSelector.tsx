@@ -6,38 +6,51 @@ type Props = {
   logos: BrandLogoImage[]
   selectedLogoId: string
   busy: boolean
-  /**
-   * Picks one logo, or clears it when the active tile is clicked again.
-   * The merchant-level set is untouched: only this poster stops using the logo.
-   */
+  /** Picks which logo this poster uses. Only reachable while the logo switch is on. */
   onSelectLogo: (assetId: string) => void
+  /**
+   * Whether this poster carries a logo at all. The switch is the on/off control; the tiles below
+   * only decide which logo, so turning it off must remember nothing but the merchant's own set.
+   */
+  onToggleLogo: (enabled: boolean) => void
 }
 
-export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo }: Props) {
+export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo, onToggleLogo }: Props) {
+  const enabled = Boolean(selectedLogoId)
+  // With a single logo there is nothing to pick: keep the switch semantics, drop the selection
+  // highlight and the radio marker so the only option does not look like an unanswered choice.
+  const selectable = logos.length > 1
   return (
     <div className="brand-field logo-selector-field">
-      <div className="brand-field-head">
-        <span className="prompt-field-label">
-          品牌 Logo <span>可选 · 至多一张</span>
-        </span>
-        {logos.length > 0 ? (
-          <small className="logo-selector-hint">在「品牌风格」页维护</small>
-        ) : null}
+      <div className="field-switch-row">
+        <span className="field-switch-caption"><strong>Logo</strong></span>
+        <label className="field-switch">
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="在海报中加入 Logo"
+            checked={enabled}
+            disabled={busy || logos.length === 0}
+            onChange={(event) => onToggleLogo(event.target.checked)}
+          />
+          <span aria-hidden="true" />
+        </label>
       </div>
 
       {logos.length === 0 ? (
         <p className="logo-selector-empty">
-          还没有配置品牌 Logo。可到「品牌风格」页的商户公共区上传，上传后这里即可勾选。
+          暂无 Logo，可在「品牌风格」中添加。
         </p>
-      ) : (
-        <div className="logo-selector-options" aria-label="品牌 Logo">
+      ) : !enabled ? null : (
+        <div className={`logo-selector-options${selectable ? '' : ' is-single'}`} aria-label="品牌 Logo">
           {logos.map((logo) => {
             const active = logo.asset_id === selectedLogoId
+            const highlighted = active && selectable
             const name = logo.original_name || '品牌 Logo'
             return (
               <div
                 key={logo.asset_id}
-                className={`logo-selector-option${active ? ' is-active' : ''}`}
+                className={`logo-selector-option${highlighted ? ' is-active' : ''}`}
               >
                 <ZoomableImage
                   className="logo-selector-preview"
@@ -50,8 +63,8 @@ export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo
                   className="logo-selector-choice"
                   aria-pressed={active}
                   disabled={busy}
-                  onClick={() => onSelectLogo(active ? '' : logo.asset_id)}
-                  title={active ? '本张海报不使用这张 Logo' : `本张海报使用 ${name}`}
+                  onClick={() => onSelectLogo(logo.asset_id)}
+                  title={`本张海报使用 ${name}`}
                 >
                   <span className="logo-selector-radio" aria-hidden="true" />
                   <span className="logo-selector-name">{name}</span>
@@ -59,17 +72,6 @@ export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo
               </div>
             )
           })}
-          <button
-            type="button"
-            className={`logo-selector-option logo-selector-none${selectedLogoId ? '' : ' is-active'}`}
-            disabled={busy}
-            onClick={() => onSelectLogo('')}
-            title="本张海报不使用 Logo"
-            aria-label="本张海报不使用 Logo"
-          >
-            <span aria-hidden="true">✕</span>
-            <small>不用 Logo</small>
-          </button>
         </div>
       )}
     </div>

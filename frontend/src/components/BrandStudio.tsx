@@ -410,46 +410,57 @@ export default function BrandStudio({
   /*
     FB-003 / FB-004: merchant facts, the shared logo set and the AM profile are merchant-level
     data, so they sit above the style list. A style page now only configures platform visuals.
+    The logo set lives inside the brand-info card; 开业时间 was dropped because operators never
+    used it and it competed with the logo for the same slot.
   */
+  const merchantLogoEditor = (
+    <div className="merchant-info-logo-block">
+      <div className="merchant-info-logo-head">
+        <span className="eyebrow">MERCHANT LOGO</span>
+        <span className="brand-logo-count">{merchantLogos.length}/5</span>
+      </div>
+      <div className="brand-logo-strip">
+        {merchantLogos.map((logo) => (
+          <div className="brand-logo-chip" key={logo.asset_id}>
+            <ZoomableImage
+              className="brand-logo-preview"
+              src={logo.url}
+              alt={logo.original_name}
+              title={logo.original_name}
+            />
+            <button type="button" className="brand-logo-remove" onClick={() => setConfirmDelete({ target: 'logo', id: logo.asset_id })} aria-label="移除 Logo" disabled={deletingId === logo.asset_id}>×</button>
+          </div>
+        ))}
+        {!logosFull ? (
+          <label className="brand-asset-add">
+            <input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={uploadingLogo} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void uploadLogos(files); event.target.value = '' }} />
+            <span>＋</span><small>{uploadingLogo ? '上传中' : 'Logo'}</small>
+          </label>
+        ) : null}
+      </div>
+      <p className="brand-logo-hint">
+        {merchantLogos.length === 0
+          ? '还没有商户 Logo，上传后会用于全部平台风格的生成。'
+          : '商户通用字段：全部平台风格与海报共用这套 Logo，生成页可勾选其中一张，默认第一张。'}
+      </p>
+    </div>
+  )
+
   const merchantSection = (
     <div className="brand-merchant-public">
       {merchantProfile?.brand_info ? (
-        <MerchantBrandInfoCard info={merchantProfile.brand_info} />
-      ) : null}
-      <section className="brand-form-section brand-logo-card">
-        <div className="brand-section-head">
-          <div>
-            <span className="eyebrow">MERCHANT LOGO</span>
-            <h2>品牌 Logo</h2>
-          </div>
-          <span className="brand-logo-count">{merchantLogos.length}/5</span>
-        </div>
-        <p className="brand-logo-hint">
-          商户通用字段：全部平台风格与海报共用这套 Logo，生成页可勾选其中一张，默认第一张。
-        </p>
-        <div className="brand-logo-strip">
-          {merchantLogos.map((logo) => (
-            <div className="brand-logo-chip" key={logo.asset_id}>
-              <ZoomableImage
-                className="brand-logo-preview"
-                src={logo.url}
-                alt={logo.original_name}
-                title={logo.original_name}
-              />
-              <button type="button" className="brand-logo-remove" onClick={() => setConfirmDelete({ target: 'logo', id: logo.asset_id })} aria-label="移除 Logo" disabled={deletingId === logo.asset_id}>×</button>
+        <MerchantBrandInfoCard info={merchantProfile.brand_info} logo={merchantLogoEditor} />
+      ) : (
+        <section className="brand-form-section merchant-info-card" aria-label="品牌信息">
+          <div className="brand-section-head">
+            <div>
+              <span className="eyebrow">MERCHANT LOGO</span>
+              <h2>品牌 Logo</h2>
             </div>
-          ))}
-          {!logosFull ? (
-            <label className="brand-asset-add">
-              <input type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={uploadingLogo} onChange={(event) => { const files = Array.from(event.target.files ?? []); if (files.length) void uploadLogos(files); event.target.value = '' }} />
-              <span>＋</span><small>{uploadingLogo ? '上传中' : 'Logo'}</small>
-            </label>
-          ) : null}
-        </div>
-        {merchantLogos.length === 0 ? (
-          <p className="brand-logo-empty">还没有商户 Logo，上传后会用于全部平台风格的生成。</p>
-        ) : null}
-      </section>
+          </div>
+          {merchantLogoEditor}
+        </section>
+      )}
       <MerchantProfilePanel profile={merchantProfile} />
     </div>
   )
