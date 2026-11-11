@@ -45,6 +45,10 @@ from app.services import material_filters as store  # noqa: E402
 from app.services.scoped_db import ScopedDatabase  # noqa: E402
 
 DEFAULT_BASE_URL = "https://social-media.connexup-uat.net"
+import io  # noqa: E402
+
+from PIL import Image, ImageOps  # noqa: E402
+
 CONTENT_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -166,20 +170,45 @@ def upload_name(row: dict[str, Any], suffix: str, used: set[str]) -> str:
     return f"{candidate}{suffix}"
 
 
+def fit_upload_bytes(data: bytes, max_bytes: int) -> tuple[bytes, str, bool]:
+    """AM rejects request bodies near 10 MB, so oversized originals are re-encoded.
+
+    Returns (bytes, suffix, recompressed). Photos stay at their original pixel size
+    while quality is stepped down; only a still-too-large result is downscaled.
+    """
+    if max_bytes <= 0 or len(data) <= max_bytes:
+        return data, "", False
+    with Image.open(io.BytesIO(data)) as opened:
+        image = ImageOps.exif_transpose(opened).convert("RGB")
+    current = image
+    encoded = b""
+    for _ in range(6):
+        for quality in (92, 88, 84, 80, 76, 72, 68, 64):
+            buffer = io.BytesIO()
+            current.save(buffer, format="JPEG", quality=quality, optimize=True)
+            encoded = buffer.getvalue()
+            if len(encoded) <= max_bytes:
+                return encoded, ".jpg", True
+        current = current.resize(
+            (max(256, int(current.width * 0.85)), max(256, int(current.height * 0.85))),
+            Image.Resampling.LANCZOS,
+        )
+    return encoded, ".jpg", True
+
+
 def upload(
     client: httpx.Client,
     base_url: str,
     merchant_id: str,
-    path: Path,
+    data: bytes,
     *,
     file_name: str,
 ) -> dict[str, Any]:
-    content_type = CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
-    with path.open("rb") as handle:
-        response = client.post(
-            f"{base_url}/api/merchants/{merchant_id}/assets",
-            files={"file": (file_name, handle, content_type)},
-        )
+    content_type = CONTENT_TYPES.get(Path(file_name).suffix.lower(), "application/octet-stream")
+    response = client.post(
+        f"{base_url}/api/merchants/{merchant_id}/assets",
+        files={"file": (file_name, data, content_type)},
+    )
     if response.status_code not in {200, 201}:
         raise RuntimeError(f"HTTP {response.status_code}: {response.text[:200]}")
     return response.json()
@@ -247,6 +276,12 @@ def main() -> int:
     parser.add_argument("--merchant", default="", help="默认取本地配置的商户")
     parser.add_argument("--cookie", default=os.environ.get("AM_SESSION_COOKIE", ""))
     parser.add_argument("--orca-auto", action="store_true", help="从 Orca 已打开的 UAT 标签页读取会话")
+    parser.add_argument(
+        "--max-body-mb",
+        type=float,
+        default=9.0,
+        help="AM 上传请求体上限（MB，base64 后）；超过的图片会重编码，0 表示不压缩",
+    )
     parser.add_argument("--retag", action="store_true", help="只为已同步的素材补写标签（最多 5 个）")
     parser.add_argument("--report", default="", help="CSV 报告输出路径")
     args = parser.parse_args()
@@ -379,9 +414,12 @@ def main() -> int:
             label = f"[{index}/{len(rows)}] {row['original_name']}"
             try:
                 path = local_copy_path(settings, scheme, row)
-                suffix = path.suffix.lower() or ".jpg"
+                raw = path.read_bytes()
+                max_file_bytes = int(args.max_body_mb * 1024 * 1024 * 3 / 4) if args.max_body_mb else 0
+                data, new_suffix, recompressed = fit_upload_bytes(raw, max_file_bytes)
+                suffix = new_suffix or (path.suffix.lower() or ".jpg")
                 file_name = upload_name(row, suffix, used_names)
-                asset = upload(client, args.base_url, merchant_id, path, file_name=file_name)
+                asset = upload(client, args.base_url, merchant_id, data, file_name=file_name)
                 asset_id = str(asset.get("id") or "")
                 tags = desired_tags(row, include_model=not args.no_model_tags)
                 tag_error = ""
@@ -397,6 +435,8 @@ def main() -> int:
                         "$set": {
                             "uat_asset_id": asset_id,
                             "uat_asset_name": asset.get("original_name") or file_name,
+                            "uat_recompressed": recompressed,
+                            "uat_upload_bytes": len(data),
                             "uat_asset_url": asset.get("url"),
                             "uat_synced_at": now(),
                             "uat_sync_error": None,
@@ -407,10 +447,12 @@ def main() -> int:
                 report.append(
                     {"original_name": row["original_name"], "output_name": row.get("output_name"),
                      "uat_name": asset.get("original_name") or file_name,
-                     "asset_id": asset_id, "status": "uploaded" if not tag_error else "uploaded-tag-skipped",
+                     "asset_id": asset_id,
+                     "status": ("uploaded-compressed" if recompressed else "uploaded") if not tag_error else "uploaded-tag-skipped",
                      "error": tag_error}
                 )
-                print(f"{label} -> {file_name} ({asset_id})")
+                note = "（已压缩上传）" if recompressed else ""
+                print(f"{label} -> {file_name} ({asset_id}){note}")
             except Exception as exc:  # noqa: BLE001 - keep going, report at the end
                 text = str(exc)
                 # AM returns 400 when the same bytes already exist in the media library
