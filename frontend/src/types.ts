@@ -230,6 +230,7 @@ export type WholeImageBranch = {
 }
 
 export type WholeImageEditState = {
+  reference_mode?: 'legacy' | 'unified'
   status: 'idle' | 'running' | 'awaiting_selection' | 'failed'
   instruction?: string | null
   source_version_id?: string | null
@@ -246,6 +247,7 @@ export type WholeImageTask = {
   stage: string
   progress: number
   input: {
+    reference_asset_ids?: string[] | null
     image_model?: ImageModel
     prompt?: string
     prompt_optimized?: boolean
@@ -314,6 +316,7 @@ export type WholeImageTaskGroupFilter = 'all' | WholeImageTaskGroupStatus
 
 export type WholeImageTaskGroupCandidate = {
   id: string
+  image_model?: ImageModel | null
   candidate_index: number
   status: WholeImageTaskStatus
   stage: string
@@ -328,6 +331,7 @@ export type WholeImageTaskGroupCandidate = {
 }
 
 export type WholeImageTaskGroup = {
+  image_models?: ImageModel[]
   whole_task_id?: string | null
   id: string
   kind: 'generate' | 'original_replace'

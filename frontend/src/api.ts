@@ -374,6 +374,7 @@ export async function deleteAsset(assetId: string, force = false): Promise<void>
 }
 
 export type WholeImageTaskCreatePayload = {
+  reference_asset_ids?: string[] | null
   image_model?: ImageModel
   prompt: string
   prompt_optimized?: boolean
@@ -457,6 +458,7 @@ export async function createWholeImageEdit(
   sourceVersionId: string,
   sourceOutputId?: string | null,
   referenceAssetIds: string[] = [],
+  referenceMode: 'legacy' | 'unified' = 'legacy',
 ): Promise<WholeImageTask> {
   const response = await apiFetch(
     `/api/whole-image/tasks/${encodeURIComponent(taskId)}/edits`,
@@ -468,6 +470,7 @@ export async function createWholeImageEdit(
         source_version_id: sourceVersionId,
         source_output_id: sourceOutputId ?? null,
         reference_asset_ids: referenceAssetIds,
+        reference_mode: referenceMode,
       }),
     },
   )
@@ -523,6 +526,7 @@ export async function listTaskCenterGroups(options: {
 }
 
 export type PromptOptimizePayload = {
+  reference_asset_ids?: string[] | null
   prompt: string
   brand_mode: BrandMode
   brand_id?: string | null

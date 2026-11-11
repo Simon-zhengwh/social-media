@@ -6,6 +6,9 @@ import {
   createOriginalReplacement,
   listOriginalReplacements,
   listPlatforms,
+  listWholeImageWorkspace,
+  deleteWholeImageCandidate,
+  createWholeImageEdit,
   merchantPath,
   refreshOriginalReplacement,
 } from '../src/api.ts'
@@ -47,6 +50,23 @@ test('public platform catalog remains accessible without merchant context', asyn
   const requests = mockBrowser('')
   await listPlatforms()
   assert.equal(requests[0].path, '/api/platforms')
+})
+
+test('workspace queries, candidate deletion and edits preserve merchant and candidate identity', async () => {
+  const requests = mockBrowser()
+  await listWholeImageWorkspace('workspace/a')
+  await deleteWholeImageCandidate('candidate/a')
+  await createWholeImageEdit('seedream/a', '只改标题', 'version/a', 'output/a')
+  assert.deepEqual(requests.map(request => request.path), [
+    '/api/merchants/merchant%2Fa/whole-image/workspaces/workspace%2Fa/tasks',
+    '/api/merchants/merchant%2Fa/whole-image/tasks/candidate%2Fa/candidate',
+    '/api/merchants/merchant%2Fa/whole-image/tasks/seedream%2Fa/edits',
+  ])
+  for (const { init } of requests.slice(1)) assert.equal(new Headers(init?.headers).get('X-Media-Request'), '1')
+  const body = JSON.parse(String(requests[2].init?.body))
+  assert.equal(body.source_version_id, 'version/a')
+  assert.equal(body.source_output_id, 'output/a')
+  assert.equal(body.image_model, undefined) // The server owns this candidate's immutable model.
 })
 
 test('agent benchmark writes use the same merchant authentication and CSRF contract', async () => {
