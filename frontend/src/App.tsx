@@ -7,6 +7,7 @@ import WholeImageStudio from './components/WholeImageStudio'
 import AgentTestPage from './components/AgentTestPage'
 import MerchantSwitcher from './components/MerchantSwitcher'
 import PosterEditStudio from './components/PosterEditStudio'
+import MaterialFilterPage from './components/MaterialFilterPage'
 import {
   ApiError,
   getBrandLogos,
@@ -59,6 +60,11 @@ function updateUrl(next: AppView) {
   url.searchParams.delete('candidate')
   url.searchParams.delete('replacement')
   url.searchParams.delete('tab')
+  if (next !== 'material-filters') {
+    // Folder/scheme tabs belong to the filter page only.
+    url.searchParams.delete('folder')
+    url.searchParams.delete('scheme')
+  }
   window.history.replaceState({}, '', url)
 }
 
@@ -106,6 +112,11 @@ const VIEW_META: Record<
     kicker: 'AGENT BENCHMARK',
     title: 'Agent 测试',
     meta: 'image-editor · 固定五例',
+  },
+  'material-filters': {
+    kicker: 'MATERIAL FILTER',
+    title: '素材筛选',
+    meta: '本机 SMB · 只读来源',
   },
   'poster-edit': {
     kicker: 'POSTER EDIT',
@@ -268,6 +279,17 @@ export default function App() {
       .then((value) => {
         setContext(value)
         setContextError(null)
+        // Only a context the backend accepted becomes this browser's remembered default.
+        storeMerchantId(merchantId)
+        if (
+          (startupView === 'agent-tests' && value.features?.agent_tests !== true) ||
+          (startupView === 'material-filters' && value.features?.material_filters !== true)
+        ) {
+          // A saved local-only page is not available on this deployment: leave the address bar
+          // pointing at the poster studio instead of a page that will never render.
+          setView('whole')
+          updateUrl('whole')
+        }
         void loadBrands()
         listPlatforms()
           .then((list) => {
@@ -278,31 +300,42 @@ export default function App() {
           .finally(() => setPlatformsLoading(false))
         void loadAssets('', false, 0, true)
       })
-      .catch((reason: unknown) => setContextError(errorMessage(reason)))
+      .catch((reason: unknown) => {
+        setContextError(errorMessage(reason))
+        // A merchant that is gone or not ours must not be offered again; the error stays.
+        if (merchantRejected(reason)) clearStoredMerchantId(merchantId)
+      })
       .finally(() => setContextLoading(false))
-  }, [initialMerchantId, loadAssets, loadBrands])
+  }, [initialMerchantId, loadAssets, loadBrands, startupView])
 
   const handleViewChange = (next: AppView) => {
+    if (next === 'agent-tests' && !agentTestsAllowed) return
+    if (next === 'material-filters' && !materialFiltersAllowed) return
     if (next === view && next === 'whole') {
       setStudioRevision((current) => current + 1)
     }
     setView(next)
     updateUrl(next)
     if (next === 'assets') {
-      void loadAssets(assetQuery, false, 0, true)
+      void loadAssets(assetQuery, false, 0, true, assetTagQuery)
     }
     if (next === 'brands') {
       void loadBrands()
     }
   }
 
-  const handleSearchAssets = (keyword: string) => {
+  const handleSearchAssets = (keyword: string, tag: string) => {
     setAssetQuery(keyword)
-    void loadAssets(keyword, false, 0, true)
+    setAssetTagQuery(tag)
+    void loadAssets(keyword, false, 0, true, tag)
   }
 
   const handleLoadMoreAssets = () => {
-    void loadAssets(assetQuery, true, assets.length, false)
+    void loadAssets(assetQuery, true, assets.length, false, assetTagQuery)
+  }
+
+  const handleTagsSaved = (asset: Asset) => {
+    setAssets((previous) => previous.map((item) => (item.id === asset.id ? asset : item)))
   }
 
   const handleDeleteAsset = (assetId: string) => {
@@ -356,6 +389,18 @@ export default function App() {
     setView('whole')
   }
 
+  /*
+    Agent benchmarks are a local QA tool: the deployed site hides the page even when a saved
+    URL points at it, and the sidebar entry follows the same server-provided capability flag.
+  */
+  const agentTestsAllowed = context?.features?.agent_tests === true
+  const materialFiltersAllowed = context?.features?.material_filters === true
+  const visibleView: AppView =
+    (view === 'agent-tests' && !agentTestsAllowed) ||
+    (view === 'material-filters' && !materialFiltersAllowed)
+      ? 'whole'
+      : view
+
   if (contextLoading || resolvingMerchant) {
     return <div className="app-loading">正在打开商家工作区…</div>
   }
@@ -376,11 +421,16 @@ export default function App() {
     )
   }
 
-  const viewMeta = VIEW_META[view]
+  const viewMeta = VIEW_META[visibleView]
 
   return (
     <div className="app-layout">
-      <Sidebar view={view} onChange={handleViewChange} />
+      <Sidebar
+        view={visibleView}
+        onChange={handleViewChange}
+        showAgentTests={agentTestsAllowed}
+        showMaterialFilters={materialFiltersAllowed}
+      />
       <div className="app-main">
         <header className="topbar">
           <div className="topbar-title">
@@ -393,22 +443,24 @@ export default function App() {
           />
         </header>
 
-        {view === 'poster-edit' ? (
+        {visibleView === 'material-filters' ? (
+          <MaterialFilterPage />
+        ) : visibleView === 'poster-edit' ? (
             <PosterEditStudio
             assets={assets}
             assetsLoading={assetsLoading}
             onLoadAssets={() => void loadAssets()}
             onGoAssets={() => handleViewChange('assets')}
             />
- ) : view === 'agent-tests' ? (
+ ) : visibleView === 'agent-tests' ? (
           <AgentTestPage />
-        ) : view === 'tasks' ? (
+        ) : visibleView === 'tasks' ? (
           <TaskCenter
             onOpenTask={handleOpenTask}
             onOpenReplacement={handleOpenReplacement}
             onCreate={handleCreateTask}
           />
-        ) : view === 'whole' ? (
+        ) : visibleView === 'whole' ? (
           <WholeImageStudio
             key={`whole-${studioRevision}`}
             merchantProfile={(context?.profile as MerchantProfile | null) ?? null}
@@ -424,8 +476,9 @@ export default function App() {
             onLoadAssets={() => void loadAssets()}
             onGoAssets={() => handleViewChange('assets')}
           />
-        ) : view === 'brands' ? (
+        ) : visibleView === 'brands' ? (
           <BrandStudio
+            merchantProfile={(context?.profile as MerchantProfile | null) ?? null}
             brands={brands}
             merchantLogos={merchantLogos}
             platforms={platforms}

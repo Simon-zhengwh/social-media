@@ -17,6 +17,7 @@ from app.routes import (
     brand_logos,
     brand_rules,
     brands,
+    material_filters,
     merchant_context,
     platforms,
     poster_edit,
@@ -30,6 +31,7 @@ from app.services.object_store import create_object_store
 from app.services import original_replacement_runner
 from app.services import agent_tests as agent_test_service
 from app.services import maintenance, storage, whole_image as whole_image_service
+from app.services import material_filter_files, material_filters as material_filter_store
 from app.services.am_client import AMClient
 from app.services.core_ai import CoreAIClient
 from app.services.media_object_store import create_merchant_store
@@ -71,9 +73,28 @@ def _initialize_indexes(db) -> None:
     db.agent_test_runs.create_index([("status", 1), ("merchant_id", 1)])
     db.agent_test_batches.create_index([("merchant_id", 1), ("created_at", -1)])
     db.app_control.create_index([("enabled", 1)])
+    db.material_filter_folders.create_index(
+        [("merchant_id", 1), ("canonical_source_key", 1)], unique=True
+    )
+    db.material_filter_schemes.create_index([("merchant_id", 1), ("folder_id", 1), ("created_at", 1)])
+    db.material_filter_runs.create_index([("merchant_id", 1), ("scheme_id", 1), ("created_at", -1)])
+    db.material_filter_runs.create_index(
+        [("merchant_id", 1), ("scheme_id", 1), ("request_id", 1)], unique=True
+    )
+    db.material_filter_files.create_index(
+        [("merchant_id", 1), ("scheme_id", 1), ("path_key", 1)], unique=True
+    )
+    db.material_filter_evaluations.create_index(
+        [("merchant_id", 1), ("scheme_id", 1), ("file_id", 1), ("source_sha256", 1)], unique=True
+    )
+    db.material_filter_evaluations.create_index(
+        [("merchant_id", 1), ("scheme_id", 1), ("effective_decision", 1), ("created_at", -1)]
+    )
 
 
 def _scoped_store(app: FastAPI, merchant_id: str, db):
+    if local_bypass_enabled(app.state.settings):
+        return app.state.local_store
     if app.state.settings.am_media_storage_service_key.strip():
         return create_merchant_store(app.state.settings, db, app.state.am, merchant_id)
     return app.state.local_store
@@ -108,6 +129,16 @@ def _resume_poster_edits(app: FastAPI) -> None:
                 args=(db, app.state.settings, _scoped_store(app, merchant_id, db), app.state.core_ai),
                 name=f"resume-poster-edits-{merchant_id}", daemon=True,
             ).start()
+
+
+def _mark_material_filter_runs_interrupted(app: FastAPI) -> None:
+    """Leftover scans are interrupted once; the operator resumes them explicitly."""
+    raw = app.state.raw_db
+    merchant_ids = raw.material_filter_runs.distinct(
+        "merchant_id", {"status": {"$in": ["queued", "running"]}}
+    )
+    for merchant_id in sorted(str(value) for value in merchant_ids if value):
+        material_filter_store.mark_scheme_interrupted(ScopedDatabase(raw, merchant_id))
 
 
 def _resume_agent_tests(app: FastAPI) -> None:
@@ -146,6 +177,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _resume_original_replacements(app)
         _resume_poster_edits(app)
         _resume_agent_tests(app)
+        _mark_material_filter_runs_interrupted(app)
         app.state.ready = True
         logger.info("social media initialization complete; database=%s", settings.mongodb_database)
     except Exception as exc: # noqa: BLE001 - readiness reports initialization failure
@@ -173,8 +205,25 @@ merchant_router.include_router(agent_tests.router)
 merchant_router.include_router(task_center.router)
 merchant_router.include_router(whole_image.router)
 merchant_router.include_router(poster_edit.router)
+merchant_router.include_router(material_filters.router)
 app.include_router(merchant_router)
 app.include_router(platforms.router)
+
+
+@app.exception_handler(material_filter_store.MaterialFilterError)
+async def material_filter_error_handler(_: Request, exc) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@app.exception_handler(material_filter_files.MaterialFilterFileError)
+async def material_filter_file_error_handler(_: Request, exc) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+    )
 
 
 @app.exception_handler(StorageError)

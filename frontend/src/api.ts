@@ -18,6 +18,13 @@ import type {
   WholeImageVersion,
   PosterEditBatch,
   PosterEditTask,
+  MaterialFilterDefaults,
+  MaterialFilterEvaluation,
+  MaterialFilterFolder,
+  MaterialFilterFolderCreateResult,
+  MaterialFilterResultsPage,
+  MaterialFilterRun,
+  MaterialFilterScheme,
 } from './types'
 
 
@@ -555,3 +562,202 @@ export async function getPosterEdit(taskId: string): Promise<PosterEditTask> {
  return parseResponse<PosterEditTask>(response)
 }
 
+
+/* --- Local SMB material filtering ---------------------------------------- */
+
+export type MaterialFilterSchemePayload = {
+  name: string
+  rules?: Array<{ id: string; text: string; interpretation: string }>
+  recursive?: boolean
+  output_root?: string
+  model?: string
+}
+
+export async function listMaterialFilterFolders(): Promise<MaterialFilterFolder[]> {
+  const page = await apiFetch('/api/material-filters/folders')
+  const body = await parseResponse<{ items: MaterialFilterFolder[] }>(page)
+  return body.items ?? []
+}
+
+export async function addMaterialFilterFolder(input: string): Promise<MaterialFilterFolderCreateResult> {
+  return parseResponse<MaterialFilterFolderCreateResult>(await apiFetch('/api/material-filters/folders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input }),
+  }))
+}
+
+export async function deleteMaterialFilterFolder(
+  folderId: string,
+  purgeLocal = false,
+): Promise<{ deleted: string; schemes: number; evaluations: number }> {
+  const query = purgeLocal ? '?purge_local=true' : ''
+  return parseResponse<{ deleted: string; schemes: number; evaluations: number }>(await apiFetch(
+    `/api/material-filters/folders/${encodeURIComponent(folderId)}${query}`,
+    { method: 'DELETE' },
+  ))
+}
+
+export async function renameMaterialFilterFolder(
+  folderId: string,
+  displayName: string,
+): Promise<MaterialFilterFolder> {
+  return parseResponse<MaterialFilterFolder>(await apiFetch(
+    `/api/material-filters/folders/${encodeURIComponent(folderId)}`,
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ display_name: displayName }) },
+  ))
+}
+
+export async function listMaterialFilterSchemes(folderId: string): Promise<MaterialFilterScheme[]> {
+  const body = await parseResponse<{ items: MaterialFilterScheme[] }>(await apiFetch(
+    `/api/material-filters/folders/${encodeURIComponent(folderId)}/schemes`,
+  ))
+  return body.items ?? []
+}
+
+export async function createMaterialFilterScheme(
+  folderId: string,
+  payload: MaterialFilterSchemePayload,
+): Promise<MaterialFilterScheme> {
+  return parseResponse<MaterialFilterScheme>(await apiFetch(
+    `/api/material-filters/folders/${encodeURIComponent(folderId)}/schemes`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ))
+}
+
+export async function getMaterialFilterScheme(schemeId: string): Promise<MaterialFilterScheme> {
+  return parseResponse<MaterialFilterScheme>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}`,
+  ))
+}
+
+export async function cloneMaterialFilterScheme(
+  schemeId: string,
+  payload: { name?: string; rules?: MaterialFilterSchemePayload['rules']; recursive?: boolean },
+): Promise<MaterialFilterScheme> {
+  return parseResponse<MaterialFilterScheme>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/clone`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ))
+}
+
+export async function getMaterialFilterDefaults(): Promise<MaterialFilterDefaults> {
+  return parseResponse<MaterialFilterDefaults>(await apiFetch('/api/material-filters/defaults'))
+}
+
+export async function startMaterialFilterRun(
+  schemeId: string,
+  requestId: string,
+  limit?: number,
+): Promise<MaterialFilterRun> {
+  return parseResponse<MaterialFilterRun>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/runs`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(limit ? { request_id: requestId, limit } : { request_id: requestId }),
+    },
+  ))
+}
+
+export async function getMaterialFilterRun(runId: string): Promise<MaterialFilterRun> {
+  return parseResponse<MaterialFilterRun>(await apiFetch(
+    `/api/material-filters/runs/${encodeURIComponent(runId)}`,
+  ))
+}
+
+export async function resumeMaterialFilterRun(runId: string): Promise<MaterialFilterRun> {
+  return parseResponse<MaterialFilterRun>(await apiFetch(
+    `/api/material-filters/runs/${encodeURIComponent(runId)}/resume`,
+    { method: 'POST' },
+  ))
+}
+
+export async function retryMaterialFilterFailed(runId: string): Promise<MaterialFilterRun> {
+  return parseResponse<MaterialFilterRun>(await apiFetch(
+    `/api/material-filters/runs/${encodeURIComponent(runId)}/retry-failed`,
+    { method: 'POST' },
+  ))
+}
+
+export type MaterialFilterSort = 'judged' | 'name' | 'path'
+
+export async function listMaterialFilterResults(
+  schemeId: string,
+  options: { status?: string; q?: string; skip?: number; limit?: number; sort?: MaterialFilterSort } = {},
+): Promise<MaterialFilterResultsPage> {
+  const params = new URLSearchParams({
+    status: options.status ?? 'all',
+    q: options.q ?? '',
+    skip: String(options.skip ?? 0),
+    limit: String(options.limit ?? 24),
+    sort: options.sort ?? 'judged',
+  })
+  return parseResponse<MaterialFilterResultsPage>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/results?${params.toString()}`,
+  ))
+}
+
+export async function updateMaterialFilterMetadata(
+  evaluationId: string,
+  payload: { display_name?: string; tags?: string[] },
+): Promise<MaterialFilterEvaluation> {
+  return parseResponse<MaterialFilterEvaluation>(await apiFetch(
+    `/api/material-filters/evaluations/${encodeURIComponent(evaluationId)}/metadata`,
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ))
+}
+
+export async function setMaterialFilterPick(
+  evaluationId: string,
+  picked: boolean,
+): Promise<MaterialFilterEvaluation> {
+  return parseResponse<MaterialFilterEvaluation>(await apiFetch(
+    `/api/material-filters/evaluations/${encodeURIComponent(evaluationId)}/pick`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ picked }) },
+  ))
+}
+
+export async function bulkPickMaterialFilter(
+  schemeId: string,
+  ids: string[],
+  picked: boolean,
+): Promise<{ updated: number; picked: boolean }> {
+  return parseResponse<{ updated: number; picked: boolean }>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/picks`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids, picked }) },
+  ))
+}
+
+export async function reviewMaterialFilterEvaluation(
+  evaluationId: string,
+  payload: { decision: 'pass' | 'fail'; source_sha256: string; request_id: string },
+): Promise<MaterialFilterEvaluation> {
+  return parseResponse<MaterialFilterEvaluation>(await apiFetch(
+    `/api/material-filters/evaluations/${encodeURIComponent(evaluationId)}/review`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ))
+}
+
+export async function recheckMaterialFilterEvaluation(
+  evaluationId: string,
+): Promise<MaterialFilterEvaluation> {
+  return parseResponse<MaterialFilterEvaluation>(await apiFetch(
+    `/api/material-filters/evaluations/${encodeURIComponent(evaluationId)}/recheck`,
+    { method: 'POST' },
+  ))
+}
+
+export async function exportPickedMaterialFilter(
+  schemeId: string,
+): Promise<{ directory: string; count: number; manifest: string }> {
+  return parseResponse<{ directory: string; count: number; manifest: string }>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/export-picked`,
+    { method: 'POST' },
+  ))
+}
+
+/** Absolute CSV download for the current merchant; the browser opens it directly. */
+export function materialFilterExportPath(schemeId: string): string {
+  return `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/export`
+}

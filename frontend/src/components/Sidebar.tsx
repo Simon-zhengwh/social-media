@@ -1,10 +1,22 @@
 import type { ReactElement } from 'react'
 
-export type AppView = 'whole' | 'poster-edit' | 'tasks' | 'assets' | 'brands' | 'agent-tests'
+export type AppView = 'whole' | 'poster-edit' | 'tasks' | 'assets' | 'brands' | 'agent-tests' | 'material-filters'
 
 type Props = {
   view: AppView
   onChange: (view: AppView) => void
+  /** Agent benchmarks stay available in local dev and are hidden on deployed sites. */
+  showAgentTests: boolean
+  /** SMB material filtering reads this machine's folders, so it is local-only too. */
+  showMaterialFilters: boolean
+}
+
+function FilterIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M3.2 4.6h13.6l-5.3 6v5.2l-3-1.5V10.6z" />
+    </svg>
+  )
 }
 
 function WholeImageIcon() {
@@ -73,6 +85,12 @@ const NAV_ITEMS: Array<{
       icon: WholeImageIcon,
     },
   {
+    key: 'material-filters',
+    label: '素材筛选',
+    hint: '本机 SMB 图片初筛',
+    icon: FilterIcon,
+  },
+  {
     key: 'tasks',
     label: '任务中心',
     hint: '生成记录与候选',
@@ -92,7 +110,12 @@ const NAV_ITEMS: Array<{
   },
 ]
 
-export default function Sidebar({ view, onChange }: Props) {
+export default function Sidebar({ view, onChange, showAgentTests, showMaterialFilters }: Props) {
+  const items = NAV_ITEMS.filter((item) => {
+    if (item.key === 'agent-tests') return showAgentTests
+    if (item.key === 'material-filters') return showMaterialFilters
+    return true
+  })
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -116,7 +139,7 @@ export default function Sidebar({ view, onChange }: Props) {
       </div>
 
       <nav className="sidebar-nav" aria-label="主导航">
-        {NAV_ITEMS.map((item) => {
+        {items.map((item) => {
           const Icon = item.icon
           return (
             <button

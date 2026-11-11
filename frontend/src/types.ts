@@ -440,3 +440,117 @@ export type PosterEditBatch = {
  updated_at: string
 }
 
+
+export type MaterialFilterRule = {
+  id: string
+  text: string
+  interpretation: string
+}
+
+export type MaterialFilterFolder = {
+  id: string
+  display_name: string
+  original_input: string
+  source_root: string
+  created_at: string
+}
+
+export type MaterialFilterFolderCreateResult = MaterialFilterFolder & { created: boolean }
+
+export type MaterialFilterDecision = 'pass' | 'fail' | 'uncertain' | 'error'
+
+export type MaterialFilterCounters = {
+  scanned: number
+  added: number
+  changed: number
+  skipped: number
+  passed: number
+  failed: number
+  uncertain: number
+  errors: number
+  copied: number
+  copy_errors: number
+}
+
+export type MaterialFilterRunStatus = 'queued' | 'running' | 'succeeded' | 'interrupted' | 'failed'
+
+export type MaterialFilterRun = {
+  id: string
+  scheme_id: string
+  status: MaterialFilterRunStatus
+  limit: number | null
+  counters: MaterialFilterCounters
+  error: string | null
+  item_errors: Array<{ path: string; message: string; at: string }>
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export type MaterialFilterScheme = {
+  id: string
+  folder_id: string
+  name: string
+  recursive: boolean
+  rules: MaterialFilterRule[]
+  output_root: string
+  model: string
+  prompt_version: string
+  active_run_id: string | null
+  created_at: string
+  last_run?: MaterialFilterRun | null
+}
+
+export type MaterialFilterRuleVerdict = {
+  id: string
+  verdict: 'pass' | 'fail' | 'uncertain'
+  reason: string
+}
+
+export type MaterialFilterEvaluation = {
+  id: string
+  scheme_id: string
+  file_id: string
+  display_name: string
+  original_name: string
+  relative_path: string
+  category: string
+  tags: string[]
+  decision: MaterialFilterDecision
+  model_decision: MaterialFilterDecision | null
+  human_decision: 'pass' | 'fail' | null
+  effective_decision: MaterialFilterDecision
+  manual_pick: boolean
+  picked_at: string | null
+  description: string
+  rules: MaterialFilterRuleVerdict[]
+  model: string | null
+  source_sha256: string
+  source_size: number
+  copy_status: 'none' | 'copied' | 'error'
+  copy_error: string | null
+  uat_asset_id: string | null
+  uat_asset_url: string | null
+  uat_synced_at: string | null
+  uat_sync_error: string | null
+  output_name: string | null
+  error: string | null
+  preview_url: string | null
+  download_url: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type MaterialFilterResultsPage = {
+  items: MaterialFilterEvaluation[]
+  total: number
+  skip: number
+  limit: number
+  counts: Record<string, number>
+}
+
+export type MaterialFilterDefaults = {
+  rules: MaterialFilterRule[]
+  model: string
+  output_root: string
+}
