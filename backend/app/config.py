@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     material_filter_max_files_per_run: int = 2000
     material_filter_max_source_bytes: int = 40_000_000
     material_filter_model_image_max_side: int = 1536
+    # Deployed asset library used by the in-page "sync to UAT" button.
+    material_filter_uat_base_url: str = "https://social-media.connexup-uat.net"
+    material_filter_uat_max_body_mb: float = 9.0
+    material_filter_uat_cookie: str = ""
 
     am_base_url: str = "https://am.connexup-uat.net"
     am_timeout_seconds: int = 30

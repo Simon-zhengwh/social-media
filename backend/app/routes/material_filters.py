@@ -18,6 +18,7 @@ from app.api_paths import merchant_base
 from app.middleware import is_local_bypass
 from app.request_context import request_db, request_merchant_id
 from app.services import material_filter_runner as runner
+from app.services import material_filter_uat_sync as uat_sync
 from app.services import material_filters as store
 from app.services.material_filters import MaterialFilterError
 from app.time_utils import utc_iso
@@ -63,6 +64,14 @@ class ReviewPayload(BaseModel):
     decision: str
     source_sha256: str = ""
     request_id: str = ""
+
+
+class SyncUatPayload(BaseModel):
+    # AM Console session for the deployed site; never persisted server-side.
+    cookie: str = ""
+    force: bool = False
+    limit: int = Field(default=0, ge=0, le=500)
+    dry_run: bool = False
 
 
 class MetadataPayload(BaseModel):
@@ -195,6 +204,7 @@ def evaluation_out(request: Request, doc: dict[str, Any]) -> dict[str, Any]:
         "uat_asset_url": doc.get("uat_asset_url"),
         "uat_synced_at": utc_iso(doc.get("uat_synced_at")),
         "uat_sync_error": doc.get("uat_sync_error"),
+        "uat_recompressed": bool(doc.get("uat_recompressed")),
         "copy_error": doc.get("copy_error"),
         "output_name": doc.get("output_name"),
         "error": doc.get("error"),
@@ -456,6 +466,30 @@ def download_evaluation(request: Request, evaluation_id: str) -> FileResponse:
         media_type="application/octet-stream",
         filename=evaluation.get("output_name") or path.name,
     )
+
+
+@router.post("/schemes/{scheme_id}/sync-uat", status_code=202)
+def start_uat_sync(request: Request, scheme_id: str, payload: SyncUatPayload) -> dict[str, Any]:
+    _require_local(request)
+    db = request_db(request)
+    scheme = store.get_scheme(db, scheme_id)
+    settings = request.app.state.settings
+    sync = uat_sync.start_sync(
+        db,
+        settings,
+        scheme,
+        cookie=payload.cookie or settings.material_filter_uat_cookie,
+        force=payload.force,
+        limit=payload.limit,
+        dry_run=payload.dry_run,
+    )
+    return uat_sync.sync_out(sync)
+
+
+@router.get("/syncs/{sync_id}")
+def get_uat_sync(request: Request, sync_id: str) -> dict[str, Any]:
+    _require_local(request)
+    return uat_sync.sync_out(uat_sync.get_sync(request_db(request), sync_id))
 
 
 @router.post("/schemes/{scheme_id}/export-picked")

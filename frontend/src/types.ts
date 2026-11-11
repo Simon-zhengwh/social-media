@@ -50,6 +50,8 @@ export type BrandStyle = {
   note: string
   is_default: boolean
   cover_url: string | null
+  // The list endpoint ships every reference so the style picker can preview them all.
+  reference_images?: BrandReferenceImage[]
   logo_keywords: string[]
   colors: BrandColor[]
   logo_asset_ids: string[]
@@ -255,6 +257,7 @@ export type WholeImageTask = {
     style_reference_asset_ids?: string[]
     candidate_count?: number
     candidate_batch_id?: string | null
+    generation_workspace_id?: string | null
     candidate_index?: number
     platform_id?: string | null
     placement_id?: string | null
@@ -533,6 +536,7 @@ export type MaterialFilterEvaluation = {
   uat_asset_url: string | null
   uat_synced_at: string | null
   uat_sync_error: string | null
+  uat_recompressed: boolean
   output_name: string | null
   error: string | null
   preview_url: string | null
@@ -547,6 +551,36 @@ export type MaterialFilterResultsPage = {
   skip: number
   limit: number
   counts: Record<string, number>
+}
+
+export type MaterialFilterSync = {
+  id: string
+  scheme_id: string
+  status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed'
+  dry_run: boolean
+  counters: {
+    total: number
+    done: number
+    uploaded: number
+    compressed: number
+    linked: number
+    failed: number
+  }
+  current: string
+  error: string | null
+  items: Array<{
+    name: string
+    status: 'uploaded' | 'linked' | 'failed' | 'planned'
+    asset_name?: string
+    asset_id?: string
+    compressed?: boolean
+    tag_error?: string | null
+    message?: string
+    renamed?: boolean
+  }>
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
 }
 
 export type MaterialFilterDefaults = {

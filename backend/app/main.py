@@ -31,7 +31,8 @@ from app.services.object_store import create_object_store
 from app.services import original_replacement_runner
 from app.services import agent_tests as agent_test_service
 from app.services import maintenance, storage, whole_image as whole_image_service
-from app.services import material_filter_files, material_filters as material_filter_store
+from app.services import material_filter_files, material_filter_uat_sync
+from app.services import material_filters as material_filter_store
 from app.services.am_client import AMClient
 from app.services.core_ai import CoreAIClient
 from app.services.media_object_store import create_merchant_store
@@ -54,6 +55,7 @@ def _initialize_indexes(db) -> None:
     db.merchant_logos.create_index([("merchant_id", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("created_at", -1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.candidate_batch_id", 1), ("input.candidate_index", 1)])
+    db.whole_tasks.create_index([("merchant_id", 1), ("input.generation_workspace_id", 1), ("created_at", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.product_asset_ids", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.style_reference_asset_ids", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.logo_asset_id", 1)])
@@ -101,6 +103,10 @@ def _initialize_indexes(db) -> None:
     db.material_filter_evaluations.create_index(
         [("merchant_id", 1), ("scheme_id", 1), ("copy_status", 1)]
     )
+    db.material_filter_syncs.create_index(
+        [("merchant_id", 1), ("scheme_id", 1), ("created_at", -1)]
+    )
+    db.material_filter_syncs.create_index([("status", 1), ("merchant_id", 1)])
 
 
 def _scoped_store(app: FastAPI, merchant_id: str, db):
@@ -223,6 +229,14 @@ app.include_router(platforms.router)
 
 @app.exception_handler(material_filter_store.MaterialFilterError)
 async def material_filter_error_handler(_: Request, exc) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@app.exception_handler(material_filter_uat_sync.SyncError)
+async def material_filter_sync_error_handler(_: Request, exc) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message}},

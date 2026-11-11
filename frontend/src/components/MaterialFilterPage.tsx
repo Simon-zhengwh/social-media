@@ -5,6 +5,8 @@ import {
   cloneMaterialFilterScheme,
   deleteMaterialFilterFolder,
   exportPickedMaterialFilter,
+  getMaterialFilterUatSync,
+  startMaterialFilterUatSync,
   createMaterialFilterScheme,
   getMaterialFilterDefaults,
   getMaterialFilterRun,
@@ -29,6 +31,7 @@ import type {
   MaterialFilterRule,
   MaterialFilterRun,
   MaterialFilterScheme,
+  MaterialFilterSync,
 } from '../types'
 import type { MaterialFilterSort } from '../api'
 import './MaterialFilterPage.css'
@@ -139,6 +142,18 @@ export default function MaterialFilterPage() {
   const [renameValue, setRenameValue] = useState('')
   const [deleting, setDeleting] = useState<{ purgeLocal: boolean } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [syncOpen, setSyncOpen] = useState(false)
+  const [syncCookie, setSyncCookie] = useState(() => {
+    try {
+      return window.localStorage.getItem('social-media.material-filter.uat-cookie') ?? ''
+    } catch {
+      return ''
+    }
+  })
+  const [syncRemember, setSyncRemember] = useState(true)
+  const [sync, setSync] = useState<MaterialFilterSync | null>(null)
+  const [syncBusy, setSyncBusy] = useState(false)
+  const [syncError, setSyncError] = useState<string | null>(null)
 
   const [defaults, setDefaults] = useState<MaterialFilterDefaults | null>(null)
   const [schemeForm, setSchemeForm] = useState<{
@@ -382,6 +397,35 @@ export default function MaterialFilterPage() {
     }
   }, [run, loadDetail, loadResults])
 
+  useEffect(() => {
+    if (!sync || (sync.status !== 'queued' && sync.status !== 'running')) return
+    const syncId = sync.id
+    let cancelled = false
+    const timer = window.setInterval(() => {
+      void getMaterialFilterUatSync(syncId)
+        .then((next) => {
+          if (cancelled) return
+          setSync(next)
+          if (next.status !== 'queued' && next.status !== 'running') {
+            window.clearInterval(timer)
+            setNotice(
+              `同步结束：上传 ${next.counters.uploaded}，已存在关联 ${next.counters.linked}，失败 ${next.counters.failed}`,
+            )
+            if (activeSchemeId) void loadResults(activeSchemeId, status, search)
+          }
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return
+          setSyncError(message(error))
+          window.clearInterval(timer)
+        })
+    }, 2000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [sync, activeSchemeId, status, search, loadResults])
+
   const selectFolder = (folderId: string) => {
     if (folderId === activeFolderId) return
     setActiveFolderId(folderId)
@@ -462,6 +506,36 @@ export default function MaterialFilterPage() {
       setFolderError(message(error))
     } finally {
       setFolderBusy(false)
+    }
+  }
+
+  const startSync = async (dryRun: boolean) => {
+    if (!detail) return
+    const cookie = syncCookie.trim()
+    if (!cookie) {
+      setSyncError('请先粘贴 AM 会话 Cookie（AMSessionId=…）')
+      return
+    }
+    if (syncRemember) {
+      try {
+        window.localStorage.setItem('social-media.material-filter.uat-cookie', cookie)
+      } catch {
+        // Private mode: keep the cookie only for this page session.
+      }
+    }
+    setSyncBusy(true)
+    setSyncError(null)
+    try {
+      const started = await startMaterialFilterUatSync(detail.id, { cookie, dry_run: dryRun })
+      setSync(started)
+      if (dryRun) {
+        setNotice(`已预览 ${started.counters.total} 张的目标文件名`)
+        if (activeSchemeId) void loadResults(activeSchemeId, status, search)
+      }
+    } catch (error: unknown) {
+      setSyncError(message(error))
+    } finally {
+      setSyncBusy(false)
     }
   }
 
@@ -865,6 +939,18 @@ export default function MaterialFilterPage() {
                 >
                   试跑 5 张
                 </button>
+                <button
+                  type="button"
+                  className="mp-btn-secondary"
+                  onClick={() => {
+                    setSyncOpen((value) => !value)
+                    setSyncError(null)
+                  }}
+                  disabled={!detail}
+                  aria-expanded={syncOpen}
+                >
+                  同步到 UAT
+                </button>
                 <div className="mf-menu">
                   <button
                     type="button"
@@ -1068,6 +1154,126 @@ export default function MaterialFilterPage() {
               {runError ? <p className="mf-error">{runError}</p> : null}
               {run ? (
                 <RunProgress run={run} live={live} judged={judgedTotal} totals={live?.counts ?? counts} />
+              ) : null}
+            </div>
+          ) : null}
+
+          {detail && syncOpen ? (
+            <div className="mf-card mf-sync">
+              <div className="mf-sync-head">
+                <div>
+                  <span className="mf-kicker">同步到 UAT</span>
+                  <h3>把「已入选」照片上传到 UAT 资产库</h3>
+                </div>
+                <button
+                  type="button"
+                  className="mf-icon-button"
+                  aria-label="关闭同步面板"
+                  onClick={() => setSyncOpen(false)}
+                >
+                  ×
+                </button>
+              </div>
+              <p className="mf-hint">
+                只上传「已入选 + 已复制」且尚未同步的照片；使用你自己的 AM 会话，Cookie 只用于本次同步。
+              </p>
+              <label className="mf-sync-cookie">
+                AM 会话 Cookie
+                <input
+                  type="password"
+                  value={syncCookie}
+                  onChange={(event) => setSyncCookie(event.target.value)}
+                  placeholder="AMSessionId=…（浏览器 DevTools → Application → Cookies）"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <label className="mf-checkbox">
+                <input
+                  type="checkbox"
+                  checked={syncRemember}
+                  onChange={(event) => setSyncRemember(event.target.checked)}
+                />
+                记住到本机浏览器（仅本机，用于下次同步）
+              </label>
+              {syncError ? <p className="mf-error">{syncError}</p> : null}
+              <div className="mf-inline-actions">
+                <button
+                  type="button"
+                  className="mp-btn-secondary"
+                  onClick={() => void startSync(true)}
+                  disabled={syncBusy || sync?.status === 'running'}
+                >
+                  仅预览名称
+                </button>
+                <button
+                  type="button"
+                  className="mp-btn-primary"
+                  onClick={() => void startSync(false)}
+                  disabled={syncBusy || sync?.status === 'running'}
+                >
+                  {sync?.status === 'running' ? '同步中…' : '开始同步'}
+                </button>
+                {sync && (sync.status === 'succeeded' || sync.status === 'partial' || sync.status === 'failed') ? (
+                  <button type="button" className="mf-text-button" onClick={() => setSync(null)}>
+                    清除本次结果
+                  </button>
+                ) : null}
+              </div>
+
+              {sync ? (
+                <div className="mf-sync-progress">
+                  <div className="mf-progress">
+                    <div className="mf-progress-track">
+                      <span
+                        style={{
+                          width: `${
+                            sync.counters.total > 0
+                              ? Math.min(100, Math.round((sync.counters.done / sync.counters.total) * 100))
+                              : 0
+                          }%`,
+                        }}
+                      />
+                    </div>
+                    <div className="mf-progress-meta">
+                      <strong>
+                        {sync.counters.done} / {sync.counters.total}
+                      </strong>
+                      <span>上传 {sync.counters.uploaded}</span>
+                      <span>压缩 {sync.counters.compressed}</span>
+                      <span>已存在 {sync.counters.linked}</span>
+                      <span>失败 {sync.counters.failed}</span>
+                      {sync.current ? <span className="mf-progress-live">正在处理：{sync.current}</span> : null}
+                    </div>
+                  </div>
+                  {sync.error ? <p className="mf-error">{sync.error}</p> : null}
+                  {sync.items.length ? (
+                    <ul className="mf-sync-items">
+                      {sync.items
+                        .slice()
+                        .reverse()
+                        .map((item, index) => (
+                          <li key={`${item.name}-${index}`} className={`is-${item.status}`}>
+                            <strong>{item.name}</strong>
+                            {item.asset_name ? <span>{item.asset_name}</span> : null}
+                            <em>
+                              {item.status === 'uploaded'
+                                ? item.compressed
+                                  ? '已压缩上传'
+                                  : '已上传'
+                                : item.status === 'linked'
+                                  ? '已存在，已关联'
+                                  : item.status === 'planned'
+                                    ? item.renamed
+                                      ? '将重命名'
+                                      : '可上传'
+                                    : item.message || '失败'}
+                            </em>
+                          </li>
+                        ))}
+                    </ul>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           ) : null}

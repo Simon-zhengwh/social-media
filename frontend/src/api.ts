@@ -24,6 +24,7 @@ import type {
   MaterialFilterFolderCreateResult,
   MaterialFilterResultsPage,
   MaterialFilterRun,
+  MaterialFilterSync,
   MaterialFilterScheme,
 } from './types'
 
@@ -383,6 +384,7 @@ export type WholeImageTaskCreatePayload = {
   style_reference_asset_ids?: string[]
   candidate_count?: number
   candidate_batch_id?: string | null
+  generation_workspace_id?: string | null
   candidate_index?: number
   product_asset_ids?: string[]
   platform_id?: string | null
@@ -406,6 +408,16 @@ export async function createWholeImageTask(
 export async function listWholeImageTaskBatch(batchId: string): Promise<WholeImageTask[]> {
   const response = await apiFetch(`/api/whole-image/batches/${encodeURIComponent(batchId)}`)
   return parseResponse<WholeImageTask[]>(response)
+}
+
+export async function listWholeImageWorkspace(workspaceId: string): Promise<WholeImageTask[]> {
+  const response = await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/tasks`)
+  return parseResponse<WholeImageTask[]>(response)
+}
+
+export async function deleteWholeImageCandidate(taskId: string): Promise<void> {
+  const response = await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/candidate`, { method: 'DELETE' })
+  if (!response.ok) await parseResponse<unknown>(response)
 }
 
 export async function listWholeImageTaskGroups(options: {
@@ -745,6 +757,22 @@ export async function recheckMaterialFilterEvaluation(
   return parseResponse<MaterialFilterEvaluation>(await apiFetch(
     `/api/material-filters/evaluations/${encodeURIComponent(evaluationId)}/recheck`,
     { method: 'POST' },
+  ))
+}
+
+export async function startMaterialFilterUatSync(
+  schemeId: string,
+  payload: { cookie: string; force?: boolean; limit?: number; dry_run?: boolean },
+): Promise<MaterialFilterSync> {
+  return parseResponse<MaterialFilterSync>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/sync-uat`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ))
+}
+
+export async function getMaterialFilterUatSync(syncId: string): Promise<MaterialFilterSync> {
+  return parseResponse<MaterialFilterSync>(await apiFetch(
+    `/api/material-filters/syncs/${encodeURIComponent(syncId)}`,
   ))
 }
 
