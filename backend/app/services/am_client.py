@@ -133,6 +133,22 @@ class AMClient:
         )
         return self._media_library(payload, "AM 素材 Tag 更新响应格式无效")
 
+    def rename_media(
+        self,
+        cookie: str,
+        merchant_id: str,
+        media_library_id: str,
+        name: str,
+    ) -> dict[str, Any]:
+        """Rename one AM media-library record; bytes, key, url and tags stay untouched."""
+        payload = self._request(
+            "PUT",
+            f"/ajax/media-library/{quote(media_library_id, safe='')}/name",
+            cookie=cookie,
+            json={"merchant_id": merchant_id, "name": name},
+        )
+        return self._media_library(payload, "AM 素材改名响应格式无效")
+
     def upload_media(
         self,
         cookie: str,

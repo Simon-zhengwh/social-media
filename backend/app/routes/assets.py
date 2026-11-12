@@ -21,6 +21,11 @@ class AssetTagsUpdate(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=am_assets.MAX_ASSET_TAGS)
 
 
+class AssetNameUpdate(BaseModel):
+    # The name is display metadata; AM enforces the 256-character stem limit on its side too.
+    name: str = Field(min_length=1, max_length=300)
+
+
 def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
     merchant_id = str(doc.get("merchant_id") or "")
     return {
@@ -117,6 +122,30 @@ def update_asset_tags(
             request_merchant_id(request),
             asset_id,
             payload.tags,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="素材不存在") from exc
+    except AMClientError as exc:
+        raise am_http_error(exc) from exc
+
+
+@router.put("/{asset_id}/name")
+def update_asset_name(
+    asset_id: str,
+    payload: AssetNameUpdate,
+    request: Request,
+) -> dict[str, Any]:
+    bypass = is_local_bypass(request)
+    try:
+        return am_assets.rename_asset(
+            request_db(request),
+            None if bypass else getattr(request.app.state, "am", None),
+            request.state.am_cookie,
+            request_merchant_id(request),
+            asset_id,
+            payload.name,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

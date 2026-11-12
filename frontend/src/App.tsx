@@ -294,7 +294,8 @@ export default function App() {
     void loadAssets(assetQuery, true, assets.length, false, assetTagQuery)
   }
 
-  const handleTagsSaved = (asset: Asset) => {
+  // Tag and name edits both answer with the authoritative asset row.
+  const handleAssetSaved = (asset: Asset) => {
     setAssets((previous) => previous.map((item) => (item.id === asset.id ? asset : item)))
   }
 
@@ -450,7 +451,8 @@ export default function App() {
             uploading={uploadingAsset}
             onUpload={handleUploadAsset}
             onDeleted={handleDeleteAsset}
-            onTagsSaved={handleTagsSaved}
+            onTagsSaved={handleAssetSaved}
+            onNameSaved={handleAssetSaved}
           />
         )}
 

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ApiError, deleteAsset, updateAssetTags } from '../api'
+import { ApiError, deleteAsset, renameAsset, updateAssetTags } from '../api'
 import { MAX_ASSET_TAGS, normalizeTags } from '../assetTags'
 import type { Asset } from '../types'
 import { ZoomableImage } from './ImageLightbox'
@@ -23,6 +23,8 @@ type Props = {
   onDeleted: (assetId: string) => void
   /** A saved tag set replaces the card in place; the server response is authoritative. */
   onTagsSaved: (asset: Asset) => void
+  /** A renamed asset replaces the card in place; the server response is authoritative. */
+  onNameSaved: (asset: Asset) => void
 }
 
 function formatDate(value: string) {
@@ -46,6 +48,7 @@ export default function AssetLibrary({
   onUpload,
   onDeleted,
   onTagsSaved,
+  onNameSaved,
 }: Props) {
   // Null means "show the submitted filter"; typing only overrides it until the next search.
   const [keywordDraft, setKeywordDraft] = useState<string | null>(null)
@@ -58,6 +61,9 @@ export default function AssetLibrary({
   const [tagInput, setTagInput] = useState('')
   const [tagSaving, setTagSaving] = useState(false)
   const [tagError, setTagError] = useState<string | null>(null)
+  const [nameEditor, setNameEditor] = useState<{ asset: Asset; draft: string } | null>(null)
+  const [nameSaving, setNameSaving] = useState(false)
+  const [nameError, setNameError] = useState<string | null>(null)
 
   const keyword = keywordDraft ?? query
   const tag = tagDraftValue ?? tagQuery
@@ -137,6 +143,27 @@ export default function AssetLibrary({
   }
 
   const label = amMediaLibrary ? 'AM 素材' : '本地素材'
+
+  const saveName = async () => {
+    if (!nameEditor) return
+    const name = nameEditor.draft.trim()
+    if (!name) {
+      setNameError('素材名称不能为空')
+      return
+    }
+    setNameSaving(true)
+    setNameError(null)
+    try {
+      const saved = await renameAsset(nameEditor.asset.id, name)
+      onNameSaved(saved)
+      setNameEditor(null)
+    } catch (reason: unknown) {
+      // Keep the dialog open: the card must not claim a rename that AM rejected.
+      setNameError(reason instanceof Error ? reason.message : '保存名称失败，请稍后重试')
+    } finally {
+      setNameSaving(false)
+    }
+  }
 
   return (
     <section className="asset-page">
@@ -239,9 +266,24 @@ export default function AssetLibrary({
                 <div className="asset-card-head">
                   <span className="asset-date">{formatDate(asset.created_at)}</span>
                 </div>
-                <strong className="asset-name" title={asset.original_name}>
-                  {asset.original_name}
-                </strong>
+                {/* The rename affordance sits next to the name it edits. */}
+                <div className="asset-name-row">
+                  <strong className="asset-name" title={asset.original_name}>
+                    {asset.original_name}
+                  </strong>
+                  <button
+                    type="button"
+                    className="asset-rename-btn"
+                    title="重命名这张素材"
+                    aria-label={`重命名 ${asset.original_name}`}
+                    onClick={() => {
+                      setNameEditor({ asset, draft: asset.original_name })
+                      setNameError(null)
+                    }}
+                  >
+                    ✎
+                  </button>
+                </div>
                 <span className="asset-dims tnum">
                   {asset.width > 0 && asset.height > 0 ? `${asset.width} × ${asset.height}` : '尺寸由 AM/模型读取'}
                 </span>
@@ -356,6 +398,40 @@ export default function AssetLibrary({
               <button type="button" onClick={() => setTagEditor(null)} disabled={tagSaving} autoFocus>取消</button>
               <button type="button" className="is-primary" onClick={() => void saveTags()} disabled={tagSaving}>
                 {tagSaving ? '保存中…' : '保存 Tag'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {nameEditor ? (
+        <div
+          className="brand-delete-modal-backdrop"
+          onMouseDown={(event) => { if (event.target === event.currentTarget && !nameSaving) setNameEditor(null) }}
+        >
+          <div className="brand-delete-modal asset-tag-dialog" role="dialog" aria-modal="true" aria-labelledby="asset-name-title">
+            <strong id="asset-name-title">重命名素材</strong>
+            <p>只修改显示名称，图片内容和 Tag 不受影响。</p>
+            <input
+              className="mp-input asset-name-input"
+              value={nameEditor.draft}
+              maxLength={300}
+              disabled={nameSaving}
+              aria-label="素材名称"
+              autoFocus
+              onChange={(event) => setNameEditor({ asset: nameEditor.asset, draft: event.target.value })}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  void saveName()
+                }
+                if (event.key === 'Escape' && !nameSaving) setNameEditor(null)
+              }}
+            />
+            {nameError ? <div className="brand-duplicate-error">{nameError}</div> : null}
+            <div className="brand-delete-modal-actions">
+              <button type="button" onClick={() => setNameEditor(null)} disabled={nameSaving}>取消</button>
+              <button type="button" className="is-primary" onClick={() => void saveName()} disabled={nameSaving}>
+                {nameSaving ? '保存中…' : '保存名称'}
               </button>
             </div>
           </div>

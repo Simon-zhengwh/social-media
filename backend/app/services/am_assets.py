@@ -17,6 +17,8 @@ AM_ASSET_PREFIX = "am:"
 # AM rejects more than five tags per record and rewrites the whole array on update.
 MAX_ASSET_TAGS = 5
 MAX_TAG_LENGTH = 40
+# AM refuses names whose stem (the part before the last dot) is longer than this.
+MAX_ASSET_NAME_LENGTH = 256
 
 
 def is_am_asset_id(asset_id: str) -> bool:
@@ -36,6 +38,17 @@ def normalize_tags(tags: Iterable[Any]) -> list[str]:
     if len(result) > MAX_ASSET_TAGS:
         raise ValueError(f"每张素材最多 {MAX_ASSET_TAGS} 个 Tag")
     return result
+
+
+def normalize_name(raw: Any) -> str:
+    """Trim like AM does, and reject names AM would refuse before any request is made."""
+    name = str(raw or "").strip()
+    if not name:
+        raise ValueError("素材名称不能为空")
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    if len(stem) > MAX_ASSET_NAME_LENGTH:
+        raise ValueError(f"素材名称最长 {MAX_ASSET_NAME_LENGTH} 个字符")
+    return name
 
 
 def media_tags(media: dict[str, Any]) -> list[str]:
@@ -262,6 +275,56 @@ def update_tags(
     db.assets.update_one(
         {"_id": asset_id},
         {"$set": {"tags": normalized, "tags_updated_at": now}},
+    )
+    updated = db.assets.find_one({"_id": asset_id}) or document
+    return _local_item(merchant_id, updated)
+
+
+def rename_asset(
+    db: Any,
+    am: AMClient | None,
+    cookie: str,
+    merchant_id: str,
+    asset_id: str,
+    name: str,
+) -> dict[str, Any]:
+    """Rename one asset in AM (deployed) or in the local record (bypass).
+
+    AM owns the name of a registered record: writing only locally would fork the two
+    listings and break filename search, so the AM call happens first and a failure
+    leaves the local row untouched.
+    """
+    normalized = normalize_name(name)
+    now = datetime.now(timezone.utc)
+
+    if is_am_asset_id(asset_id):
+        media_id = asset_id[len(AM_ASSET_PREFIX):]
+        if am is None:
+            raise AMClientError(503, "am_unavailable", "本地模式不能修改 AM 素材的名称")
+        media = am.rename_media(cookie, merchant_id, media_id, normalized)
+        local = db.assets.find_one({"am_media_library_id": media_id})
+        if local is not None:
+            db.assets.update_one(
+                {"_id": local["_id"]},
+                {"$set": {"original_name": normalized, "name_updated_at": now}},
+            )
+            local = {**local, "original_name": normalized}
+        return _am_item(media, local)
+
+    document = db.assets.find_one({"_id": asset_id})
+    if document is None:
+        raise LookupError(asset_id)
+    media_id = str(document.get("am_media_library_id") or "")
+    if media_id and am is not None:
+        media = am.rename_media(cookie, merchant_id, media_id, normalized)
+        db.assets.update_one(
+            {"_id": asset_id},
+            {"$set": {"original_name": normalized, "name_updated_at": now}},
+        )
+        return _am_item(media, {**document, "original_name": normalized})
+    db.assets.update_one(
+        {"_id": asset_id},
+        {"$set": {"original_name": normalized, "name_updated_at": now}},
     )
     updated = db.assets.find_one({"_id": asset_id}) or document
     return _local_item(merchant_id, updated)

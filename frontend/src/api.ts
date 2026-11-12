@@ -363,6 +363,15 @@ export async function updateAssetTags(assetId: string, tags: string[]): Promise<
   return parseResponse<Asset>(response)
 }
 
+export async function renameAsset(assetId: string, name: string): Promise<Asset> {
+  const response = await apiFetch(`/api/assets/${encodeURIComponent(assetId)}/name`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  return parseResponse<Asset>(response)
+}
+
 export async function deleteAsset(assetId: string, force = false): Promise<void> {
   const query = force ? '?force=true' : ''
   const response = await apiFetch(`/api/assets/${encodeURIComponent(assetId)}${query}`, {

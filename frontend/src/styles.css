@@ -7504,6 +7504,37 @@ label.product-add.is-disabled {
   color: var(--color-secondary-600);
 }
 
+.asset-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.asset-name-row .asset-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.asset-rename-btn {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--color-neutral-400);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.asset-rename-btn:hover {
+  color: var(--color-secondary-600);
+}
+
+.asset-name-input {
+  width: 100%;
+  margin-top: 10px;
+}
+
 .asset-tag-dialog {
   width: min(460px, 100%);
 }
