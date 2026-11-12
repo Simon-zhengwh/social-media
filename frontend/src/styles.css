@@ -1745,8 +1745,49 @@ label.product-add.is-disabled {
   color: var(--color-primary-900);
 }
 
+.picker-search {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.picker-search .asset-search-group {
+  max-width: none;
+}
+
+.picker-search-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-neutral-400);
+  white-space: nowrap;
+}
+
+.picker-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid rgba(220, 38, 38, 0.24);
+  border-radius: 12px;
+  background: rgba(254, 242, 242, 0.9);
+  color: #b91c1c;
+  font-size: 11.5px;
+}
+
+.picker-more {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 2px;
+}
+
 .picker-grid {
   display: grid;
+  /* The grid is the dialog's scroller: it must shrink before the dialog overflows. */
+  flex: 1 1 auto;
+  min-height: 0;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 12px;
   overflow-y: auto;
