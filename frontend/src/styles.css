@@ -1752,8 +1752,8 @@ label.product-add.is-disabled {
 }
 
 .modal.modal-picker .picker-grid {
-  /* Fewer, wider cards: five tag chips have to stay readable without squeezing. */
-  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  /* Seven cards per row on a wide screen; chips wrap rather than shrink, so tags stay legible. */
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
 }
 
 .picker-search {
@@ -1889,7 +1889,7 @@ label.product-add.is-disabled {
   flex: 0 0 auto;
   max-width: 100%;
   overflow: hidden;
-  padding: 1px 7px;
+  padding: 1px 6px;
   border-radius: 999px;
   background: var(--color-secondary-50);
   color: var(--color-secondary-600);

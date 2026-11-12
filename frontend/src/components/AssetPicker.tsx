@@ -173,7 +173,6 @@ export default function AssetPicker({
         <div className="modal-head">
           <div>
             <span className="eyebrow">资产选择</span>
-            <h2>{multi ? `${title}（可多选）` : title}</h2>
             <p>
               {multi
                 ? `最多选择 ${max} 张，由 AI 自由组合。`
