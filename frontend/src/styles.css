@@ -1745,6 +1745,16 @@ label.product-add.is-disabled {
   color: var(--color-primary-900);
 }
 
+/* The asset picker is the one dialog that shows a browsing grid: give it the screen. */
+.modal.modal-picker {
+  width: min(1440px, 96vw);
+  max-height: 92vh;
+}
+
+.modal.modal-picker .picker-grid {
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+}
+
 .picker-search {
   display: flex;
   align-items: center;
@@ -1864,6 +1874,28 @@ label.product-add.is-disabled {
 .picker-meta {
   font-size: 10px;
   color: var(--color-neutral-400);
+}
+
+/* Tags stay on one line so cards keep an even height in the grid. */
+.picker-tags {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  max-height: 17px;
+  overflow: hidden;
+}
+
+.picker-tag {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-secondary-50);
+  color: var(--color-secondary-600);
+  font-size: 9.5px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .picker-empty {

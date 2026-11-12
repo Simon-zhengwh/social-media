@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { listAssetPage, type AssetPage } from '../api'
 import type { Asset } from '../types'
 
-/** Three full rows on a wide dialog; small enough that the first page paints fast. */
-const PAGE_SIZE = 24
+/** Rows that fill a wide dialog without making the first paint slow. */
+const PAGE_SIZE = 36
 /** Start the next page before the operator reaches the very last row. */
 const LOAD_MORE_THRESHOLD = 200
 
@@ -164,7 +164,7 @@ export default function AssetPicker({
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div
-        className="modal"
+        className="modal modal-picker"
         role="dialog"
         aria-modal="true"
         aria-label={title}
@@ -299,6 +299,15 @@ export default function AssetPicker({
                   <span className="picker-meta">
                     {asset.width} × {asset.height}
                   </span>
+                  {(asset.tags ?? []).length > 0 ? (
+                    <span className="picker-tags">
+                      {(asset.tags ?? []).map((tag) => (
+                        <span className="picker-tag" key={tag} title={tag}>
+                          {tag}
+                        </span>
+                      ))}
+                    </span>
+                  ) : null}
                 </button>
               )
             })}
