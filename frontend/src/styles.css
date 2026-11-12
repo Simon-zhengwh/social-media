@@ -1752,7 +1752,8 @@ label.product-add.is-disabled {
 }
 
 .modal.modal-picker .picker-grid {
-  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  /* Fewer, wider cards: five tag chips have to stay readable without squeezing. */
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
 }
 
 .picker-search {
@@ -1877,23 +1878,25 @@ label.product-add.is-disabled {
 }
 
 /* Tags stay on one line so cards keep an even height in the grid. */
+/* Tags keep their own width so a full set stays legible under each card. */
 .picker-tags {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   min-width: 0;
-  max-height: 17px;
-  overflow: hidden;
 }
 
 .picker-tag {
+  /* Chips keep their natural width and wrap instead of shrinking into ellipses. */
+  flex: 0 0 auto;
   max-width: 100%;
   overflow: hidden;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border-radius: 999px;
   background: var(--color-secondary-50);
   color: var(--color-secondary-600);
-  font-size: 9.5px;
-  line-height: 1.5;
+  font-size: 10px;
+  line-height: 1.6;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
