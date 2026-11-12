@@ -296,9 +296,6 @@ export default function AssetPicker({
                   <span className="picker-name" title={asset.original_name}>
                     {asset.original_name}
                   </span>
-                  <span className="picker-meta">
-                    {asset.width} × {asset.height}
-                  </span>
                   {(asset.tags ?? []).length > 0 ? (
                     <span className="picker-tags">
                       {(asset.tags ?? []).map((tag) => (
