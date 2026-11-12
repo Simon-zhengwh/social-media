@@ -1752,8 +1752,8 @@ label.product-add.is-disabled {
 }
 
 .modal.modal-picker .picker-grid {
-  /* Seven cards per row on a wide screen; chips wrap rather than shrink, so tags stay legible. */
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  /* Eight cards per row on a wide screen; chips wrap rather than shrink, so tags stay legible. */
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
 }
 
 .picker-search {
