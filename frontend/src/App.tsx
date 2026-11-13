@@ -459,16 +459,11 @@ export default function App() {
           />
         )}
 
-        {/* Views without a hint line render no footer at all, so no empty margin is left behind. */}
-        {visibleView === 'brands' || visibleView === 'assets' ? null : (
+        {/* Only the local-only and archive pages carry a hint line; other views render no footer
+            at all, so no empty margin is left behind. */}
+        {visibleView === 'tasks' || visibleView === 'material-filters' || visibleView === 'agent-tests' ? (
           <footer className="app-footer">
-            {visibleView === 'whole' ? (
-              <>
-                <span>提示词直出整图 · 模型直接改图，每轮结果自动保存为新版本</span>
-                <span className="footer-sep" aria-hidden="true" />
-                <span>原照替换结果需确认后应用</span>
-              </>
-            ) : visibleView === 'tasks' ? (
+            {visibleView === 'tasks' ? (
               <span>任务按候选批次归档 · 点击封面回到工作台继续编辑</span>
             ) : visibleView === 'material-filters' ? (
               <span>SMB 严格只读 · 通过的原图复制到本机输出目录 · 待复核需人工确认</span>
@@ -476,7 +471,7 @@ export default function App() {
               <span>原始输入 · 独立运行 · Trace 与耗时记录</span>
             )}
           </footer>
-        )}
+        ) : null}
       </div>
     </div>
   )

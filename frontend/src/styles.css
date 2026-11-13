@@ -2240,12 +2240,6 @@ label.product-add.is-disabled {
   color: var(--color-neutral-400);
 }
 
-.footer-sep {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--color-neutral-300);
-}
 
 @keyframes fade-up {
   from {
