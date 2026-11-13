@@ -1,11 +1,41 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { defaultModelCounts, restoreModelCounts, mergeCandidates, modelGenerationState, submitModelRound,
-  candidateForModel, normalizeModelCount } from '../src/modelGeneration.ts'
+  candidateForModel, normalizeModelCount, imageModelLabel } from '../src/modelGeneration.ts'
 import type { WholeImageTask } from '../src/types.ts'
 
 const gpt = 'gpt-image-2.5-sunburst'
 const seed = 'seedream-5-pro-image-to-image'
+const minimax = 'minimax-h3-image-edit'
+const legacyMinimax = 'minimax-h3-image'
+
+test('MiniMax aliases share their label and candidates without mixing other models', () => {
+  const tasks = [candidate('legacy-ready', legacyMinimax), candidate('new-queued', minimax, 'new', 'queued'), candidate('gpt')]
+  assert.equal(imageModelLabel(legacyMinimax), 'MiniMax H3')
+  assert.equal(candidateForModel(tasks, minimax)?.id, 'legacy-ready')
+  assert.equal(candidateForModel(tasks, minimax, 'new-queued')?.id, 'new-queued')
+  assert.equal(candidateForModel(tasks, legacyMinimax, 'new-queued')?.id, 'new-queued')
+  assert.equal(candidateForModel(tasks, minimax, 'gpt')?.id, 'legacy-ready')
+})
+
+test('legacy MiniMax counts and running tasks belong to the canonical model', () => {
+  const old = candidate('legacy-running', legacyMinimax, 'old', 'running', 2)
+  assert.equal(restoreModelCounts([old])[minimax], 2)
+  assert.equal(restoreModelCounts([old])[legacyMinimax], undefined)
+  const tasks = [old, candidate('new-ready', minimax, 'new', 'succeeded', 1)]
+  const expected = { running: true, completed: 1, total: 1, hasHistory: true }
+  assert.deepEqual(modelGenerationState(tasks, minimax), expected)
+  assert.deepEqual(modelGenerationState(tasks, legacyMinimax), expected)
+})
+
+test('new MiniMax generation requests always use the canonical model id', async () => {
+  const requested: string[] = []
+  await submitModelRound({ prompt: 'test' }, legacyMinimax, 1, 'workspace', 'round', async payload => {
+    requested.push(payload.image_model!)
+    return candidate('new', payload.image_model)
+  })
+  assert.deepEqual(requested, [minimax])
+})
 test('numeric counts stay whole and within zero to three', () => {
   assert.deepEqual(['', '0', '2', '9', '-2', '1.5', 'invalid'].map(normalizeModelCount), [0, 0, 2, 3, 0, 1, 0])
 })

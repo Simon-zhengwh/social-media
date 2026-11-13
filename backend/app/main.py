@@ -45,6 +45,11 @@ logger = logging.getLogger(__name__)
 
 
 def _initialize_indexes(db) -> None:
+    db.material_filter_groups.create_index([("merchant_id", 1), ("scheme_id", 1), ("version", 1), ("count", -1)])
+    db.material_filter_groups.create_index([("merchant_id", 1), ("folder_id", 1)])
+    db.material_filter_attempts.create_index([("merchant_id", 1), ("run_id", 1), ("file_id", 1)], unique=True)
+    db.material_filter_attempts.create_index([("merchant_id", 1), ("scheme_id", 1)])
+    db.material_filter_attempts.create_index([("merchant_id", 1), ("scheme_id", 1), ("file_id", 1), ("source_sha256", 1), ("created_at", -1)])
     db.assets.create_index([("merchant_id", 1), ("sha256", 1)])
     db.assets.create_index([("merchant_id", 1), ("created_at", -1)])
     db.brands.create_index([("merchant_id", 1), ("created_at", 1)])
@@ -150,13 +155,17 @@ def _resume_poster_edits(app: FastAPI) -> None:
 
 
 def _mark_material_filter_runs_interrupted(app: FastAPI) -> None:
-    """Leftover scans are interrupted once; the operator resumes them explicitly."""
+    """Release leftover scans and uploads; the operator resumes them explicitly."""
     raw = app.state.raw_db
-    merchant_ids = raw.material_filter_runs.distinct(
+    merchant_ids = set(raw.material_filter_runs.distinct(
         "merchant_id", {"status": {"$in": ["queued", "running"]}}
-    )
+    )) | set(raw.material_filter_syncs.distinct(
+        "merchant_id", {"status": {"$in": ["queued", "running"]}}
+    ))
     for merchant_id in sorted(str(value) for value in merchant_ids if value):
-        material_filter_store.mark_scheme_interrupted(ScopedDatabase(raw, merchant_id))
+        db = ScopedDatabase(raw, merchant_id)
+        material_filter_store.mark_scheme_interrupted(db)
+        material_filter_uat_sync.mark_interrupted(db)
 
 
 def _resume_agent_tests(app: FastAPI) -> None:

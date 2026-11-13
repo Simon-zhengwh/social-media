@@ -1,5 +1,5 @@
 import type { ImageModel, WholeImageTask } from '../types'
-import { IMAGE_MODEL_OPTIONS } from '../imageModels'
+import { IMAGE_MODEL_OPTIONS, normalizeImageModel } from '../imageModels'
 import { modelGenerationState, imageModelLabel, type ModelCounts, type ModelSubmission } from '../modelGeneration'
 
 type Props = {
@@ -16,8 +16,10 @@ type Props = {
 
 export default function ImageModelSelector({ counts, tasks, submissions, disabled, onChange, onGenerate,
   selectedModel, selectionDisabled, onSelectModel }: Props) {
-  const historicalModels = [...new Set(tasks.flatMap(task => task.input.image_model &&
-    !IMAGE_MODEL_OPTIONS.some(option => option.value === task.input.image_model) ? [task.input.image_model] : []))]
+  const historicalModels = [...new Set(tasks.flatMap(task => {
+    const model = normalizeImageModel(task.input.image_model)
+    return IMAGE_MODEL_OPTIONS.some(option => option.value === model) ? [] : [model]
+  }))]
   const models = [...IMAGE_MODEL_OPTIONS, ...historicalModels.map(value => ({ value, label: imageModelLabel(value) }))]
   const available = IMAGE_MODEL_OPTIONS.some(option => option.value === selectedModel)
   const countOptions = (model: ImageModel) => (
@@ -52,6 +54,7 @@ export default function ImageModelSelector({ counts, tasks, submissions, disable
   }
   return (
     <div className="model-toolbar" aria-label="图片模型与生成">
+      <strong className="model-toolbar-label">图片模型</strong>
       <div className="model-toolbar-tabs" role="group" aria-label="查看模型候选">
         {models.map(option => (
           <button type="button" key={option.value} className={`model-view-button${selectedModel === option.value ? ' is-active' : ''}`}

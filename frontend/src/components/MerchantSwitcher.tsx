@@ -84,6 +84,10 @@ export default function MerchantSwitcher({ currentId, currentName }: Props) {
     }
     const url = new URL(window.location.href)
     url.searchParams.set('merchant_id', merchant.id)
+    // The target merchant restores its own tab session, never the previous merchant's task URL.
+    for (const key of ['whole', 'whole_workspace', 'whole_model', 'task', 'replacement', 'tab']) {
+      url.searchParams.delete(key)
+    }
     // A full navigation, so the next merchant's workspace cannot inherit this one's state.
     window.location.assign(url.toString())
   }

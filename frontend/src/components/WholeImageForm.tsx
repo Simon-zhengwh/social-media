@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import PlatformSelector from './PlatformSelector'
 import BrandModeSelector from './BrandModeSelector'
 import PromptField from './PromptField'
@@ -50,6 +51,7 @@ type Props = {
   onUploadProducts: (files: File[]) => void
   onRemoveProduct: (id: string) => void
   onPromptChange: (value: string, optimized?: boolean) => void
+  children?: ReactNode
 }
 
 export default function WholeImageForm({
@@ -89,6 +91,7 @@ export default function WholeImageForm({
   onUploadProducts,
   onRemoveProduct,
   onPromptChange,
+  children,
 }: Props) {
   const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId)
   const brandReady =
@@ -186,7 +189,7 @@ export default function WholeImageForm({
         onPromptChange={onPromptChange}
       />
 
-
+      {children}
     </section>
   )
 }

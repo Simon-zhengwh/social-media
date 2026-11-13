@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import type { WholeImageArtifact } from '../types'
 
 type Props = {
@@ -42,7 +43,9 @@ export default function WholeArtifactPreview({ artifact, onClose }: Props) {
   }
 
   const title = artifact.title || artifact.file_name
-  return (
+  // Portal to the body: the panel lives inside a sticky column, which would otherwise trap this
+  // fixed overlay below the page's sticky toolbars and clip it to that column.
+  return createPortal(
     <div
       className="version-preview-backdrop"
       role="dialog"
@@ -73,6 +76,7 @@ export default function WholeArtifactPreview({ artifact, onClose }: Props) {
           在编辑器里可拖动、缩放原照并导出 PNG；完全离线运行，不发起外部请求。
         </p>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

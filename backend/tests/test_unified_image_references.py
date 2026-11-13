@@ -32,7 +32,7 @@ def test_unified_reference_schema_is_opt_in_and_validates_ids(schema):
     assert schema(prompt="test").reference_asset_ids is None
     assert schema(prompt="test", reference_asset_ids=[]).reference_asset_ids == []
     assert schema(prompt="test", reference_asset_ids=[" a ", "b"]).reference_asset_ids == ["a", "b"]
-    for ids in [["a"] * 2, [""], [f"image-{i}" for i in range(7)]]:
+    for ids in [["a"] * 2, [""], [f"image-{i}" for i in range(16)]]:
         with pytest.raises(ValidationError):
             schema(prompt="test", reference_asset_ids=ids)
     assert WholeImageEditRequest(instruction="test", source_version_id="version").reference_mode == "legacy"
@@ -106,6 +106,45 @@ def test_unified_generation_uses_manual_order_and_unclassified_roles(settings, s
     ids = [image["asset_id"] for image in saved["model_input_latest"]["images"]]
     assert ids == [second, first, logo] + ([] if optimized else [brand_ref])
     assert [image["role"] for image in saved["model_input_latest"]["images"]][:2] == ["reference", "reference"]
+
+
+@pytest.mark.parametrize("optimized", [False, True])
+@pytest.mark.parametrize("reference_count", [1, 4, 6])
+def test_unified_generation_consolidates_roles_and_preserves_activity_facts_and_selected_logo(
+    settings, store, product_png, logo_png, optimized, reference_count,
+):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    reference_ids = [
+        asset(db, settings, store, product_png, f"reference-{i}.png")
+        for i in range(reference_count)
+    ]
+    logo = asset(db, settings, store, logo_png, "selected-logo.png")
+    user_prompt = "根据@图片1 的风格，使用其他参考图生成海报"
+    created = routes.create_task(WholeImageTaskCreate(
+        prompt=user_prompt, reference_asset_ids=reference_ids,
+        logo_asset_id=logo, brand_mode="none", platform_id="xiaohongshu",
+        prompt_optimized=optimized,
+    ), _request(db, settings, store, fake), BackgroundTasks())
+
+    service.run_generation(db, settings, store, fake, created["id"])
+
+    call = fake.edit_calls[-1]
+    prompt = call["prompt"]
+    assert prompt.count("用户参考图") == 1
+    assert prompt.count("用途由用户要求") == 1
+    assert "价格、各项日期及对应条件" in prompt
+    assert "风格参考的旧文案不带入" in prompt
+    assert f"图{reference_count + 1}：Logo" in prompt
+    assert "只出现一次" in prompt
+    assert "不反色或重绘" in prompt
+    assert "对比背景" in prompt
+    assert "同一商家旧标识以此替换，不重复叠加" in prompt
+    assert "街道名、入口位置及领取路线" in prompt
+    assert len(prompt) - len(user_prompt) < 900
+    assert prompt.endswith(user_prompt)
+    assert call["reference_names"] == [f"reference-{i}.png" for i in range(reference_count)] + ["selected-logo.png"]
+    assert [image["asset_id"] for image in db.whole_tasks.find_one({"_id": created["id"]})["model_input_latest"]["images"]] == reference_ids + [logo]
 
 
 def test_unified_refs_are_validated_in_current_merchant(settings, store, product_png):

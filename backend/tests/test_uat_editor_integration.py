@@ -159,6 +159,25 @@ def test_agent_status_index_supports_global_maintenance_without_table_scans():
     assert any(keys[:1] == ["status"] for keys in indexes)
 
 
+def test_startup_releases_material_syncs_for_all_merchants():
+    from app import main
+
+    raw = mongomock.MongoClient().db
+    for merchant_id in ("m1", "m2"):
+        raw.material_filter_syncs.insert_one({
+            "_id": merchant_id, "merchant_id": merchant_id, "status": "running",
+            "counters": {"uploaded": 89},
+        })
+    raw.material_filter_syncs.insert_one({"_id": "complete", "merchant_id": "m1", "status": "succeeded"})
+    app = SimpleNamespace(state=SimpleNamespace(raw_db=raw))
+
+    main._mark_material_filter_runs_interrupted(app)
+
+    assert raw.material_filter_syncs.find_one({"_id": "m1"})["status"] == "partial"
+    assert raw.material_filter_syncs.find_one({"_id": "m2"})["status"] == "partial"
+    assert raw.material_filter_syncs.find_one({"_id": "complete"})["status"] == "succeeded"
+
+
 def test_editor_endpoints_are_only_mounted_under_merchant_authentication():
     from app.main import app
 

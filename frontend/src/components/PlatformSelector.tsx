@@ -57,7 +57,6 @@ export default function PlatformSelector({
       ) : (
         <>
           <label className="platform-select-field">
-            <span>选择平台</span>
             <select
               value={selectedPlatformId}
               onChange={(event) => onPlatformChange(event.target.value)}
@@ -76,7 +75,6 @@ export default function PlatformSelector({
 
       {!selectedPlatform ? (
         <label className="platform-select-field ratio-select-field">
-          <span>画幅比例</span>
           <select
             value={selectedRatio}
             onChange={(event) => onRatioChange(event.target.value as Ratio)}
@@ -94,7 +92,6 @@ export default function PlatformSelector({
 
           {selectedPlatform ? (
             <label className="platform-select-field placement-select-field">
-              <span>发布用途</span>
               <select
                 value={selectedPlacement?.id ?? ''}
                 onChange={(event) => onPlacementChange(event.target.value)}

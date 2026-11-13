@@ -42,12 +42,14 @@ from app.config import get_settings  # noqa: E402
 from app.db import create_client  # noqa: E402
 from app.services import material_filter_files as files  # noqa: E402
 from app.services import material_filters as store  # noqa: E402
+from app.services.material_filter_uat_sync import (  # noqa: E402
+    BROWSER_UNSAFE_SUFFIXES,
+    fit_upload_bytes,
+    upload_suffix,
+)
 from app.services.scoped_db import ScopedDatabase  # noqa: E402
 
 DEFAULT_BASE_URL = "https://social-media.connexup-uat.net"
-import io  # noqa: E402
-
-from PIL import Image, ImageOps  # noqa: E402
 
 CONTENT_TYPES = {
     ".jpg": "image/jpeg",
@@ -94,7 +96,15 @@ def cookie_from_orca(base_url: str) -> str:
 def resolve_scheme(db, value: str) -> dict[str, Any]:
     scheme = db.material_filter_schemes.find_one({"_id": value})
     if scheme is None:
-        scheme = db.material_filter_schemes.find_one({"name": value})
+        matches = list(db.material_filter_schemes.find({"name": value}))
+        if len(matches) > 1:
+            listing = "\n".join(
+                f"  {item['_id']}  {item.get('created_at')}" for item in matches
+            )
+            raise SystemExit(
+                f"方案名「{value}」对应 {len(matches)} 个方案，请改用方案 ID：\n{listing}"
+            )
+        scheme = matches[0] if matches else None
     if scheme is None:
         raise SystemExit(f"找不到方案：{value}（可用 --list 查看）")
     return scheme
@@ -123,37 +133,16 @@ def local_copy_path(settings, scheme: dict[str, Any], evaluation: dict[str, Any]
     return target
 
 
-def _collect_names(client: httpx.Client, base_url: str, merchant_id: str, path: str) -> set[str]:
-    names: set[str] = set()
-    skip = 0
-    while True:
-        try:
-            response = client.get(
-                f"{base_url}/api/merchants/{merchant_id}{path}",
-                params={"skip": skip, "limit": 100},
-            )
-        except Exception:  # noqa: BLE001 - numbering falls back to what we already have
-            break
-        if response.status_code != 200:
-            break
-        payload = response.json()
-        items = payload if isinstance(payload, list) else payload.get("items") or []
-        for item in items:
-            name = str(item.get("original_name") or "").strip()
-            if name:
-                names.add(name.casefold())
-        total = payload.get("total") if isinstance(payload, dict) else None
-        skip += len(items)
-        if not items or len(items) < 100 or (total is not None and skip >= int(total)):
-            break
-    return names
-
-
 def existing_asset_names(client: httpx.Client, base_url: str, merchant_id: str) -> set[str]:
     """Names already visible in the deployed library: uploads plus AM media records."""
-    names = _collect_names(client, base_url, merchant_id, "/assets")
-    names |= _collect_names(client, base_url, merchant_id, "/am-assets")
-    return names
+    from app.services.material_filter_uat_sync import collect_names  # noqa: PLC0415
+
+    with httpx.Client(
+        base_url=base_url, headers=client.headers, timeout=120, follow_redirects=True
+    ) as scoped:
+        return collect_names(scoped, merchant_id, "/assets") | collect_names(
+            scoped, merchant_id, "/am-assets"
+        )
 
 
 def upload_name(row: dict[str, Any], suffix: str, used: set[str]) -> str:
@@ -168,32 +157,6 @@ def upload_name(row: dict[str, Any], suffix: str, used: set[str]) -> str:
         index += 1
     used.add(f"{candidate}{suffix}".casefold())
     return f"{candidate}{suffix}"
-
-
-def fit_upload_bytes(data: bytes, max_bytes: int) -> tuple[bytes, str, bool]:
-    """AM rejects request bodies near 10 MB, so oversized originals are re-encoded.
-
-    Returns (bytes, suffix, recompressed). Photos stay at their original pixel size
-    while quality is stepped down; only a still-too-large result is downscaled.
-    """
-    if max_bytes <= 0 or len(data) <= max_bytes:
-        return data, "", False
-    with Image.open(io.BytesIO(data)) as opened:
-        image = ImageOps.exif_transpose(opened).convert("RGB")
-    current = image
-    encoded = b""
-    for _ in range(6):
-        for quality in (92, 88, 84, 80, 76, 72, 68, 64):
-            buffer = io.BytesIO()
-            current.save(buffer, format="JPEG", quality=quality, optimize=True)
-            encoded = buffer.getvalue()
-            if len(encoded) <= max_bytes:
-                return encoded, ".jpg", True
-        current = current.resize(
-            (max(256, int(current.width * 0.85)), max(256, int(current.height * 0.85))),
-            Image.Resampling.LANCZOS,
-        )
-    return encoded, ".jpg", True
 
 
 def upload(
@@ -416,9 +379,10 @@ def main() -> int:
                 path = local_copy_path(settings, scheme, row)
                 raw = path.read_bytes()
                 max_file_bytes = int(args.max_body_mb * 1024 * 1024 * 3 / 4) if args.max_body_mb else 0
-                data, new_suffix, recompressed = fit_upload_bytes(raw, max_file_bytes)
-                suffix = new_suffix or (path.suffix.lower() or ".jpg")
-                file_name = upload_name(row, suffix, used_names)
+                data, new_suffix, recompressed = fit_upload_bytes(
+                    raw, max_file_bytes, force_jpeg=path.suffix.lower() in BROWSER_UNSAFE_SUFFIXES
+                )
+                file_name = upload_name(row, new_suffix or upload_suffix(path.suffix), used_names)
                 asset = upload(client, args.base_url, merchant_id, data, file_name=file_name)
                 asset_id = str(asset.get("id") or "")
                 tags = desired_tags(row, include_model=not args.no_model_tags)

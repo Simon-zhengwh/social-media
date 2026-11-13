@@ -23,7 +23,7 @@ const KINDS = [
 type Props = {
   onOpenTask: (taskId: string) => void
   onOpenReplacement: (taskId: string, wholeTaskId: string) => void
-  onCreate: () => void
+  newDesignHref: string
 }
 
 function errorMessage(error: unknown): string {
@@ -154,7 +154,7 @@ function TaskCard({
   )
 }
 
-export default function TaskCenter({ onOpenTask, onOpenReplacement, onCreate }: Props) {
+export default function TaskCenter({ onOpenTask, onOpenReplacement, newDesignHref }: Props) {
   const [filter, setFilter] = useState<WholeImageTaskGroupFilter>('all')
   const [kind, setKind] = useState<'all' | 'generate' | 'original_replace'>('all')
   const [groups, setGroups] = useState<WholeImageTaskGroup[]>([])
@@ -292,13 +292,15 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, onCreate }: 
           </p>
         </div>
         <div className="asset-head-actions task-stats">
-          <button
-            type="button"
+          <a
             className="mp-btn-primary"
-            onClick={() => onCreate()}
+            href={newDesignHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="在新标签页打开，保留当前设计"
           >
             ＋ 新建海报设计
-          </button>
+          </a>
         </div>
       </div>
 
@@ -363,13 +365,15 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, onCreate }: 
               ? `创建一次${createName}后，任务和候选会自动出现在这里。`
               : `切换到其他状态，或创建一次新的${createName}。`}
           </span>
-          <button
-            type="button"
+          <a
             className="mp-btn-primary mp-btn-small"
-            onClick={() => onCreate()}
+            href={newDesignHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="在新标签页打开，保留当前设计"
           >
             {createLabel}
-          </button>
+          </a>
         </div>
       ) : (
         <>

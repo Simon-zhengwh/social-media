@@ -264,17 +264,17 @@ def test_restart_does_not_resume_retired_standalone_tasks(env):
 
 
 def test_only_linked_original_replacements_protect_materials():
-    from app.routes.assets import _asset_referenced
+    from app.services.asset_records import asset_referenced
 
     db = mongomock.MongoClient().db
     db.background_replace_tasks.insert_one({"_id": "archived", "input": {
         "source_asset_id": "archived-source", "replacements": [{"asset_id": "shared-material"}]}})
-    assert not _asset_referenced(db, "archived-source")
-    assert not _asset_referenced(db, "shared-material")
+    assert not asset_referenced(db, "archived-source")
+    assert not asset_referenced(db, "shared-material")
     db.background_replace_tasks.insert_one({"_id": "linked", "whole_task_id": "poster", "input": {
         "source_asset_id": "linked-source", "replacements": [{"asset_id": "shared-material"}]}})
-    assert _asset_referenced(db, "linked-source")
-    assert _asset_referenced(db, "shared-material")
+    assert asset_referenced(db, "linked-source")
+    assert asset_referenced(db, "shared-material")
 
 
 def test_version_preparation_failure_releases_the_apply_lock(env, monkeypatch):

@@ -13,8 +13,8 @@ from pymongo import ReturnDocument
 from pymongo.database import Database
 
 from app.config import Settings
+from app.schemas import MAX_REFERENCE_ASSETS, gateway_model_name
 from app.services import brand_rules, platform_presets, storage
-from app.services import image_provider
 from app.services.canvas import canvas_size, gateway_image_size
 from app.services.core_ai import CoreAIClient, CoreAIError
 from app.services.image_ref import ImageRef, cleanup_image_refs, image_ref_from_asset
@@ -181,7 +181,7 @@ def _next_version(db: Database, task_id: str) -> int:
 
 def _manual_reference_ids(input_data: dict[str, Any]) -> list[str]:
     unified = input_data.get("reference_asset_ids")
-    return list(unified if unified is not None else input_data.get("product_asset_ids") or [])[:6]
+    return list(unified if unified is not None else input_data.get("product_asset_ids") or [])[:MAX_REFERENCE_ASSETS]
 
 
 def _load_reference_images(
@@ -245,10 +245,10 @@ def _reference_role_guidance(
         return ""
 
     lines = ["输入图片（按附件顺序编号）："]
-    if unified_references:
-        lines.extend(
-            f"- 图片{index}：用户参考图，用途由用户要求及 @图片{index} 的引用决定，不预设为内容素材或风格参考。"
-            for index in range(1, product_count + 1)
+    if unified_references and product_count:
+        reference_range = "1" if product_count == 1 else f"1-{product_count}"
+        lines.append(
+            f"- 图片{reference_range}：用户参考图，用途由用户要求及对应的 @图片 引用决定，不预设角色。"
         )
     elif product_count:
         product_range = "1" if product_count == 1 else f"1-{product_count}"
@@ -264,8 +264,9 @@ def _reference_role_guidance(
             else f"{logo_start}-{logo_start + logo_count - 1}"
         )
         lines.append(
-            f"- 图{logo_range}：Logo，必须在成图中完整清晰展示且无遮挡，"
-            "保留图形、文字、比例和原色；位置随构图安排。"
+            f"- 图{logo_range}：Logo，只出现一次，必须在成图中完整清晰展示且无遮挡，"
+            "保留图形、文字、比例和原色，不反色或重绘；采用对比背景，位置随构图安排。"
+            "内容参考中的同一商家旧标识以此替换，不重复叠加。"
         )
     if reference_count > product_count + logo_count:
         style_start = product_count + logo_count + 1
@@ -277,6 +278,11 @@ def _reference_role_guidance(
         lines.append(
             f"- 图{style_range}：风格参考，只借鉴配色、构图、字体和氛围，"
             "不复制其中的主体、文案或标识。"
+        )
+    if product_count:
+        lines.append(
+            "参考图中的活动信息以内容参考为准，保留价格、各项日期及对应条件；"
+            "风格参考的旧文案不带入。"
         )
     return "\n".join(lines)
 
@@ -568,9 +574,9 @@ def run_generation(
         )
         endpoint = "/images/edits" if reference_images else "/images/generations"
         model_input = {
-            "provider": image_provider.provider_name(image_model),
+            "provider": "core-ai",
             "endpoint": endpoint,
-            "model": image_model,
+            "model": gateway_model_name(image_model),
             "prompt": prompt,
             "parameters": {
                 "size": size,
@@ -594,12 +600,15 @@ def run_generation(
             },
         )
         if reference_images:
-            data = image_provider.image_client(settings, client, image_model).edit_image(
-                prompt, reference_images, size=size, model=image_model
+            data = client.edit_image(
+                prompt,
+                reference_images,
+                size=size,
+                model=gateway_model_name(image_model),
             )
         else:
-            data = image_provider.image_client(settings, client, image_model).generate_image(
-                prompt, size=size, model=image_model
+            data = client.generate_image(
+                prompt, size=size, model=gateway_model_name(image_model)
             )
         saved = _save_output_asset(
             db,
@@ -698,11 +707,11 @@ def _gateway_edit_branch(
             image_ref_from_asset(db, store, reference_asset_id)
             for reference_asset_id in reference_asset_ids
         ]
-        data = image_provider.image_client(settings, client, image_model).edit_image(
+        data = client.edit_image(
             prompt,
             [source_ref, *edit_refs, *original_refs] if reference_mode == "unified" else [*original_refs, source_ref, *edit_refs],
             size=size,
-            model=image_model,
+            model=gateway_model_name(image_model),
         )
         saved = _save_output_asset(
             db,
@@ -819,7 +828,10 @@ def run_edit(
         task_input = task.get("input") or {}
         task_brand = task.get("brand") if isinstance(task.get("brand"), dict) else {}
         merchant_context = str(task_brand.get("merchant_context") or "").strip()
-        image_model = str(task_input.get("image_model") or settings.core_ai_image_model)
+        image_model = gateway_model_name(
+            (task.get("edit") or {}).get("image_model")
+            or task_input.get("image_model") or settings.core_ai_image_model
+        )
         product_count = len(_manual_reference_ids(task_input))
         original_count = product_count + (1 if task_input.get("logo_asset_id") else 0)
         image_roles: list[str] = []
@@ -880,9 +892,9 @@ def run_edit(
         )
         gateway_input = {
             "channel": "gateway",
-            "provider": image_provider.provider_name(image_model),
+            "provider": "core-ai",
             "endpoint": "/images/edits",
-            "model": image_model,
+            "model": gateway_model_name(image_model),
             "prompt": prompt,
             "parameters": {
                 "size": size,
@@ -910,6 +922,7 @@ def run_edit(
                     "model_input_attempt": gateway_input,
                     "edit": {
                         "status": "running",
+                        "image_model": image_model,
                         "instruction": instruction,
                         "source_version_id": source_version_id,
                         "source_output_id": source_output_id,

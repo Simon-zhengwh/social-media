@@ -5,7 +5,8 @@ export type ImageModel =
   | 'gemini-3.1-flash-image'
   | 'seedream-5-pro-image-to-image'
   | 'seedream-5.5-image-to-image'
-  // Temporary direct MiniMax model until core-ai serves it through the gateway.
+  | 'minimax-h3-image-edit'
+  // Kept so tasks created before the gateway rollout still render.
   | 'minimax-h3-image'
 
 export type PlatformPlacement = {
@@ -162,7 +163,7 @@ export type WholeImageMessage = {
 
 export type WholeImageModelInput = {
   channel?: 'gateway' | 'agent'
-  // 'minimax' marks the temporary direct MiniMax call instead of the core-ai gateway.
+  // All models are served by core-ai; 'minimax' only survives on historical tasks.
   provider?: 'core-ai' | 'minimax'
   endpoint: string
   model: string
@@ -230,6 +231,7 @@ export type WholeImageBranch = {
 }
 
 export type WholeImageEditState = {
+  image_model?: ImageModel | null
   reference_mode?: 'legacy' | 'unified'
   status: 'idle' | 'running' | 'awaiting_selection' | 'failed'
   instruction?: string | null
@@ -503,6 +505,8 @@ export type MaterialFilterScheme = {
   output_root: string
   model: string
   prompt_version: string
+  naming_mode?: 'descriptive' | 'menu_match'
+  name_format?: 'zh_en' | 'en'
   active_run_id: string | null
   created_at: string
   last_run?: MaterialFilterRun | null
@@ -514,6 +518,8 @@ export type MaterialFilterRuleVerdict = {
   reason: string
 }
 
+export type MaterialTagGroups = Partial<Record<'食材' | '员工' | '环境', string[]>>
+
 export type MaterialFilterEvaluation = {
   id: string
   scheme_id: string
@@ -523,6 +529,7 @@ export type MaterialFilterEvaluation = {
   relative_path: string
   category: string
   tags: string[]
+  tag_groups?: MaterialTagGroups
   decision: MaterialFilterDecision
   model_decision: MaterialFilterDecision | null
   human_decision: 'pass' | 'fail' | null
@@ -591,4 +598,129 @@ export type MaterialFilterDefaults = {
   rules: MaterialFilterRule[]
   model: string
   output_root: string
+}
+
+export type MaterialGroupFile = {
+  id: string
+  group_id: string
+  original_name: string
+  relative_path: string
+  display_name: string | null
+  recognition_status: 'unrecognized' | 'recognized' | 'uncertain' | 'error' | 'unknown'
+  source_sha256: string
+  source_size: number
+  is_representative: boolean
+  preview_url: string | null
+  evaluation: MaterialFilterEvaluation | null
+  latest_attempt: MaterialFileAttempt | null
+  attempt_count: number
+}
+
+export type MaterialFileAttempt = {
+  id: string
+  status: string
+  error: string | null
+  actual_call: boolean
+  created_at: string
+  finished_at: string | null
+  result: Record<string, unknown> | null
+  previous_result: Record<string, unknown> | null
+  source_sha256?: string
+  model?: string | null
+  prompt_version?: string | null
+  called_at?: string | null
+  force?: boolean
+}
+
+export type MaterialFileAttemptsPage = {
+  items: MaterialFileAttempt[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export type MaterialGroupScanError = { file_id: string; relative_path: string; error: string }
+
+export type MaterialGroupPreview = Pick<MaterialGroupFile, 'id' | 'group_id' | 'original_name' | 'relative_path' | 'source_sha256' | 'is_representative' | 'preview_url'> & { manual_pick?: boolean }
+
+export type MaterialGroup = {
+  id: string
+  scheme_id: string
+  version: string
+  count: number
+  reference_name: string | null
+  name_manual?: boolean
+  status: 'unrecognized' | 'recognized' | 'ambiguous' | 'conflict' | 'manual'
+  cover: MaterialGroupFile | null
+  representative_file_ids: string[]
+  recognized_count: number
+  picked_count: number
+  picked_file_ids?: string[]
+  reference_stale: boolean
+  manual: boolean
+  previews: MaterialGroupPreview[]
+}
+
+export type MaterialGroupRun = {
+  id: string
+  scheme_id: string
+  kind: 'group_scan' | 'recognition'
+  status: MaterialFilterRunStatus
+  counters: {
+    scanned: number
+    processed: number
+    groups: number
+    recognized: number
+    cache_hits: number
+    model_calls: number
+    errors: number
+    copied: number
+    skipped: number
+  }
+  error: string | null
+  items?: Array<{ file_id: string; status: string; error: string | null }>
+  scan_errors?: MaterialGroupScanError[]
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export type MaterialGroupsPage = {
+  items: MaterialGroup[]
+  total: number
+  sampling_enabled: boolean
+  version: string | null
+  stats: {
+    files: number
+    groups: number
+    recognized: number
+    representatives: number
+    cache_hits: number
+    new_calls: number
+    blocked_unknown: number
+  }
+  last_run: MaterialGroupRun | null
+  scan_errors: MaterialGroupScanError[]
+}
+
+export type MaterialGroupMergeRequest = {
+  group_ids: string[]
+  version: string
+  request_id: string
+}
+
+export type MaterialGroupFilesPage = {
+  items: MaterialGroupFile[]
+  total: number
+  skip: number
+  limit: number
+}
+
+export type MaterialRecognitionRequest = {
+  request_id: string
+  mode: 'representatives' | 'selected_files'
+  representative_count: 1 | 2
+  group_limit?: number
+  file_ids?: string[]
+  force?: boolean
 }

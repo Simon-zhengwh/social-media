@@ -1,22 +1,20 @@
 import {
-  useEffect,
-  useRef,
   useState,
   type ClipboardEvent,
 } from 'react'
-import type { Asset, WholeImageEditState, WholeImageMessage } from '../types'
-import { parseServerDate } from '../time'
+import type { Asset, ImageModel, WholeImageEditState } from '../types'
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODEL_OPTIONS } from '../imageModels'
 import ImagePromptComposer from './ImagePromptComposer'
 import AssetPicker from './AssetPicker'
 import { imagePromptIssue, serializeImagePrompt, type PromptImage } from '../imageMentions'
 
 type Props = {
-  messages: WholeImageMessage[]
+  initialModel: ImageModel
   edit: WholeImageEditState
-  stage: string
   disabled: boolean
   onUpload: (files: File[]) => Promise<Asset[]>
-  onSend: (instruction: string, attachments: Asset[]) => Promise<boolean>
+  onSend: (instruction: string, attachments: Asset[], imageModel: ImageModel) => Promise<boolean>
+  downloadHref: string | null
   currentImage: PromptImage | null
   assets: Asset[]
   assetsLoading: boolean
@@ -26,87 +24,35 @@ type Props = {
 
 const MAX_ATTACHMENTS = 5
 
-const messageTime = new Intl.DateTimeFormat('zh-CN', {
-  month: 'numeric',
-  day: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-})
-
-function formatMessageTime(value: string): string {
-  const date = parseServerDate(value)
-  return Number.isNaN(date.getTime()) ? '' : messageTime.format(date)
-}
-
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : '图片处理失败，请稍后重试'
 }
 
-function MessageItem({ message }: { message: WholeImageMessage }) {
-  const failed = message.status === 'failed'
-  return (
-    <li className={`chat-message chat-${message.role}${failed ? ' is-failed' : ''}`}>
-      <div className="chat-bubble">
-        <p>{message.content}</p>
-        {message.attachments?.length ? (
-          <div className="chat-message-attachments">
-            {message.attachments.map((attachment) => (
-              <img
-                key={attachment.asset_id}
-                src={attachment.url}
-                alt={attachment.name}
-                title={attachment.name}
-                loading="lazy"
-              />
-            ))}
-          </div>
-        ) : null}
-        {message.version ? (
-          <div className="chat-actions">
-            <span className="chat-action-chip">v{message.version}</span>
-          </div>
-        ) : null}
-      </div>
-      <span className="chat-meta">
-        {message.version ? `v${message.version} · ` : ''}
-        {message.created_at ? `${formatMessageTime(message.created_at)} · ` : ''}
-        {message.role === 'user' ? '你' : '设计模型'}
-      </span>
-    </li>
-  )
-}
-
 export default function WholeChatPanel({
-  messages,
+  initialModel,
   edit,
-  stage,
   disabled,
   onUpload,
   onSend,
+  downloadHref,
   currentImage,
   assets,
   assetsLoading,
   onLoadAssets,
   onGoAssets,
 }: Props) {
+  const [imageModel, setImageModel] = useState(() =>
+    IMAGE_MODEL_OPTIONS.some(option => option.value === initialModel) ? initialModel : DEFAULT_IMAGE_MODEL)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Asset[]>([])
   const [uploading, setUploading] = useState(false)
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
-  const listRef = useRef<HTMLUListElement | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const promptImages: PromptImage[] = [...(currentImage ? [currentImage] : []),
     ...attachments.map(asset => ({ assetId: asset.id, name: asset.original_name, url: asset.url }))]
   const promptIssue = imagePromptIssue(draft, promptImages, 1000)
   const running = edit.status === 'running' || sending
-
-  useEffect(() => {
-    const node = listRef.current
-    if (node) {
-      node.scrollTop = node.scrollHeight
-    }
-  }, [messages.length, running])
 
   const addImages = async (files: File[]) => {
     if (disabled || running || uploading) {
@@ -162,7 +108,7 @@ export default function WholeChatPanel({
     setSending(true)
     setAttachmentError(null)
     try {
-      const accepted = await onSend(serializeImagePrompt(value, promptImages, 1000).trim(), attachments)
+      const accepted = await onSend(serializeImagePrompt(value, promptImages, 1000).trim(), attachments, imageModel)
       if (accepted) {
         setDraft('')
         setAttachments([])
@@ -175,47 +121,7 @@ export default function WholeChatPanel({
   }
 
   return (
-    <section className="studio-panel chat-panel" onPaste={handlePaste}>
-      {messages.length > 3 || running ? (
-        <div className="chat-head-actions chat-head-actions-bar">
-          {messages.length > 3 ? (
-            <>
-              <button
-                type="button"
-                onClick={() => listRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-              >
-                最早
-              </button>
-              <button
-                type="button"
-                onClick={() => listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })}
-              >
-                最新
-              </button>
-            </>
-          ) : null}
-          {running ? (
-            <span className="edit-running">
-              <span className="spinner spinner-dark" aria-hidden="true" />
-              {sending ? '正在上传修改' : stage === 'editing' ? '正在处理' : '处理中'}
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-
-      <ul className="chat-list" ref={listRef} aria-live="polite" aria-label="完整对话记录">
-        {messages.map((message) => <MessageItem key={message.id} message={message} />)}
-        {running && !sending ? (
-          <li className="chat-message chat-assistant">
-            <div className="chat-bubble chat-typing" aria-label="正在处理">
-              <span />
-              <span />
-              <span />
-            </div>
-          </li>
-        ) : null}
-      </ul>
-
+    <section className="studio-panel chat-panel" aria-label="对话改图" onPaste={handlePaste}>
       {edit.status === 'failed' && edit.error ? (
         <div className="chat-error" role="alert">
           <strong>修改未执行</strong>
@@ -244,9 +150,22 @@ export default function WholeChatPanel({
           onRemoveImage={assetId => setAttachments(current => current.filter(asset => asset.id !== assetId))}
           onPickImages={() => { setPickerOpen(true); onLoadAssets() }}
           footerActions={
-            <button type="submit" className="chat-send" disabled={disabled || running || uploading || !draft.trim() || Boolean(promptIssue)} aria-label="发送修改">
-              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h12M10 5l5 5-5 5" /></svg>
-            </button>
+            <div className="chat-composer-actions">
+              {downloadHref ? (
+                <a className="chat-download" href={downloadHref} download title="下载当前海报 PNG">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m0 0 3.5-3.5M10 12 6.5 8.5M4 15.5h12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  下载 PNG
+                </a>
+              ) : null}
+              <select className="chat-model-select" aria-label="改图模型" title="改图模型"
+                value={imageModel} disabled={disabled || running || uploading}
+                onChange={event => setImageModel(event.target.value as ImageModel)}>
+                {IMAGE_MODEL_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+              <button type="submit" className="chat-send" disabled={disabled || running || uploading || !draft.trim() || Boolean(promptIssue)} aria-label="发送修改">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h12M10 5l5 5-5 5" /></svg>
+              </button>
+            </div>
           }
         />
       </form>

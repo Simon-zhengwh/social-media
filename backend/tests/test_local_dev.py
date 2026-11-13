@@ -141,6 +141,9 @@ def test_local_preflight_reports_missing_files_without_changing_data(demo_data):
     ("poster_edit_tasks", {"status": "queued"}),
     ("background_replace_tasks", {"whole_task_id": "task", "status": "running"}),
     ("agent_test_runs", {"status": "preparing"}),
+    ("material_filter_runs", {"status": "running"}),
+    ("material_filter_syncs", {"status": "queued"}),
+    ("material_filter_syncs", {"status": "running"}),
 ])
 def test_local_preflight_refuses_to_interrupt_active_jobs_from_any_merchant(demo_data, collection, document):
     from scripts.local_dev import LocalDevError, check_local_data

@@ -894,6 +894,69 @@ def test_chat_edit_keeps_each_candidate_model_in_mixed_workspace(settings, store
     assert updated["model_input_latest"]["model"] == model
 
 
+@pytest.mark.parametrize("generation_model", ["gpt-image-2.5-sunburst", "seedream-5-pro-image-to-image"])
+@pytest.mark.parametrize("edit_model", [
+    "gpt-image-2.5-sunburst", "seedream-5-pro-image-to-image",
+    "seedream-5.5-image-to-image", "minimax-h3-image-edit", "minimax-h3-image",
+])
+def test_chat_edit_can_override_model_without_moving_candidate(settings, store, generation_model, edit_model):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    req = _request(db, settings, store, fake)
+    created = _create(db, settings, store, fake, image_model=generation_model)
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+    source = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    background = BackgroundTasks()
+    pending = whole_routes.create_edit(created["id"], WholeImageEditRequest(
+        instruction="只改标题", source_version_id=source["_id"], image_model=edit_model,
+    ), req, background)
+    expected = "minimax-h3-image-edit" if edit_model == "minimax-h3-image" else edit_model
+    assert pending["edit"]["image_model"] == expected
+    job = background.tasks[0]
+    job.func(*job.args, **job.kwargs)
+    updated = whole_routes.get_task(created["id"], req)
+    assert fake.edit_calls[-1]["model"] == expected
+    assert updated["input"]["image_model"] == generation_model
+    assert updated["edit"]["image_model"] == expected
+    assert updated["model_input"]["model"] == expected
+    version = db.whole_versions.find_one({"task_id": created["id"], "version": 2})
+    assert version["parent_version_id"] == source["_id"]
+    assert version["model_input"]["model"] == expected
+    assert source["model_input"]["model"] == generation_model
+
+
+def test_edit_retry_keeps_override_and_omitting_model_restores_generation_default(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    req = _request(db, settings, store, fake)
+    task_id, _ = _generate(db, settings, store, fake)
+    source = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    whole_routes.create_edit(task_id, WholeImageEditRequest(
+        instruction="只改标题", source_version_id=source["_id"], image_model="seedream-5.5-image-to-image",
+    ), req, BackgroundTasks())
+    fake.fail_edit = True
+    whole_service.run_edit(db, settings, store, fake, task_id, "只改标题", source["_id"])
+    assert fake.edit_calls[-1]["model"] == "seedream-5.5-image-to-image"
+    assert whole_routes.get_task(task_id, req)["edit"]["image_model"] == "seedream-5.5-image-to-image"
+    fake.fail_edit = False
+    background = BackgroundTasks()
+    whole_routes.retry_task(task_id, req, background)
+    job = background.tasks[0]
+    job.func(*job.args, **job.kwargs)
+    assert fake.edit_calls[-1]["model"] == "seedream-5.5-image-to-image"
+    current = whole_routes.get_task(task_id, req)
+    whole_routes.create_edit(task_id, WholeImageEditRequest(
+        instruction="标题向上移动", source_version_id=current["current_version_id"],
+    ), req, BackgroundTasks())
+    whole_service.run_edit(db, settings, store, fake, task_id, "标题向上移动", current["current_version_id"])
+    assert fake.edit_calls[-1]["model"] == "gpt-image-2.5-sunburst"
+
+
+def test_edit_rejects_unknown_model():
+    with pytest.raises(ValidationError):
+        WholeImageEditRequest(instruction="只改标题", source_version_id="v1", image_model="unlisted-model")
+
+
 @pytest.mark.parametrize("operation", ["edit", "retry_generation", "retry_edit"])
 def test_deleted_candidate_cannot_start_work_after_concurrent_read(settings, store, monkeypatch, operation):
     db = mongomock.MongoClient().db
@@ -925,11 +988,11 @@ def test_deleted_candidate_cannot_start_work_after_concurrent_read(settings, sto
     assert background.tasks == []
 
 
-def test_task_accepts_six_product_images_and_rejects_seven():
-    products = [f"product_{index}" for index in range(6)]
+def test_task_accepts_fifteen_product_images_and_rejects_sixteen():
+    products = [f"product_{index}" for index in range(15)]
     assert WholeImageTaskCreate(prompt="test", product_asset_ids=products).product_asset_ids == products
     with pytest.raises(ValidationError):
-        WholeImageTaskCreate(prompt="test", product_asset_ids=[*products, "product_7"])
+        WholeImageTaskCreate(prompt="test", product_asset_ids=[*products, "product_16"])
 
 
 @pytest.mark.parametrize("optimized", [False, True])
@@ -1125,6 +1188,9 @@ def test_selected_logo_purpose_and_palette_reach_generation(
     assert sent["reference_names"] == ["dish.png", "merchant-logo.png"]
     assert "图2：Logo" in sent["prompt"]
     assert "必须在成图中完整清晰展示且无遮挡" in sent["prompt"]
+    assert "只出现一次" in sent["prompt"]
+    assert "不反色或重绘" in sent["prompt"]
+    assert "同一商家旧标识以此替换，不重复叠加" in sent["prompt"]
     assert "位置随构图安排" in sent["prompt"]
     if not optimized:
         assert "品牌用途：Story / Reels 封面" in sent["prompt"]
@@ -2033,40 +2099,43 @@ def test_outputs_without_artifacts_serialize_as_empty_list(settings, store):
     assert branch["outputs"][0]["artifacts"] == []
 
 
-def test_minimax_model_generation_routes_to_the_minimax_client(settings, store, monkeypatch):
+def test_minimax_model_runs_through_the_core_ai_gateway(settings, store):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
-    recorded: list[str] = []
-
-    def routed(config, core_ai, image_model):
-        recorded.append(str(image_model))
-        return fake
-
-    monkeypatch.setattr(whole_service.image_provider, "image_client", routed)
-    created = _create(db, settings, store, fake, image_model="minimax-h3-image")
+    created = _create(db, settings, store, fake, image_model="minimax-h3-image-edit")
 
     whole_service.run_generation(db, settings, store, fake, created["id"])
 
     task = db.whole_tasks.find_one({"_id": created["id"]})
-    assert recorded == ["minimax-h3-image"]
     assert task["status"] == "succeeded"
-    assert task["provider"]["name"] == "minimax"
-    assert fake.generation_calls[0]["model"] == "minimax-h3-image"
+    assert task["provider"]["name"] == "core-ai"
+    assert fake.generation_calls[0]["model"] == "minimax-h3-image-edit"
 
     version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
+    assert version["model_input"]["provider"] == "core-ai"
+    assert version["model_input"]["model"] == "minimax-h3-image-edit"
     whole_routes.create_edit(created["id"], WholeImageEditRequest(
         instruction="只改标题", source_version_id=version["_id"],
     ), _request(db, settings, store, fake), BackgroundTasks())
     whole_service.run_edit(db, settings, store, fake, created["id"], "只改标题", version["_id"])
-    assert recorded == ["minimax-h3-image", "minimax-h3-image"]
-    assert fake.edit_calls[-1]["model"] == "minimax-h3-image"
+    assert fake.edit_calls[-1]["model"] == "minimax-h3-image-edit"
 
 
-def test_minimax_generate_requires_its_own_api_key(settings, store):
+def test_legacy_minimax_task_id_maps_to_the_gateway_model(settings, store):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
-    settings.minimax_image_api_key = ""
+    created = _create(db, settings, store, fake, image_model="minimax-h3-image")
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    assert fake.generation_calls[0]["model"] == "minimax-h3-image-edit"
+
+
+def test_minimax_model_needs_only_the_gateway_key(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    settings.core_ai_api_key = ""
     with pytest.raises(HTTPException) as error:
-        _create(db, settings, store, fake, image_model="minimax-h3-image")
+        _create(db, settings, store, fake, image_model="minimax-h3-image-edit")
     assert error.value.status_code == 503
-    assert "MINIMAX_IMAGE_API_KEY" in error.value.detail
+    assert "CORE_AI_API_KEY" in error.value.detail

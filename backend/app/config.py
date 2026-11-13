@@ -47,16 +47,6 @@ class Settings(BaseSettings):
     core_ai_image_timeout_seconds: int = 300
     llm_timeout_seconds: int = 120
 
-    # Temporary direct MiniMax image integration: core-ai has no MiniMax model yet, so the
-    # poster workbench can call MiniMax H3 Image itself. Delete this block (and
-    # app/services/minimax_image.py) once the gateway exposes the same models.
-    minimax_image_base_url: str = "https://api.minimax.cn/v1"
-    minimax_image_api_key: str = ""
-    minimax_image_model: str = "MiniMax-H3-Image"
-    minimax_image_timeout_seconds: int = 600
-    # Our prompts already carry the fidelity rules; enhancement would rewrite them.
-    minimax_disable_prompt_enhanced: bool = True
-
     # Local SMB material filtering: its own model and limits, so poster models stay untouched.
     material_filter_model: str = "deepseek-v4-flash"
     material_filter_timeout_seconds: int = 120
@@ -78,6 +68,10 @@ class Settings(BaseSettings):
     # production; merchant scoping still applies to every query.
     am_bypass_local: bool = False
     am_bypass_merchant_id: str = ""
+    # Display name for the primary local merchant.
+    am_bypass_merchant_name: str = "SEE JOY喜聚"
+    # Extra merchants offered under the local bypass: "<merchant_id>=<name>;...".
+    am_bypass_merchants: str = ""
     social_media_origin: str = "https://social-media.connexup-uat.net"
     social_media_url: str = "https://social-media.connexup-uat.net"
 

@@ -54,6 +54,8 @@ def check_local_data(settings: Settings, db: Any, *, recover_interrupted: bool =
         "poster_edit_tasks": {"status": {"$in": ["queued", "running"]}},
         "background_replace_tasks": {"whole_task_id": {"$type": "string", "$ne": ""}, "status": {"$in": ["queued", "running"]}},
         "agent_test_runs": {"status": {"$in": ["queued", "preparing", "triggering", "running"]}},
+        "material_filter_runs": {"status": {"$in": ["queued", "running"]}},
+        "material_filter_syncs": {"status": {"$in": ["queued", "running"]}},
     }
     active_jobs = any(db[name].find_one(active) is not None for name, active in active_queries.items())
     if active_jobs and not recover_interrupted:

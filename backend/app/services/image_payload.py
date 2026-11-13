@@ -1,8 +1,7 @@
-"""Reference-image encoding shared by every image provider.
+"""Reference-image encoding shared by every image model.
 
-The gateway takes base64 data URLs in `b64Json`; MiniMax takes data URIs in
-`images[].image_url`. Both need the same "shrink until it fits" behaviour, so the encoding
-lives here instead of inside one provider client.
+The gateway takes base64 data URLs in `b64Json`; every reference image needs the same
+"shrink until it fits" behaviour, so the encoding lives here instead of inside a client.
 """
 
 from __future__ import annotations

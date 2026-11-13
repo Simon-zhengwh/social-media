@@ -14,28 +14,41 @@ type Props = {
   onApplied: (task: WholeImageTask) => Promise<void>
   onRefreshTask: () => Promise<void>
 }
-type Row = { id: string; checked: boolean; target: string; asset: Asset | null }
-const row = (asset: Asset | null = null, checked = false): Row => ({ id: crypto.randomUUID(), checked, target: '', asset })
+type Row = { id: string; target: string; asset: Asset }
+const row = (asset: Asset): Row => ({ id: crypto.randomUUID(), target: '', asset })
 const stages: Record<string, string> = { queued: '等待处理', preparing: '准备图片', agent_running: '正在替换', saving: '保存结果', done: '替换完成', failed: '处理未完成' }
 const active = (record: OriginalReplacementTask) => record.status === 'queued' || record.status === 'running'
 const message = (error: unknown) => error instanceof Error ? error.message : '请求失败，请稍后重试'
 
-function candidates(task: WholeImageTask, assets: Asset[]): Row[] {
-  return (task.input.product_asset_ids ?? []).map((id) => row(assets.find((asset) => asset.id === id) ?? {
-    id, original_name: task.model_input?.images.find((item) => item.asset_id === id)?.name ?? '原始内容素材',
-    url: merchantPath(`/api/assets/${encodeURIComponent(id)}/file`), width: 0, height: 0, mime_type: 'image/png', created_at: task.created_at,
-  }))
+/** Reuse the images already attached to the design prompt so only positions stay empty. */
+function carried(task: WholeImageTask, assets: Asset[]): Row[] {
+  const images = task.model_input?.images ?? []
+  const declared = [...(task.input.reference_asset_ids ?? []), ...(task.input.product_asset_ids ?? [])]
+  const ids = declared.length
+    ? declared
+    : images.filter((item) => item.role === 'reference' || item.role === 'product').map((item) => item.asset_id)
+  return [...new Set(ids)].map((id) => {
+    const asset = assets.find((item) => item.id === id)
+    const meta = images.find((item) => item.asset_id === id)
+    return row(asset ?? {
+      id, original_name: meta?.name ?? '原照',
+      url: meta?.url || meta?.preview_url || merchantPath(`/api/assets/${encodeURIComponent(id)}/file`),
+      width: 0, height: 0, mime_type: 'image/png', created_at: task.created_at,
+    })
+  })
 }
 
 function selectRecordUrl(id: string | null) {
   const url = new URL(window.location.href)
+  const view = url.searchParams.get('view')
+  if (view && view !== 'whole') return
   if (id) url.searchParams.set('replacement', id)
   else url.searchParams.delete('replacement')
   window.history.replaceState({}, '', url)
 }
 
 export default function OriginalReplacementPanel({ task, assets, assetsLoading, onLoadAssets, onGoAssets, onApplied, onRefreshTask }: Props) {
-  const [rows, setRows] = useState<Row[]>(() => candidates(task, assets))
+  const [rows, setRows] = useState<Row[]>(() => carried(task, assets))
   const [records, setRecords] = useState<OriginalReplacementTask[]>([])
   const [selectedId, setSelectedId] = useState<string | null>()
   const [loading, setLoading] = useState(true)
@@ -49,7 +62,8 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
   const listRequest = useRef(0)
   const selected = records.find((item) => item.id === selectedId) ?? null
   const running = records.some(active)
-  const checked = rows.filter((item) => item.checked)
+  const filled = rows.filter((item) => item.target.trim())
+  const capped = filled.length >= 5
   const currentOutput = task.outputs.find((item) => item.id === task.current_output_id)
   const canSubmit = Boolean(task.status === 'succeeded' && task.current_version_id && currentOutput?.selectable && task.edit.status !== 'running')
 
@@ -112,15 +126,15 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
 
   const submit = () => {
     if (!canSubmit || lock.current) return
-    if (checked.length < 1 || checked.length > 5) { setError('请勾选 1–5 个替换项'); return }
-    if (checked.some((item) => !item.target.trim() || !item.asset)) { setError('请填写每个选中项的位置或目标，并选择对应原照'); return }
+    if (filled.length < 1) { setError('请至少填写一个替换位置'); return }
+    if (filled.length > 5) { setError('最多提交 5 项替换'); return }
     void perform('submit', async () => {
       const next = await createOriginalReplacement(task.id, task.current_version_id!, task.current_output_id!,
-        checked.map((item) => ({ target: item.target.trim(), asset_id: item.asset!.id })))
+        filled.map((item) => ({ target: item.target.trim(), asset_id: item.asset.id })))
       if (!mounted.current) return
       listRequest.current++
       setRecords((previous) => [next, ...previous]); setSelectedId(next.id); selectRecordUrl(next.id)
-      setClock(Date.now()); setRows(candidates(task, assets))
+      setClock(Date.now()); setRows(carried(task, assets))
     })
   }
 
@@ -129,7 +143,7 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
     void perform('upload', async () => {
       const asset = await uploadAsset(file)
       if (!mounted.current) return
-      setRows((previous) => [...previous, row(asset, true)]); onLoadAssets()
+      setRows((previous) => [...previous, row(asset)]); onLoadAssets()
     })
   }
 
@@ -143,7 +157,6 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
         <strong>原照替换</strong>
         <button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation) || loading} onClick={() => chooseRecord(null)}>新建替换</button>
       </div>
-      <p className="replacement-help">只勾选需要替换的元素；菜品、配菜和环境均可按需选择。结果先对比，确认后再应用。</p>
       {records.length > 0 ? (
         <label className="original-replacement-history">替换记录
           <select value={selectedId ?? ''} disabled={Boolean(operation)} onChange={(event) => chooseRecord(event.target.value || null)}>
@@ -192,43 +205,36 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
         </>
       ) : (
         <>
-          <div className="original-replacement-source">
-            {task.preview_url ? <ZoomableImage src={task.preview_url} alt="当前海报底图" className="replacement-thumb" /> : null}
-            <div><strong>当前海报 · v{task.current_version}</strong><p className="replacement-help">提交时固定此版本和当前选中的结果。</p></div>
-          </div>
-          <p className="replacement-help">填写具体目标，例如“右下角牛肉”。“背景”表示替换整张摄影底图；只换局部环境时，请写明区域。</p>
           <div className="replacement-rows">
             {rows.map((item) => {
-              const asset = assets.find((candidate) => candidate.id === item.asset?.id) ?? item.asset
-              return <div key={item.id} className={`replacement-row original-replacement-row${item.checked ? ' is-checked' : ''}`}>
-                <label className="original-replacement-choice">
-                  <input type="checkbox" checked={item.checked} disabled={Boolean(operation) || (!item.checked && checked.length >= 5)} onChange={(event) => updateRow(item.id, { checked: event.target.checked })} />
-                  {asset ? <img src={asset.url} alt="" /> : null}<span>{asset?.original_name ?? '选择原照'}</span>
-                </label>
-                {item.checked ? <>
-                  <label htmlFor={`original-target-${item.id}`}>替换目标或位置</label>
-                  <input id={`original-target-${item.id}`} className="replacement-target" value={item.target} maxLength={1000} disabled={Boolean(operation)} placeholder="例如：右下角牛肉" onChange={(event) => updateRow(item.id, { target: event.target.value })} />
-                  <button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation)} onClick={() => setPickerTarget(item.id)}>选择或更换原照</button>
-                </> : null}
+              const asset = assets.find((candidate) => candidate.id === item.asset.id) ?? item.asset
+              return <div key={item.id} className={`replacement-row original-replacement-row${item.target.trim() ? ' is-checked' : ''}`}>
+                <div className="original-replacement-choice">
+                  <img src={asset.url} alt="" />
+                  <span className="original-replacement-name">{asset.original_name}</span>
+                  <button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation)} onClick={() => setRows((previous) => previous.filter((candidate) => candidate.id !== item.id))}>移除</button>
+                </div>
+                <label htmlFor={`original-target-${item.id}`}>替换位置</label>
+                <input id={`original-target-${item.id}`} className="replacement-target" value={item.target} maxLength={1000} disabled={Boolean(operation) || (capped && !item.target.trim())} placeholder="例如：右下角牛肉" onChange={(event) => updateRow(item.id, { target: event.target.value })} />
               </div>
             })}
           </div>
-          {rows.length === 0 ? <p className="replacement-help">这份任务没有初始内容素材，可以从资产库选择或上传原照。</p> : null}
+          {rows.length === 0 ? <p className="replacement-help">还没有原照，可从资产库选择或上传，再填写替换位置。</p> : null}
           <div className="original-replacement-add">
-            <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation) || checked.length >= 5} onClick={() => { setPickerTarget('new'); onLoadAssets() }}>＋ 从资产库添加</button>
-            <label className={`mp-btn-secondary mp-btn-small replacement-upload${operation || checked.length >= 5 ? ' is-disabled' : ''}`}>上传原照
-              <input type="file" accept="image/*" aria-label="上传额外原照" disabled={Boolean(operation) || checked.length >= 5} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; upload(file) }} />
+            <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation) || capped} onClick={() => { setPickerTarget('new'); onLoadAssets() }}>＋ 从资产库添加</button>
+            <label className={`mp-btn-secondary mp-btn-small replacement-upload${operation || capped ? ' is-disabled' : ''}`}>上传原照
+              <input type="file" accept="image/*" aria-label="上传额外原照" disabled={Boolean(operation) || capped} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; upload(file) }} />
             </label>
           </div>
-          <p className="replacement-help">已选 {checked.length}/5 项。通常约 30 分钟，最长等待 45 分钟，可稍后找回结果。</p>
-          <button type="button" className="mp-btn-primary replacement-submit" disabled={Boolean(operation) || !canSubmit || checked.length === 0} onClick={submit}>{operation === 'submit' ? '提交中…' : operation === 'upload' ? '正在上传…' : '开始原照替换'}</button>
+          <p className="replacement-help">已填 {filled.length}/5 项，通常约 30 分钟出结果，可稍后找回。</p>
+          <button type="button" className="mp-btn-primary replacement-submit" disabled={Boolean(operation) || !canSubmit || filled.length === 0} onClick={submit}>{operation === 'submit' ? '提交中…' : operation === 'upload' ? '正在上传…' : '开始原照替换'}</button>
           {!canSubmit ? <p className="replacement-help">请等待当前操作完成，并先选定一张完整海报结果。</p> : null}
         </>
       )}
       {error || loadError ? <div className="asset-notice asset-notice-error" role="alert"><p>{error || loadError}</p><button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation)} onClick={() => void load()}>刷新替换记录</button></div> : null}
       <AssetPicker key={pickerTarget ?? 'original-closed'} open={pickerTarget !== null} purpose="product" assets={assets} loading={assetsLoading}
         onClose={() => setPickerTarget(null)} onSelect={(asset) => {
-          if (pickerTarget === 'new') setRows((previous) => [...previous, row(asset, true)])
+          if (pickerTarget === 'new') setRows((previous) => [...previous, row(asset)])
           else if (pickerTarget) updateRow(pickerTarget, { asset })
           setPickerTarget(null)
         }} onGoAssets={() => { setPickerTarget(null); onGoAssets() }} />

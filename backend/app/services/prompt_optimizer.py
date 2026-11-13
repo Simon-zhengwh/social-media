@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from app.config import Settings
-from app.schemas import PromptOptimizeRequest
+from app.schemas import MAX_REFERENCE_ASSETS, PromptOptimizeRequest
 from app.services import brand_rules, brand_style, image_host, merchant_profile, platform_presets
 from app.services.core_ai import CoreAIError
 from app.services.object_store import CosObjectStore
@@ -26,8 +26,8 @@ def _unique_ids(values: list[str], label: str) -> list[str]:
 
 
 def _validate_products(db: Any, asset_ids: list[str]) -> list[str]:
-    if not 1 <= len(asset_ids) <= 6:
-        raise PromptOptimizerError("product_required", "请先选择 1–6 张素材图", 422)
+    if not 1 <= len(asset_ids) <= MAX_REFERENCE_ASSETS:
+        raise PromptOptimizerError("product_required", f"请先选择 1–{MAX_REFERENCE_ASSETS} 张素材图", 422)
     for asset_id in asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
         if asset is None:

@@ -7,6 +7,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from app.config import local_bypass_enabled
+from app.local_merchants import local_merchant_name
 from app.services import maintenance, merchant_profile
 from app.services.am_client import AMClientError
 from app.services.media_object_store import create_merchant_store
@@ -17,19 +18,20 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 LOCAL_ORIGINS = frozenset({"http://127.0.0.1:5173", "http://localhost:5173"})
 
 
-def _local_bypass_context(request: Request) -> dict[str, object] | None:
+def _local_bypass_context(request: Request, merchant_id: str) -> dict[str, object] | None:
     """Return a stand-in merchant context when AM Console is bypassed locally.
 
     Enabled only through AM_BYPASS_LOCAL and only when this process serves a loopback
     origin, so a deployed host cannot switch the bypass on with a stray environment
     variable. The merchant id still comes from the URL, so every query stays scoped.
     """
-    if not local_bypass_enabled(request.app.state.settings):
+    settings = request.app.state.settings
+    if not local_bypass_enabled(settings):
         return None
     return {
         "user_id": "local-dev",
         "user_name": "本地开发",
-        "merchant_name": "本地商户",
+        "merchant_name": local_merchant_name(settings, merchant_id),
     }
 
 
@@ -45,7 +47,7 @@ async def merchant_context_middleware(request: Request, call_next):
 
     merchant_id = unquote(match.group(1))
     cookie = request.headers.get("cookie", "").strip()
-    bypass = _local_bypass_context(request)
+    bypass = _local_bypass_context(request, merchant_id)
     try:
         if bypass is not None:
             access = {"merchant_id": merchant_id, **bypass}

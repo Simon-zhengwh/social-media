@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { WholeImageArtifact, WholeImageVersion } from '../types'
 import { parseServerDate } from '../time'
 import WholeArtifactPreview from './WholeArtifactPreview'
@@ -101,59 +102,62 @@ export default function WholeVersionPanel({
         </ol>
       )}
 
-      {preview ? (
-        <div
-          className="version-preview-backdrop"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`v${preview.version} 预览`}
-          onClick={() => setPreview(null)}
-        >
-          <div className="version-preview-card" onClick={(event) => event.stopPropagation()}>
-            <div className="version-preview-head">
-              <strong>v{preview.version} · {preview.instruction || '版本预览'}</strong>
-              {preview.outputs
-                .flatMap((output) => output.artifacts ?? [])
-                .map((artifact) =>
-                  artifact.preview_url ? (
-                    <button
-                      key={artifact.id}
-                      type="button"
-                      className="mp-btn-ghost mp-btn-small"
-                      onClick={() => setArtifactPreview(artifact)}
-                    >
-                      打开 {artifact.title || artifact.file_name}
-                    </button>
-                  ) : artifact.download_url ? (
-                    <a
-                      key={artifact.id}
-                      className="mp-btn-ghost mp-btn-small"
-                      href={artifact.download_url}
-                      download
-                    >
-                      下载 {artifact.title || artifact.file_name}
-                    </a>
-                  ) : null,
-                )}
-              <button type="button" onClick={() => setPreview(null)}>
-                关闭
-              </button>
-            </div>
-            {preview.outputs.length > 1 ? (
-              <div className="version-output-grid">
-                {preview.outputs.map((output) => (
-                  <figure key={output.id} className={output.role === 'agent_transparent' ? 'is-transparent' : ''}>
-                    <img src={output.preview_url ?? ''} alt={output.label} />
-                    <figcaption>{output.label}</figcaption>
-                  </figure>
-                ))}
+      {preview
+        ? createPortal(
+            <div
+              className="version-preview-backdrop"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`v${preview.version} 预览`}
+              onClick={() => setPreview(null)}
+            >
+              <div className="version-preview-card" onClick={(event) => event.stopPropagation()}>
+                <div className="version-preview-head">
+                  <strong>v{preview.version} · {preview.instruction || '版本预览'}</strong>
+                  {preview.outputs
+                    .flatMap((output) => output.artifacts ?? [])
+                    .map((artifact) =>
+                      artifact.preview_url ? (
+                        <button
+                          key={artifact.id}
+                          type="button"
+                          className="mp-btn-ghost mp-btn-small"
+                          onClick={() => setArtifactPreview(artifact)}
+                        >
+                          打开 {artifact.title || artifact.file_name}
+                        </button>
+                      ) : artifact.download_url ? (
+                        <a
+                          key={artifact.id}
+                          className="mp-btn-ghost mp-btn-small"
+                          href={artifact.download_url}
+                          download
+                        >
+                          下载 {artifact.title || artifact.file_name}
+                        </a>
+                      ) : null,
+                    )}
+                  <button type="button" onClick={() => setPreview(null)}>
+                    关闭
+                  </button>
+                </div>
+                {preview.outputs.length > 1 ? (
+                  <div className="version-output-grid">
+                    {preview.outputs.map((output) => (
+                      <figure key={output.id} className={output.role === 'agent_transparent' ? 'is-transparent' : ''}>
+                        <img src={output.preview_url ?? ''} alt={output.label} />
+                        <figcaption>{output.label}</figcaption>
+                      </figure>
+                    ))}
+                  </div>
+                ) : preview.preview_url ? (
+                  <img src={preview.preview_url} alt={`v${preview.version} 完整预览`} />
+                ) : null}
               </div>
-            ) : preview.preview_url ? (
-              <img src={preview.preview_url} alt={`v${preview.version} 完整预览`} />
-            ) : null}
-          </div>
-        </div>
-      ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
       <WholeArtifactPreview
         artifact={artifactPreview}
         onClose={() => setArtifactPreview(null)}

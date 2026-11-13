@@ -53,7 +53,15 @@ def test_xiaohongshu_prompt_locks_size_and_forbids_contact_details():
     xhs_context = platform_presets.prompt_context(platform, placement)
     assert "1080×1440" in xhs_context
     assert "禁止出现地址、电话号码或二维码" in xhs_context
-    assert "用户文案如包含相关内容，必须省略" in xhs_context
+    assert "街道名、入口位置及领取路线" in xhs_context
+    assert "用户文案或参考图包含这些内容时必须省略" in xhs_context
+
+
+@pytest.mark.parametrize("platform_id", ["instagram", "tiktok", "google-business-profile", "meta-ads", None])
+def test_other_platforms_do_not_inherit_xiaohongshu_route_exclusions(platform_id):
+    snapshot = {"id": platform_id} if platform_id else None
+    context = platform_presets.prompt_from_task(snapshot)
+    assert "街道名、入口位置及领取路线" not in context
 
 
 def test_unselected_platform_prompt_lets_agent_choose_freely():

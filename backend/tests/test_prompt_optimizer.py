@@ -241,26 +241,26 @@ def test_optimizer_inherits_brand_platform_when_not_explicit(settings, store, op
     assert "电话号码" in text
 
 
-def test_optimizer_passes_all_six_products_and_rejects_seven(settings, store):
+def test_optimizer_passes_all_fifteen_products_and_rejects_sixteen(settings, store):
     import json
 
     db = mongomock.MongoClient().db
     products = [
-        _seed_asset(db, settings, store, f"product-{index}.png", (index * 30, 60, 80))
-        for index in range(6)
+        _seed_asset(db, settings, store, f"product-{index}.png", (index * 12, 60, 80))
+        for index in range(15)
     ]
     client = FakeCoreAI()
     _optimize(db, settings, store, client, brand_mode="none", brand_id=None, product_asset_ids=products)
     manifest = json.loads(client.calls[0]["input"].split("图片清单（JSON）：\n", 1)[1])
     assert [image["label"] for image in manifest["content_images"]] == [
-        f"素材图 {index}" for index in range(1, 7)
+        f"素材图 {index}" for index in range(1, 16)
     ]
     assert [image["url"] for image in manifest["content_images"]] == [
         store.presign(db.assets.find_one({"_id": asset_id})["prepared_path"], 3600)
         for asset_id in products
     ]
     with pytest.raises(ValidationError):
-        PromptOptimizeRequest(product_asset_ids=[*products, "seventh"])
+        PromptOptimizeRequest(product_asset_ids=[*products, "sixteenth"])
 
 
 def test_blank_prompt_uses_products_brand_reference_and_xiaohongshu_rules(

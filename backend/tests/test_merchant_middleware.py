@@ -140,6 +140,7 @@ def _bypass_app(origin: str = "http://127.0.0.1:5173", bypass: bool = True, merc
         return {
             "merchant_id": request.state.merchant_id,
             "user_id": request.state.merchant_context["user_id"],
+            "merchant_name": request.state.merchant_context["merchant_name"],
             "store": request.state.store.name,
         }
 
@@ -162,8 +163,22 @@ def test_local_bypass_serves_context_and_local_store_without_a_cookie():
     assert response.json() == {
         "merchant_id": "local-merchant",
         "user_id": "local-dev",
+        "merchant_name": "SEE JOY喜聚",
         "store": "local",
     }
+
+
+def test_local_bypass_names_each_configured_merchant():
+    app, _ = _bypass_app()
+    app.state.settings.am_bypass_merchants = (
+        "keke=Keke Food可可小卤; szechuan=Szechuan Gourmet"
+    )
+    client = TestClient(app)
+    assert client.get("/api/merchants/local-merchant/probe").json()["merchant_name"] == "SEE JOY喜聚"
+    assert client.get("/api/merchants/keke/probe").json()["merchant_name"] == "Keke Food可可小卤"
+    assert client.get("/api/merchants/szechuan/probe").json()["merchant_name"] == "Szechuan Gourmet"
+    # Unknown ids keep the configured default instead of an empty label.
+    assert client.get("/api/merchants/unknown/probe").json()["merchant_name"] == "SEE JOY喜聚"
 
 
 def test_local_bypass_reads_the_stored_profile_for_generation_requests():

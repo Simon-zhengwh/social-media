@@ -101,7 +101,7 @@ export default function PromptField({
         {label}
         {required ? <em className="prompt-field-required" aria-label="必填">*</em> : null}
       </span>
-      <ImagePromptComposer label={label} value={prompt} images={images} maxImages={6} maxLength={5000}
+      <ImagePromptComposer label={label} value={prompt} images={images} maxLength={5000}
         placeholder={placeholder} disabled={disabled} uploading={imagesUploading} onChange={handleChange}
         onUploadImages={onUploadImages} onPickImages={onPickImages} onRemoveImage={onRemoveImage} />
       <div className="prompt-field-actions">
@@ -154,7 +154,7 @@ export default function PromptField({
                   关闭
                 </button>
               </div>
-              <ImagePromptComposer label="提示词内容" value={draftPrompt} images={images} maxImages={6} maxLength={5000}
+              <ImagePromptComposer label="提示词内容" value={draftPrompt} images={images} maxLength={5000}
                 placeholder={placeholder} onChange={setDraftPrompt} disabled={disabled} />
               <div className="prompt-preview-footer">
                 <span>{imagePromptIssue(draftPrompt, images) ? '请检查图片引用或内容长度' : `${serializeImagePrompt(draftPrompt, images).length} / 5000`}</span>

@@ -20,12 +20,20 @@ import type {
   PosterEditTask,
   MaterialFilterDefaults,
   MaterialFilterEvaluation,
+  MaterialTagGroups,
   MaterialFilterFolder,
   MaterialFilterFolderCreateResult,
   MaterialFilterResultsPage,
   MaterialFilterRun,
   MaterialFilterSync,
   MaterialFilterScheme,
+  MaterialGroup,
+  MaterialGroupFilesPage,
+  MaterialGroupRun,
+  MaterialGroupsPage,
+  MaterialGroupMergeRequest,
+  MaterialRecognitionRequest,
+  MaterialFileAttemptsPage,
 } from './types'
 
 
@@ -382,6 +390,18 @@ export async function deleteAsset(assetId: string, force = false): Promise<void>
   }
 }
 
+export type AssetDeleteResult = { deleted: string[]; am_deleted: string[]; local_deleted: string[] }
+
+/** One or many assets at a time; the server also drops the AM media-library record. */
+export async function deleteAssets(assetIds: string[], force = false): Promise<AssetDeleteResult> {
+  const response = await apiFetch('/api/assets/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: assetIds, force }),
+  })
+  return parseResponse<AssetDeleteResult>(response)
+}
+
 export type WholeImageTaskCreatePayload = {
   reference_asset_ids?: string[] | null
   image_model?: ImageModel
@@ -468,6 +488,7 @@ export async function createWholeImageEdit(
   sourceOutputId?: string | null,
   referenceAssetIds: string[] = [],
   referenceMode: 'legacy' | 'unified' = 'legacy',
+  imageModel?: ImageModel,
 ): Promise<WholeImageTask> {
   const response = await apiFetch(
     `/api/whole-image/tasks/${encodeURIComponent(taskId)}/edits`,
@@ -480,6 +501,7 @@ export async function createWholeImageEdit(
         source_output_id: sourceOutputId ?? null,
         reference_asset_ids: referenceAssetIds,
         reference_mode: referenceMode,
+        image_model: imageModel,
       }),
     },
   )
@@ -725,7 +747,7 @@ export async function listMaterialFilterResults(
 
 export async function updateMaterialFilterMetadata(
   evaluationId: string,
-  payload: { display_name?: string; tags?: string[] },
+  payload: { display_name?: string; tags?: string[]; tag_groups?: MaterialTagGroups },
 ): Promise<MaterialFilterEvaluation> {
   return parseResponse<MaterialFilterEvaluation>(await apiFetch(
     `/api/material-filters/evaluations/${encodeURIComponent(evaluationId)}/metadata`,
@@ -801,4 +823,103 @@ export async function exportPickedMaterialFilter(
 /** Absolute CSV download for the current merchant; the browser opens it directly. */
 export function materialFilterExportPath(schemeId: string): string {
   return `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/export`
+}
+
+export async function listMaterialGroups(
+  schemeId: string,
+  options: { skip?: number; limit?: number; q?: string; representative_count?: 1 | 2 } = {},
+): Promise<MaterialGroupsPage> {
+  const params = new URLSearchParams({
+    skip: String(options.skip ?? 0),
+    limit: String(options.limit ?? 30),
+    representative_count: String(options.representative_count ?? 1),
+  })
+  if (options.q) params.set('q', options.q)
+  return parseResponse<MaterialGroupsPage>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/groups?${params.toString()}`,
+  ))
+}
+
+export async function listMaterialGroupFiles(
+  groupId: string,
+  options: { skip?: number; limit?: number; representative_count?: 1 | 2 } = {},
+): Promise<MaterialGroupFilesPage> {
+  const params = new URLSearchParams({
+    skip: String(options.skip ?? 0),
+    limit: String(options.limit ?? 48),
+    representative_count: String(options.representative_count ?? 1),
+  })
+  return parseResponse<MaterialGroupFilesPage>(await apiFetch(
+    `/api/material-filters/groups/${encodeURIComponent(groupId)}/files?${params.toString()}`,
+  ))
+}
+
+export async function startMaterialGroupScan(schemeId: string, requestId: string): Promise<MaterialGroupRun> {
+  return parseResponse<MaterialGroupRun>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/group-scans`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ request_id: requestId }) },
+  ))
+}
+
+export async function startMaterialRecognitionRun(schemeId: string, payload: MaterialRecognitionRequest): Promise<MaterialGroupRun> {
+  return parseResponse<MaterialGroupRun>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/recognition-runs`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ))
+}
+
+export async function getMaterialGroupRun(runId: string): Promise<MaterialGroupRun> {
+  return parseResponse<MaterialGroupRun>(await apiFetch(`/api/material-filters/group-runs/${encodeURIComponent(runId)}`))
+}
+
+export async function resumeMaterialGroupRun(runId: string): Promise<MaterialGroupRun> {
+  return parseResponse<MaterialGroupRun>(await apiFetch(
+    `/api/material-filters/group-runs/${encodeURIComponent(runId)}/resume`, { method: 'POST' },
+  ))
+}
+
+export async function setMaterialGroupRepresentatives(groupId: string, fileIds: string[], version: string): Promise<MaterialGroup> {
+  return parseResponse<MaterialGroup>(await apiFetch(
+    `/api/material-filters/groups/${encodeURIComponent(groupId)}/representatives`,
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_ids: fileIds, version }) },
+  ))
+}
+
+export async function adoptMaterialGroupReference(groupId: string, fileId: string, version: string): Promise<MaterialGroup> {
+  return parseResponse<MaterialGroup>(await apiFetch(
+    `/api/material-filters/groups/${encodeURIComponent(groupId)}/reference`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: fileId, version }) },
+  ))
+}
+
+/** Rename a group; the name becomes the picked photos' export/upload file name. */
+export async function renameMaterialGroup(groupId: string, name: string, version: string): Promise<MaterialGroup> {
+  return parseResponse<MaterialGroup>(await apiFetch(
+    `/api/material-filters/groups/${encodeURIComponent(groupId)}/name`,
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, version }) },
+  ))
+}
+
+export async function listMaterialFileAttempts(
+  fileId: string,
+  options: { skip?: number; limit?: number } = {},
+): Promise<MaterialFileAttemptsPage> {
+  const params = new URLSearchParams({ skip: String(options.skip ?? 0), limit: String(options.limit ?? 10) })
+  return parseResponse<MaterialFileAttemptsPage>(await apiFetch(
+    `/api/material-filters/files/${encodeURIComponent(fileId)}/attempts?${params.toString()}`,
+  ))
+}
+
+export async function splitMaterialGroup(groupId: string, fileIds: string[], version: string): Promise<{ groups: MaterialGroup[] }> {
+  return parseResponse<{ groups: MaterialGroup[] }>(await apiFetch(
+    `/api/material-filters/groups/${encodeURIComponent(groupId)}/split`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_ids: fileIds, version }) },
+  ))
+}
+
+export async function mergeMaterialGroups(schemeId: string, payload: MaterialGroupMergeRequest): Promise<{ group: MaterialGroup }> {
+  return parseResponse<{ group: MaterialGroup }>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/groups/merge`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ))
 }

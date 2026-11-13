@@ -288,7 +288,8 @@ export function ImageMentionEditor({ value, images, label, placeholder, disabled
 }
 
 type ComposerProps = EditorProps & {
-  maxImages: number
+  /** `null` (the default) leaves the count open; the caller decides how many images are allowed. */
+  maxImages?: number | null
   addedCount?: number
   maxLength?: number
   uploading?: boolean
@@ -298,14 +299,15 @@ type ComposerProps = EditorProps & {
   footerActions?: ReactNode
 }
 
-export default function ImagePromptComposer({ images, maxImages, addedCount = images.length, maxLength = 5000,
+export default function ImagePromptComposer({ images, maxImages = null, addedCount = images.length, maxLength = 5000,
   uploading = false, onRemoveImage, onUploadImages, onPickImages, footerActions, ...editorProps }: ComposerProps) {
   const [addOpen, setAddOpen] = useState(false)
   // The add tile sits at the start of the strip, so anchoring the menu to its right edge pushes it
   // out of the card and under the sidebar; open to the right unless that would leave the viewport.
   const [addMenuSide, setAddMenuSide] = useState<'left' | 'right'>('left')
   const addRef = useRef<HTMLDivElement>(null)
-  const issue = addedCount > maxImages ? `最多使用 ${maxImages} 张参考图，请移除多余图片。` : imagePromptIssue(editorProps.value, images, maxLength)
+  const atLimit = maxImages !== null && addedCount >= maxImages
+  const issue = atLimit ? `最多使用 ${maxImages} 张参考图，请移除多余图片。` : imagePromptIssue(editorProps.value, images, maxLength)
   useEffect(() => {
     const close = (event: PointerEvent) => { if (!addRef.current?.contains(event.target as Node)) setAddOpen(false) }
     document.addEventListener('pointerdown', close)
@@ -322,17 +324,21 @@ export default function ImagePromptComposer({ images, maxImages, addedCount = im
               disabled={editorProps.disabled || uploading} onClick={() => onRemoveImage(image.assetId)}>×</button> : null}
           </div>
         ))}
-        {(onUploadImages || onPickImages) && addedCount < maxImages ? (
+        {(onUploadImages || onPickImages) && !atLimit ? (
           <div className="image-reference-add-wrap" ref={addRef}>
             <button type="button" className="image-reference-add" aria-label="添加参考图" aria-expanded={addOpen}
-              disabled={editorProps.disabled || uploading || addedCount >= maxImages} onClick={() => {
+              disabled={editorProps.disabled || uploading || atLimit} onClick={() => {
                 if (!addOpen) {
                   const rect = addRef.current?.getBoundingClientRect()
                   if (rect) setAddMenuSide(rect.left + ADD_MENU_WIDTH + 8 <= window.innerWidth ? 'left' : 'right')
                 }
                 setAddOpen(previous => !previous)
               }}>
-              <span aria-hidden="true">＋</span><small>{uploading ? '上传中' : '参考图'}<br />{addedCount}/{maxImages}</small>
+              <span aria-hidden="true">＋</span><small>{uploading ? '上传中' : '参考图'}
+                {maxImages === null
+                  ? (addedCount ? <><br />{addedCount} 张</> : null)
+                  : <><br />{addedCount}/{maxImages}</>}
+              </small>
             </button>
             {addOpen ? <div className={`image-reference-add-menu from-${addMenuSide}`}>
               {onUploadImages ? <label>上传图片<input type="file" multiple accept="image/*" aria-label="上传参考图"
@@ -344,7 +350,7 @@ export default function ImagePromptComposer({ images, maxImages, addedCount = im
       </div>
       <ImageMentionEditor {...editorProps} images={images} onPasteImages={onUploadImages ?? editorProps.onPasteImages} />
       {issue ? <p className="image-prompt-error" role="alert">{issue}</p> : null}
-      <div className="image-prompt-footer"><span className="image-prompt-footnote">输入 @ 引用图片{addedCount >= maxImages ? ` · ${addedCount}/${maxImages}` : ''}</span>{footerActions}</div>
+      <div className="image-prompt-footer"><span className="image-prompt-footnote">输入 @ 引用图片{atLimit ? ` · ${addedCount}/${maxImages}` : ''}</span>{footerActions}</div>
     </div>
   )
 }

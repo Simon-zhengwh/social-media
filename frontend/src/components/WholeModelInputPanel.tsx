@@ -19,7 +19,8 @@ const IMAGE_ROLE_LABELS: Record<string, string> = {
 
 function channelLabel(input: WholeImageModelInput) {
   if (input.channel === 'agent') return '图片 Agent'
-  return input.provider === 'minimax' ? 'MiniMax 接口' : 'Core AI 接口'
+  // Legacy tasks recorded a direct MiniMax call before every model moved to the gateway.
+  return input.provider === 'minimax' ? 'MiniMax 接口（历史）' : 'Core AI 接口'
 }
 
 function InputView({ input }: { input: WholeImageModelInput }) {

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Query, Request
 
 from app.api_errors import am_http_error
 from app.middleware import is_local_bypass as _local_bypass
+from app.local_merchants import local_merchant_catalog
 from app.request_context import request_db
 from app.services import am_assets, merchant_profile
 from app.services.am_client import AMClientError
@@ -24,9 +25,8 @@ def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
     deliberately not scoped to one merchant: it exists to choose one.
     """
     if _local_bypass(request):
-        # No console session locally: the configured merchant is the only one on offer.
-        merchant_id = request.app.state.settings.am_bypass_merchant_id.strip()
-        merchants = [{"id": merchant_id, "name": "本地商户"}] if merchant_id else []
+        # No console session locally: configuration decides which merchants exist.
+        merchants = local_merchant_catalog(request.app.state.settings)
         return {"total": len(merchants), "merchants": merchants}
     am = request.app.state.am
     try:

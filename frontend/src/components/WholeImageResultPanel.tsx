@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import type { ImageModel, WholeImageArtifact, WholeImageBranch, WholeImageOutput, WholeImageTask } from '../types'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import type { ImageModel, WholeImageArtifact, WholeImageOutput, WholeImageTask, WholeImageVersion } from '../types'
 import WholeArtifactPreview from './WholeArtifactPreview'
 import ModelCandidateGroup from './ModelCandidateGroup'
+import CandidateVersionPicker from './CandidateVersionPicker'
 
 type Props = {
   task: WholeImageTask | null
@@ -15,6 +16,11 @@ type Props = {
   selectingCandidateDisabled?: boolean
   deletingCandidateId?: string | null
   onDeleteCandidate: (candidate: WholeImageTask) => void
+  children?: ReactNode
+  versions: WholeImageVersion[]
+  versionsLoading: boolean
+  versionSelectionDisabled: boolean
+  onSelectVersion: (versionId: string) => Promise<boolean>
 }
 
 function GhostPreview() {
@@ -41,30 +47,6 @@ function LoadingPreview() {
         <span />
       </span>
       <strong>生成中</strong>
-    </div>
-  )
-}
-
-function BranchStatus({ branch, label }: { branch?: WholeImageBranch; label: string }) {
-  if (!branch) return null
-  const status = branch.status
-  const text =
-    status === 'completed'
-      ? '已完成'
-      : status === 'failed'
-        ? '失败'
-        : status === 'running'
-          ? '处理中'
-          : status === 'preparing'
-            ? '准备图片'
-            : '等待中'
-  return (
-    <div className={`branch-status is-${status}`}>
-      <span className="branch-status-dot" aria-hidden="true" />
-      <strong>{label}</strong>
-      <span>{text}</span>
-      {branch.run_id ? <code>{branch.run_id.slice(0, 8)}</code> : null}
-      {branch.error ? <em>{branch.error}</em> : null}
     </div>
   )
 }
@@ -175,19 +157,50 @@ export default function WholeImageResultPanel({
   selectingCandidateDisabled = false,
   deletingCandidateId = null,
   onDeleteCandidate,
+  children,
+  versions,
+  versionsLoading,
+  versionSelectionDisabled,
+  onSelectVersion,
 }: Props) {
   const [artifactPreview, setArtifactPreview] = useState<WholeImageArtifact | null>(null)
+  const previewRef = useRef<HTMLElement>(null)
+  const [versionAnchor, setVersionAnchor] = useState<{ taskId: string; element: HTMLButtonElement } | null>(null)
+  const closeVersionPicker = useCallback(() => setVersionAnchor(null), [])
   const task = candidates.find(candidate => candidate.id === confirmedTask?.id) ?? confirmedTask
   const selectionDisabled = selectingCandidateDisabled || deletingCandidateId !== null
   const candidateIndex = Math.max(
     0,
     candidates.findIndex((candidate) => candidate.id === task?.id),
   )
-  const moveCandidate = (offset: number) => {
-    if (candidates.length <= 1 || selectionDisabled) return
-    const nextIndex = (candidateIndex + offset + candidates.length) % candidates.length
-    onSelectCandidate?.(candidates[nextIndex])
-  }
+  useEffect(() => {
+    if (candidates.length <= 1 || selectionDisabled || !onSelectCandidate) return
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      const offset = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1
+        : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : 0
+      if (!offset || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return
+      const target = event.target
+      if (target instanceof HTMLElement && (
+        target.isContentEditable ||
+        target.closest('input, textarea, select, [role="textbox"], [role="tab"], [role="menu"], [role="listbox"], [role="combobox"], [role="dialog"]')
+      )) return
+      if (document.querySelector('dialog[open], [aria-modal="true"]')) return
+
+      event.preventDefault()
+      setVersionAnchor(null)
+      const nextIndex = (candidateIndex + offset + candidates.length) % candidates.length
+      onSelectCandidate(candidates[nextIndex])
+      const thumbnail = previewRef.current?.querySelectorAll<HTMLButtonElement>('.candidate-thumbnail')[nextIndex]
+      thumbnail?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      if (target instanceof HTMLElement && target.closest('.candidate-thumbnail')) {
+        thumbnail?.focus({ preventScroll: true })
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [candidateIndex, candidates, onSelectCandidate, selectionDisabled])
   const isActive = Boolean(task && (task.status === 'queued' || task.status === 'running'))
   const isEditing = task?.edit.status === 'running'
   const currentOutput =
@@ -212,61 +225,57 @@ export default function WholeImageResultPanel({
   )
 
   return (
-    <section className="studio-preview" aria-label="海报预览">
-      <div className={`preview-frame${isReady ? ' is-ready' : ''}`}>
-        {candidates.length > 1 ? (
-          <>
-            <button type="button" className="candidate-arrow candidate-arrow-left" disabled={selectionDisabled} onClick={() => moveCandidate(-1)} aria-label="上一张候选">‹</button>
-            <button type="button" className="candidate-arrow candidate-arrow-right" disabled={selectionDisabled} onClick={() => moveCandidate(1)} aria-label="下一张候选">›</button>
-          </>
+    <section ref={previewRef} className="studio-preview" aria-label="海报预览" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown">
+      <div className={`preview-workspace${candidates.length ? ' has-candidates' : ''}`}>
+        {candidates.length ? (
+          <aside className="candidate-carousel" aria-label="候选图片">
+            <div className="candidate-model-groups">
+              <ModelCandidateGroup model={selectedModel} candidates={candidates} selectedTaskId={task?.id}
+                selectionDisabled={selectionDisabled} deletingCandidateId={deletingCandidateId}
+                expandedTaskId={versionAnchor?.taskId === task?.id && !versionsLoading && versions.length > 1 ? versionAnchor?.taskId : null}
+                onSelect={(candidate, element) => {
+                  if (versionAnchor?.taskId === candidate.id) {
+                    setVersionAnchor(null)
+                    return
+                  }
+                  onSelectCandidate?.(candidate)
+                  setVersionAnchor({ taskId: candidate.id, element })
+                }}
+                onDelete={candidate => { setVersionAnchor(null); onDeleteCandidate(candidate) }} />
+            </div>
+          </aside>
         ) : null}
-        {isReady && previewUrl ? (
-          <div className="poster-image-button poster-image-static">
-            <img className="poster-image" src={previewUrl} alt="生成的完整设计" />
-          </div>
-        ) : isActive && task ? (
-          <LoadingPreview />
-        ) : (
-          <GhostPreview />
-        )}
-        {isReady && isEditing ? (
-          <div className="preview-edit-overlay">
-            <span className="scanline" aria-hidden="true" />
-            <strong>修改中</strong>
-            <span>模型正在按本次要求改图，完成后自动生成新版本</span>
-          </div>
-        ) : null}
-      </div>
 
-      {candidates.length || task ? (
-        <div className="candidate-carousel">
-          <div className="candidate-strip-heading">
-            {candidates.length ? (
-              <strong className="candidate-active-model">候选<span>{candidates.length} 张</span></strong>
-            ) : null}
-            {isReady && task && !comparisonVisible ? (
-              <div className="preview-actions">
-                <a className="mp-btn-ghost mp-btn-small" href={currentOutput?.download_url ?? task.download_url ?? '#'} download>
-                  <svg viewBox="0 0 20 20" aria-hidden="true" className="btn-icon"><path d="M10 3v9m0 0 3.5-3.5M10 12 6.5 8.5M4 15.5h12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                  下载 PNG
-                </a>
-                {currentOutput ? <ArtifactActions output={currentOutput} onPreview={setArtifactPreview} /> : null}
+        <div className="preview-main">
+          <div className={`preview-frame${isReady ? ' is-ready' : ''}`}>
+            {isReady && previewUrl ? (
+              <div className="poster-image-button poster-image-static">
+                <img className="poster-image" src={previewUrl} alt="生成的完整设计" />
+              </div>
+            ) : isActive && task ? (
+              <LoadingPreview />
+            ) : (
+              <GhostPreview />
+            )}
+            {isReady && isEditing ? (
+              <div className="preview-edit-overlay">
+                <span className="scanline" aria-hidden="true" />
+                <strong>修改中</strong>
+                <span>模型正在按本次要求改图，完成后自动生成新版本</span>
               </div>
             ) : null}
           </div>
-          <div className="candidate-model-groups">
-            <ModelCandidateGroup model={selectedModel} candidates={candidates} selectedTaskId={task?.id}
-              selectionDisabled={selectionDisabled} deletingCandidateId={deletingCandidateId}
-              onSelect={candidate => onSelectCandidate?.(candidate)} onDelete={onDeleteCandidate} />
+
+          <div className="preview-footer">
+            {isReady && task && !comparisonVisible && currentOutput ? (
+              <div className="preview-actions">
+                <ArtifactActions output={currentOutput} onPreview={setArtifactPreview} />
+              </div>
+            ) : null}
+            {children ? <div className="preview-chat">{children}</div> : null}
           </div>
         </div>
-      ) : null}
-
-      {isEditing || task?.edit.outcome ? (
-        <div className="branch-status-row">
-          <BranchStatus branch={branches?.gateway} label="Core AI 接口" />
-        </div>
-      ) : null}
+      </div>
 
       {comparisonVisible && task ? (
         <div className="comparison-board">
@@ -314,6 +323,15 @@ export default function WholeImageResultPanel({
       ) : null}
 
       {busy && !task ? <p className="result-hint">正在创建任务…</p> : null}
+      {versionAnchor ? (
+        <CandidateVersionPicker key={versionAnchor.taskId} anchor={versionAnchor.element}
+          versions={versionAnchor.taskId === task?.id ? versions : []}
+          loading={versionsLoading || versionAnchor.taskId !== task?.id}
+          currentVersionId={task?.current_version_id ?? null}
+          busy={versionSelectionDisabled || selectionDisabled}
+          onSelect={onSelectVersion}
+          onClose={closeVersionPicker} />
+      ) : null}
       <WholeArtifactPreview
         artifact={artifactPreview}
         onClose={() => setArtifactPreview(null)}

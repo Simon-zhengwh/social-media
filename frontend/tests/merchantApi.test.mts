@@ -66,7 +66,17 @@ test('workspace queries, candidate deletion and edits preserve merchant and cand
   const body = JSON.parse(String(requests[2].init?.body))
   assert.equal(body.source_version_id, 'version/a')
   assert.equal(body.source_output_id, 'output/a')
-  assert.equal(body.image_model, undefined) // The server owns this candidate's immutable model.
+  assert.equal(body.image_model, undefined) // Older callers keep the candidate's generation model.
+})
+
+test('edits can choose a model independently while retaining source image and reference order', async () => {
+  const requests = mockBrowser()
+  await createWholeImageEdit('candidate/a', '只改标题', 'version/a', 'output/a', ['ref-b', 'ref-a'], 'unified', 'seedream-5.5-image-to-image')
+  assert.equal(requests[0].path, '/api/merchants/merchant%2Fa/whole-image/tasks/candidate%2Fa/edits')
+  assert.deepEqual(JSON.parse(String(requests[0].init?.body)), {
+    instruction: '只改标题', source_version_id: 'version/a', source_output_id: 'output/a',
+    reference_asset_ids: ['ref-b', 'ref-a'], reference_mode: 'unified', image_model: 'seedream-5.5-image-to-image',
+  })
 })
 
 test('agent benchmark writes use the same merchant authentication and CSRF contract', async () => {

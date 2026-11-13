@@ -3,6 +3,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+# Ceiling for one poster's reference images. The workbench itself does not cap the picker;
+# this is only the server-side guard against runaway payloads.
+MAX_REFERENCE_ASSETS = 15
+
 
 def _normalize_unified_reference_ids(value: Any) -> Any:
     if value is None or not isinstance(value, (list, tuple)):
@@ -19,9 +23,19 @@ ImageModel = Literal[
     "gemini-3.1-flash-image",
     "seedream-5-pro-image-to-image",
     "seedream-5.5-image-to-image",
-    # Temporary direct MiniMax model until core-ai serves it through the gateway.
+    "minimax-h3-image-edit",
+    # Legacy workbench id kept so tasks created before the gateway rollout still load.
     "minimax-h3-image",
 ]
+
+# Legacy workbench id -> the model name the core-ai gateway publishes.
+IMAGE_MODEL_ALIASES: dict[str, str] = {"minimax-h3-image": "minimax-h3-image-edit"}
+
+
+def gateway_model_name(image_model: str | None) -> str:
+    """Resolve a stored workbench id to the name sent to the gateway."""
+    model = str(image_model or "").strip()
+    return IMAGE_MODEL_ALIASES.get(model, model)
 
 
 class BrandColor(BaseModel):
@@ -138,8 +152,8 @@ class WholeImageTaskCreate(BaseModel):
     prompt: str = Field(min_length=1, max_length=5000)
     prompt_optimized: bool = False
     ratio: Literal["1:1", "9:16", "4:5", "16:9", "3:4", "4:3"] = "9:16"
-    product_asset_ids: list[str] = Field(default_factory=list, max_length=6)
-    reference_asset_ids: list[str] | None = Field(default=None, max_length=6)
+    product_asset_ids: list[str] = Field(default_factory=list, max_length=MAX_REFERENCE_ASSETS)
+    reference_asset_ids: list[str] | None = Field(default=None, max_length=MAX_REFERENCE_ASSETS)
     brand_id: str | None = Field(default=None, max_length=64)
     brand_mode: Literal["preset", "reference", "none"] | None = None
     logo_asset_id: str | None = Field(default=None, max_length=128)
@@ -219,6 +233,7 @@ class WholeImageOriginalReplacementApplyRequest(BaseModel):
 
 class WholeImageEditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=1000)
+    image_model: ImageModel | None = None
     source_version_id: str = Field(min_length=1, max_length=128)
     source_output_id: str | None = Field(default=None, max_length=128)
     reference_asset_ids: list[str] = Field(default_factory=list, max_length=5)
@@ -280,8 +295,8 @@ class PromptOptimizeRequest(BaseModel):
     brand_id: str | None = Field(default=None, max_length=64)
     logo_asset_id: str | None = Field(default=None, max_length=128)
     style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)
-    product_asset_ids: list[str] = Field(default_factory=list, max_length=6)
-    reference_asset_ids: list[str] | None = Field(default=None, max_length=6)
+    product_asset_ids: list[str] = Field(default_factory=list, max_length=MAX_REFERENCE_ASSETS)
+    reference_asset_ids: list[str] | None = Field(default=None, max_length=MAX_REFERENCE_ASSETS)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)
     include_store_address: bool = False

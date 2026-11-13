@@ -169,7 +169,30 @@ def _bypass_request(merchant_id: str, raw):
 def test_merchant_list_uses_the_configured_merchant_under_the_local_bypass():
     request = _bypass_request("local-merchant", mongomock.MongoClient().db)
     result = merchant_context.list_merchants(request, keyword="")
-    assert result == {"total":1, "merchants": [{"id": "local-merchant", "name": "本地商户"}]}
+    assert result == {"total":1, "merchants": [{"id": "local-merchant", "name": "SEE JOY喜聚"}]}
+
+
+def test_merchant_name_can_be_overridden_by_configuration():
+    request = _bypass_request("local-merchant", mongomock.MongoClient().db)
+    request.app.state.settings.am_bypass_merchant_name = "  自定义商户  "
+    result = merchant_context.list_merchants(request, keyword="")
+    assert result == {"total":1, "merchants": [{"id": "local-merchant", "name": "自定义商户"}]}
+
+
+def test_merchant_list_appends_the_configured_extra_merchants():
+    request = _bypass_request("local-merchant", mongomock.MongoClient().db)
+    request.app.state.settings.am_bypass_merchants = (
+        "keke=Keke Food可可小卤; szechuan=Szechuan Gourmet; local-merchant=重复项忽略"
+    )
+    result = merchant_context.list_merchants(request, keyword="")
+    assert result == {
+        "total": 3,
+        "merchants": [
+            {"id": "local-merchant", "name": "SEE JOY喜聚"},
+            {"id": "keke", "name": "Keke Food可可小卤"},
+            {"id": "szechuan", "name": "Szechuan Gourmet"},
+        ],
+    }
 
 
 def test_assets_route_lists_uploads_without_calling_am_under_the_local_bypass():

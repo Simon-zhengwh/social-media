@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import AssetPicker from './AssetPicker'
 import ConfirmDialog from './ConfirmDialog'
 import WholeChatPanel from './WholeChatPanel'
+import WholeChatHistory from './WholeChatHistory'
 import WholeImageForm from './WholeImageForm'
 import ImageModelSelector from './ImageModelSelector'
 import WholeModelInputPanel from './WholeModelInputPanel'
 import WholeImageResultPanel from './WholeImageResultPanel'
-import WholeVersionPanel from './WholeVersionPanel'
 import OriginalReplacementPanel from './OriginalReplacementPanel'
 import type { StoreSelection } from './StoreInfoSelector'
 import {
@@ -38,13 +38,17 @@ import type {
   WholeImageTask,
   WholeImageVersion,
 } from '../types'
-import { DEFAULT_IMAGE_MODEL, IMAGE_MODEL_OPTIONS } from '../imageModels'
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODEL_OPTIONS, normalizeImageModel } from '../imageModels'
 import { defaultModelCounts, restoreModelCounts, mergeCandidates, modelGenerationState,
   submitModelRound, type ModelSubmission } from '../modelGeneration'
 import { candidateForModel } from '../modelGeneration'
 import { hydrateImagePrompt, imagePromptIssue, serializeImagePrompt, type PromptImage } from '../imageMentions'
+import { readPosterSession, savePosterSession, type PosterDraftForm, type PosterSession } from '../posterSession'
 
 type Props = {
+  userId: string
+  active: boolean
+  newDesignHref: string
   merchantProfile: MerchantProfile | null
   brands: BrandStyle[]
   // Merchant-level logos: shared by every platform style, and the poster form's default.
@@ -60,14 +64,11 @@ type Props = {
   onGoAssets: () => void
 }
 
-type StudioTab = 'chat' | 'original_replace' | 'versions' | 'model_input'
-
-const MAX_PRODUCTS = 6
+type StudioTab = 'chat_history' | 'original_replace' | 'model_input'
 
 const TABS: Array<{ key: StudioTab; label: string }> = [
-  { key: 'chat', label: '改图' },
+  { key: 'chat_history', label: '修改记录' },
   { key: 'original_replace', label: '原照替换' },
-  { key: 'versions', label: '版本' },
   { key: 'model_input', label: '模型输入' },
 ]
 
@@ -129,6 +130,9 @@ function logoFromAsset(asset: Asset): BrandLogoImage {
 }
 
 export default function WholeImageStudio({
+  userId,
+  active: visible,
+  newDesignHref,
   merchantProfile,
   brands,
   merchantLogos,
@@ -142,33 +146,60 @@ export default function WholeImageStudio({
   onLoadAssets,
   onGoAssets,
 }: Props) {
+  const merchantId = merchantIdFromLocation()
+  const [session] = useState<PosterSession | null>(() => {
+    const saved = readPosterSession(userId, merchantId)
+    const params = new URLSearchParams(window.location.search)
+    const taskId = params.get('whole')
+    const workspaceId = params.get('whole_workspace')
+    // Explicit task links take priority over a previously unfinished form.
+    if (taskId || workspaceId) return {
+      kind: 'task', taskId, workspaceId: workspaceId ?? '',
+      selectedModel: normalizeImageModel(params.get('whole_model')) as ImageModel,
+    }
+    return saved
+  })
+  const draft = session?.kind === 'draft' ? session.form : null
+  const mountedRef = useRef(false)
+  const visibleRef = useRef(visible)
+  useEffect(() => { visibleRef.current = visible }, [visible])
+  const acceptedRef = useRef(session?.kind === 'task')
+  const initialFormRef = useRef<string | null>(null)
+  const draftStartedRef = useRef(Boolean(draft))
+  const [sessionSaveFailed, setSessionSaveFailed] = useState(false)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
   const [task, setTask] = useState<WholeImageTask | null>(null)
   const [versions, setVersions] = useState<WholeImageVersion[]>([])
-  const [products, setProducts] = useState<Asset[]>([])
+  const [products, setProducts] = useState<Asset[]>(() => draft?.products ?? [])
   // FB-006: the last poster selection is remembered per merchant on this browser.
-  const merchantId = merchantIdFromLocation()
   const [preference] = useState(() => readPosterPreference(merchantId))
-  const [selectedPlatformId, setSelectedPlatformId] = useState(() => preference?.platform_id ?? '')
-  const [selectedPlacementId, setSelectedPlacementId] = useState(() => preference?.placement_id ?? '')
-  const [selectedRatio, setSelectedRatio] = useState<Ratio>(() => preference?.ratio ?? '9:16')
+  const [selectedPlatformId, setSelectedPlatformId] = useState(() => draft?.selectedPlatformId ?? preference?.platform_id ?? '')
+  const [selectedPlacementId, setSelectedPlacementId] = useState(() => draft?.selectedPlacementId ?? preference?.placement_id ?? '')
+  const [selectedRatio, setSelectedRatio] = useState<Ratio>(() => draft?.selectedRatio ?? preference?.ratio ?? '9:16')
   // Store facts stay off until the operator asks for them: printing an address is a per-poster
   // decision, so the default must not put one on a poster nobody vetted.
-  const [storeSelection, setStoreSelection] = useState<StoreSelection>({
+  const [storeSelection, setStoreSelection] = useState<StoreSelection>(() => draft?.storeSelection ?? ({
     enabled: false,
     placeId: '',
     address: true,
     phone: true,
-  })
+  }))
   const stores = merchantProfile?.brand_info?.stores ?? []
-  const [prompt, setPrompt] = useState('')
-  const [promptOptimized, setPromptOptimized] = useState(false)
-  const [modelCounts, setModelCounts] = useState(defaultModelCounts)
-  const [selectedModel, setSelectedModel] = useState<ImageModel>(() =>
-    IMAGE_MODEL_OPTIONS.find(option => option.value === new URLSearchParams(window.location.search).get('whole_model'))?.value ?? DEFAULT_IMAGE_MODEL)
+  const [prompt, setPrompt] = useState(() => draft?.prompt ?? '')
+  const [promptOptimized, setPromptOptimized] = useState(() => draft?.promptOptimized ?? false)
+  const [modelCounts, setModelCounts] = useState(() => draft?.modelCounts ?? defaultModelCounts())
+  const [selectedModel, setSelectedModel] = useState<ImageModel>(() => {
+    if (session?.kind === 'task') return normalizeImageModel(session.selectedModel)
+    const model = draft?.selectedModel ?? DEFAULT_IMAGE_MODEL
+    return IMAGE_MODEL_OPTIONS.find(option => option.value === model)?.value ?? DEFAULT_IMAGE_MODEL
+  })
   const selectedModelRef = useRef(selectedModel)
   const modelSelections = useRef<Partial<Record<ImageModel, string>>>({})
   const [modelSubmissions, setModelSubmissions] = useState<Partial<Record<ImageModel, ModelSubmission>>>({})
-  const workspaceRef = useRef<string>(new URLSearchParams(window.location.search).get('whole_workspace') ?? crypto.randomUUID())
+  const workspaceRef = useRef<string>(session?.workspaceId || crypto.randomUUID())
   const modelLocks = useRef(new Set<ImageModel>())
   const deletedCandidates = useRef(new Set<string>())
   const [deletingCandidateId, setDeletingCandidateId] = useState<string | null>(null)
@@ -176,17 +207,18 @@ export default function WholeImageStudio({
   const [pendingCandidateDelete, setPendingCandidateDelete] = useState<WholeImageTask | null>(null)
   const deleteLock = useRef(false)
   const [candidateTasks, setCandidateTasks] = useState<WholeImageTask[]>([])
-  const [selectedBrandId, setSelectedBrandId] = useState(() => preference?.brand_id ?? '')
-  const [selectedLogoId, setSelectedLogoId] = useState('')
-  const [logoChoiceTouched, setLogoChoiceTouched] = useState(false)
-  const [brandMode, setBrandMode] = useState<BrandMode>(() => preference?.brand_mode === 'reference' ? 'none' : preference?.brand_mode ?? 'preset')
-  const [styleReferences, setStyleReferences] = useState<Asset[]>([])
+  const [selectedBrandId, setSelectedBrandId] = useState(() => draft?.selectedBrandId ?? preference?.brand_id ?? '')
+  const [selectedLogoId, setSelectedLogoId] = useState(() => draft?.selectedLogoId ?? '')
+  const [logoChoiceTouched, setLogoChoiceTouched] = useState(() => draft?.logoChoiceTouched ?? false)
+  const [brandMode, setBrandMode] = useState<BrandMode>(() => draft?.brandMode ?? (preference?.brand_mode === 'reference' ? 'none' : preference?.brand_mode ?? 'preset'))
+  const [styleReferences, setStyleReferences] = useState<Asset[]>(() => draft?.styleReferences ?? [])
   const [styleReferencesUploading, setStyleReferencesUploading] = useState(false)
   const [productsUploading, setProductsUploading] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [studioTab, setStudioTab] = useState<StudioTab>(() =>
-    new URLSearchParams(window.location.search).get('tab') === 'original_replace' ? 'original_replace' : 'chat')
-  const [creating, setCreating] = useState(() => Boolean(readWholeTaskId() || new URLSearchParams(window.location.search).get('whole_workspace')))
+  const [studioTab, setStudioTab] = useState<StudioTab | 'auto' | null>(() =>
+    new URLSearchParams(window.location.search).get('tab') === 'original_replace' ? 'original_replace' : 'auto')
+  const [creating, setCreating] = useState(() => session?.kind === 'task')
+  const [sessionRestored, setSessionRestored] = useState(() => session?.kind !== 'task')
   const [versionsLoading, setVersionsLoading] = useState(false)
   const [selectingOutput, setSelectingOutput] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -273,6 +305,30 @@ export default function WholeImageStudio({
     selectedPlatform?.placements.find((item) => item.id === selectedPlatform.default_placement_id) ??
     null
 
+  useEffect(() => {
+    if (acceptedRef.current || creating) return
+    const form: PosterDraftForm = {
+      products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId, selectedRatio,
+      selectedBrandId, brandMode, selectedLogoId, logoChoiceTouched, styleReferences,
+      storeSelection, selectedModel, modelCounts,
+    }
+    const signature = JSON.stringify(form)
+    if (initialFormRef.current === null) initialFormRef.current = signature
+    if (!draftStartedRef.current && signature === initialFormRef.current) return
+    draftStartedRef.current = true
+    setSessionSaveFailed(!savePosterSession(userId, merchantId, { kind: 'draft', workspaceId: workspaceRef.current, form }))
+  }, [userId, merchantId, creating, products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId,
+    selectedRatio, selectedBrandId, brandMode, selectedLogoId, logoChoiceTouched, styleReferences,
+    storeSelection, selectedModel, modelCounts])
+
+  useEffect(() => {
+    if (!acceptedRef.current || creating || !sessionRestored) return
+    setSessionSaveFailed(!savePosterSession(userId, merchantId, {
+      kind: 'task', taskId: task?.id ?? null, workspaceId: workspaceRef.current, selectedModel,
+    }))
+    if (visible) updateWholeUrl(task?.id ?? null, workspaceRef.current, selectedModel)
+  }, [visible, creating, sessionRestored, task?.id, selectedModel, userId, merchantId])
+
   /*
     Only explicit choices are persisted: browsing a saved task must not overwrite the pair the
     operator picked last. List loading also gates the write so an unresolved default cannot
@@ -313,8 +369,8 @@ export default function WholeImageStudio({
   }, [])
 
   useEffect(() => {
-    const taskId = readWholeTaskId()
-    const savedWorkspace = new URLSearchParams(window.location.search).get('whole_workspace')
+    const taskId = session?.kind === 'task' ? session.taskId : null
+    const savedWorkspace = session?.kind === 'task' ? session.workspaceId : null
     if (!taskId && !savedWorkspace) return
     let cancelled = false
     restoringRef.current = true
@@ -324,13 +380,14 @@ export default function WholeImageStudio({
         const restoredCandidates = await listWholeImageWorkspace(workspace)
         if (cancelled) return
         workspaceRef.current = workspace
-        const model = savedTask ? savedTask.input.image_model ?? DEFAULT_IMAGE_MODEL : selectedModelRef.current
+        const model = savedTask ? normalizeImageModel(savedTask.input.image_model) : selectedModelRef.current
         selectedModelRef.current = model
         setSelectedModel(model)
         const selected = savedTask ?? candidateForModel(restoredCandidates, model)
         setTask(selected)
         if (selected) modelSelections.current[model] = selected.id
         setCandidateTasks(restoredCandidates)
+        setSessionRestored(true)
         setModelCounts(restoredCandidates.length ? restoreModelCounts(restoredCandidates) : defaultModelCounts())
         const restored = savedTask ?? restoredCandidates[0]
         if (!restored) return
@@ -380,12 +437,14 @@ export default function WholeImageStudio({
     return () => {
       cancelled = true
     }
-  }, [loadVersions])
+  }, [loadVersions, session])
 
   const candidateBatchId = task?.input.candidate_batch_id ?? null
   const workspaceId = task?.input.generation_workspace_id ?? candidateTasks.find(item => item.input.generation_workspace_id)?.input.generation_workspace_id ?? candidateTasks[0]?.input.candidate_batch_id ?? candidateTasks[0]?.id ?? null
+  const workspaceRunning = candidateTasks.some(candidate => candidate.status === 'queued' || candidate.status === 'running') ||
+    Object.values(modelSubmissions).some(submission => submission && !submission.error)
   useEffect(() => {
-    if (!workspaceId && !candidateBatchId) {
+    if ((!workspaceId && !candidateBatchId) || (!visible && !workspaceRunning)) {
       return
     }
     let cancelled = false
@@ -405,13 +464,21 @@ export default function WholeImageStudio({
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [workspaceId, candidateBatchId])
+  }, [workspaceId, candidateBatchId, visible, workspaceRunning])
 
   const visibleCandidates = mergeCandidates(candidateTasks, task ? [task] : [])
-  const modelCandidates = visibleCandidates.filter(candidate => (candidate.input.image_model ?? DEFAULT_IMAGE_MODEL) === selectedModel)
+  const modelCandidates = visibleCandidates.filter(candidate => normalizeImageModel(candidate.input.image_model) === selectedModel)
   const taskId = task?.id ?? null
   const taskStatus = task?.status ?? null
   const editRunning = task?.edit.status === 'running'
+  const chatMessages = task?.messages ?? []
+  // The history tab only exists while there is something to review.
+  const visibleTabs = TABS.filter(tab => tab.key !== 'chat_history' || chatMessages.length > 0 || editRunning)
+  // `auto` opens the history as soon as there is one, until the operator closes it by hand.
+  const resolvedTab: StudioTab | null = studioTab === 'auto'
+    ? (chatMessages.length || editRunning ? 'chat_history' : null)
+    : studioTab
+  const activeTab = visibleTabs.some(tab => tab.key === resolvedTab) ? resolvedTab : null
 
   useEffect(() => {
     const shouldPoll =
@@ -459,16 +526,29 @@ export default function WholeImageStudio({
   const busy = creating || active || editRunning || productsUploading || selectingOutput
   const formBusy = creating || productsUploading || styleReferencesUploading
   const promptImages: PromptImage[] = products.map(asset => ({ assetId: asset.id, name: asset.original_name, url: asset.url }))
-  const generationDisabled = formBusy || !prompt.trim() || products.length === 0 || products.length > MAX_PRODUCTS || Boolean(imagePromptIssue(prompt, promptImages)) ||
+  const generationDisabled = formBusy || !prompt.trim() || products.length === 0 || Boolean(imagePromptIssue(prompt, promptImages)) ||
     (brandMode === 'preset' && (brandsLoading || Boolean(brandsError) || !brandsForPlatform.some(brand => brand.id === effectiveBrandId))) ||
     (Boolean(platformResolved) && (!selectedPlatform || !selectedPlacement))
   const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id && task.current_output_id)
   const currentOutput = task?.outputs.find(output => output.id === task.current_output_id) ?? task?.outputs[0]
   const currentPreview = currentOutput?.preview_url ?? task?.preview_url
+  // The download entry sits in the composer footer, so the studio resolves the URL for it.
+  const downloadHref = currentOutput?.download_url ?? task?.download_url ?? null
   const currentPromptImage: PromptImage | null = task && currentPreview ? {
     assetId: `current:${task.id}:${task.current_version_id}:${task.current_output_id}`,
     name: '当前海报', url: currentPreview, removable: false,
   } : null
+
+  const rememberAcceptedTask = (candidate: WholeImageTask | null) => {
+    if (!mountedRef.current) return
+    acceptedRef.current = true
+    const model = selectedModelRef.current
+    const selectedId = modelSelections.current[model] ??
+      (candidate && normalizeImageModel(candidate.input.image_model) === model ? candidate.id : null)
+    setSessionSaveFailed(!savePosterSession(userId, merchantId, {
+      kind: 'task', taskId: selectedId, workspaceId: workspaceRef.current, selectedModel: model,
+    }))
+  }
 
   const handleGenerate = async (onlyModel?: ImageModel) => {
     if (formBusy) {
@@ -480,10 +560,6 @@ export default function WholeImageStudio({
     }
     if (products.length === 0) {
       setError('请先添加参考图')
-      return
-    }
-    if (products.length > MAX_PRODUCTS) {
-      setError(`最多使用 ${MAX_PRODUCTS} 张参考图，请移除多余图片`)
       return
     }
     if (brandMode === 'preset' && !brandsForPlatform.some((brand) => brand.id === effectiveBrandId)) {
@@ -523,11 +599,18 @@ export default function WholeImageStudio({
       setModelSubmissions(previous => ({ ...previous, [model]: { batchId, count } }))
       let submissionError: string | undefined
       try {
-        const result = await submitModelRound(payload, model, count, workspaceRef.current, batchId, createWholeImageTask)
+        const result = await submitModelRound(payload, model, count, workspaceRef.current, batchId, async (input) => {
+          const created = await createWholeImageTask(input)
+          // Each accepted request ends the draft immediately, even if a sibling request fails.
+          rememberAcceptedTask(created)
+          return created
+        })
+        if (!mountedRef.current) return
         let created = result.tasks
         if (result.errors.length) {
           // Reconcile a response lost after insertion before offering a manual new attempt.
           try { created = mergeCandidates(created, await listWholeImageWorkspace(workspaceRef.current)) } catch { /* no confirmed tasks yet */ }
+          if (!mountedRef.current) return
           const confirmed = created.filter(item => item.input.candidate_batch_id === batchId).length
           if (confirmed < count) submissionError = `${count - confirmed} 张提交未确认，请先核对任务中心再手动重试。${errorMessage(result.errors[0])}`
         }
@@ -536,7 +619,8 @@ export default function WholeImageStudio({
         const nextForModel = candidateForModel(created, selectedModelRef.current, modelSelections.current[selectedModelRef.current])
         setTask(previous => previous ?? nextForModel)
         // Only the first submission establishes the URL; subsequent rounds preserve the main image.
-        if (!readWholeTaskId() && nextForModel) {
+        if (created.length) rememberAcceptedTask(nextForModel)
+        if (visibleRef.current && !readWholeTaskId() && nextForModel) {
           modelSelections.current[selectedModelRef.current] = nextForModel.id
           updateWholeUrl(nextForModel.id, workspaceRef.current, selectedModelRef.current)
         }
@@ -558,6 +642,7 @@ export default function WholeImageStudio({
     instruction: string,
     sourceVersionId = task?.current_version_id ?? null,
     referenceAssetIds: string[] = [],
+    imageModel?: ImageModel,
   ): Promise<boolean> => {
     if (!task || !sourceVersionId || editRunning || submitLock.current || deleteLock.current) {
       return false
@@ -572,9 +657,9 @@ export default function WholeImageStudio({
         sourceVersionId === task.current_version_id ? task.current_output_id : null,
         referenceAssetIds,
         'unified',
+        imageModel,
       )
       setTask(next)
-      setStudioTab('chat')
       return true
     } catch (reason: unknown) {
       setError(errorMessage(reason))
@@ -595,18 +680,24 @@ export default function WholeImageStudio({
     finally { submitLock.current = false }
   }
 
-  const handleSelectVersion = async (versionId: string) => {
-    if (!task || busy || versionId === task.current_version_id) {
-      return
-    }
+  const handleSelectVersion = async (versionId: string): Promise<boolean> => {
+    if (!task || busy || submitLock.current || deleteLock.current) return false
+    if (versionId === task.current_version_id) return true
+    submitLock.current = true
+    setSelectingOutput(true)
     setError(null)
     try {
       const next = await selectWholeImageVersion(task.id, versionId)
       setTask(previous => previous?.id === next.id ? next : previous)
       setCandidateTasks(previous => mergeCandidates(previous, [next]))
       if (readWholeTaskId() === next.id) lastVersionRef.current = next.current_version_id
+      return true
     } catch (reason: unknown) {
       setError(errorMessage(reason))
+      return false
+    } finally {
+      submitLock.current = false
+      setSelectingOutput(false)
     }
   }
 
@@ -627,7 +718,7 @@ export default function WholeImageStudio({
 
   const handleSelectCandidate = (candidate: WholeImageTask) => {
     if (editRunning || submitLock.current || selectingOutput || deleteLock.current) return
-    const model = candidate.input.image_model ?? DEFAULT_IMAGE_MODEL
+    const model = normalizeImageModel(candidate.input.image_model)
     selectedModelRef.current = model
     setSelectedModel(model)
     modelSelections.current[model] = candidate.id
@@ -651,7 +742,7 @@ export default function WholeImageStudio({
     setVersionsLoading(false)
     lastVersionRef.current = next?.current_version_id ?? null
     if (next) modelSelections.current[model] = next.id
-    updateWholeUrl(next?.id ?? null, workspaceRef.current, model)
+    if (acceptedRef.current) updateWholeUrl(next?.id ?? null, workspaceRef.current, model)
     if (next?.current_version) void loadVersions(next.id)
   }
 
@@ -736,14 +827,13 @@ export default function WholeImageStudio({
   }
 
   const handleUploadProducts = async (files: File[]) => {
-    const accepted = files.slice(0, Math.max(0, MAX_PRODUCTS - products.length))
-    if (!accepted.length) return
+    if (!files.length) return
     setProductsUploading(true)
     setError(null)
     try {
       // Uploads land in the asset library, so the picker and later posters can reuse them.
-      const uploaded = await Promise.all(accepted.map((file) => uploadAsset(file)))
-      setProducts((previous) => [...new Map([...previous, ...uploaded].map(asset => [asset.id, asset])).values()].slice(0, MAX_PRODUCTS))
+      const uploaded = await Promise.all(files.map((file) => uploadAsset(file)))
+      setProducts((previous) => [...new Map([...previous, ...uploaded].map(asset => [asset.id, asset])).values()])
       setPromptOptimized(false)
       onLoadAssets()
     } catch (reason: unknown) {
@@ -781,6 +871,14 @@ export default function WholeImageStudio({
     if (assets.length === 0) {
       onLoadAssets()
     }
+  }
+
+  const selectUtility = (next: StudioTab | null) => {
+    setStudioTab(next)
+    const url = new URL(window.location.href)
+    if (next === 'original_replace') url.searchParams.set('tab', 'original_replace')
+    else url.searchParams.delete('tab')
+    window.history.replaceState({}, '', url)
   }
 
   return (
@@ -847,9 +945,7 @@ export default function WholeImageStudio({
           setPrompt(value)
           setPromptOptimized(optimized === true)
         }}
-      />
-
-      <div className="poster-editor">
+      >
         <ImageModelSelector
           counts={modelCounts}
           tasks={visibleCandidates}
@@ -861,101 +957,101 @@ export default function WholeImageStudio({
           selectionDisabled={creating || editRunning || selectingOutput || deletingCandidateId !== null}
           onSelectModel={handleSelectModel}
         />
-      <WholeImageResultPanel
-        task={task}
-        selectedModel={selectedModel}
-        busy={creating}
-        onRetry={(candidate) => void handleRetry(candidate)}
-        candidates={modelCandidates}
-        onSelectCandidate={handleSelectCandidate}
-        onSelectOutput={(versionId, outputId) => void handleSelectOutput(versionId, outputId)}
-        selectingOutput={selectingOutput}
-        selectingCandidateDisabled={editRunning || selectingOutput}
-        deletingCandidateId={deletingCandidateId}
-        onDeleteCandidate={(candidate) => void handleDeleteCandidate(candidate)}
-      />
+      </WholeImageForm>
 
-        <aside className="studio-inspector" aria-label="整图编辑工作台">
-          <div className="studio-tabs" role="tablist">
-            {TABS.map((tab) => (
-              <button
-                key={tab.key}
-                type="button"
-                role="tab"
-                aria-selected={studioTab === tab.key}
-                className={studioTab === tab.key ? 'is-active' : ''}
-                onClick={() => {
-                  setStudioTab(tab.key)
-                  const url = new URL(window.location.href)
-                  if (tab.key === 'original_replace') url.searchParams.set('tab', 'original_replace')
-                  else url.searchParams.delete('tab')
-                  window.history.replaceState({}, '', url)
-                }}
-              >
+      <div className={`poster-editor${activeTab ? ' has-utility-panel' : ''}`}>
+        <div className="poster-utility-toolbar">
+          <a className="mp-btn-secondary mp-btn-small" href={newDesignHref}
+            target="_blank" rel="noopener noreferrer" title="在新标签页打开，保留当前设计">
+            ＋ 新建海报设计
+          </a>
+          <div className="model-toolbar-tools" aria-label="辅助工具">
+            {visibleTabs.map(tab => (
+              <button key={tab.key} type="button" aria-expanded={activeTab === tab.key}
+                aria-controls="studio-utility-panel" className={activeTab === tab.key ? 'is-active' : ''}
+                onClick={() => selectUtility(activeTab === tab.key ? null : tab.key)}>
                 {tab.label}
-                {tab.key === 'versions' ? (
-                  <span className="tab-count tnum">{versions.length || task?.current_version || 0}</span>
+                {tab.key === 'chat_history' && chatMessages.length ? (
+                  <span className="tab-count">{chatMessages.length}</span>
                 ) : null}
               </button>
             ))}
           </div>
-          <div className="studio-tab-body">
-            {studioTab === 'chat' ? (
-              <>
-              <WholeChatPanel
-                key={task?.id}
-                messages={task?.messages ?? []}
-                edit={task?.edit ?? { status: 'idle' }}
-                stage={task?.stage ?? 'editing'}
-                disabled={!canEdit || busy}
-                onUpload={handleUploadChatImages}
-                currentImage={currentPromptImage}
-                assets={assets}
-                assetsLoading={assetsLoading}
-                onLoadAssets={onLoadAssets}
-                onGoAssets={onGoAssets}
-                onSend={(instruction, attachments) =>
-                  handleEdit(
-                    instruction,
-                    task?.current_version_id ?? null,
-                    attachments.map((asset) => asset.id),
-                  )
-                }
-              />
-              </>
-            ) : null}
-            {studioTab === 'original_replace' && task ? (
-              <OriginalReplacementPanel key={task.id} task={task} assets={assets} assetsLoading={assetsLoading}
-                onLoadAssets={onLoadAssets} onGoAssets={onGoAssets}
-                onApplied={async (next) => {
-                  setTask(next)
-                  lastVersionRef.current = next.current_version_id
-                  await loadVersions(next.id)
-                }}
-                onRefreshTask={async () => {
-                  const next = await getWholeImageTask(task.id)
-                  setTask(next)
-                  lastVersionRef.current = next.current_version_id
-                  await loadVersions(next.id)
-                }} />
-            ) : null}
-            {studioTab === 'versions' ? (
-              <WholeVersionPanel
-                versions={versions}
-                currentVersionId={task?.current_version_id ?? null}
-                busy={versionsLoading || busy}
-                onSelect={(versionId) => void handleSelectVersion(versionId)}
-              />
-            ) : null}
-            {studioTab === 'model_input' ? (
-              <WholeModelInputPanel
-                modelInput={task?.model_input ?? null}
-                outputs={task?.outputs ?? []}
-                branches={task?.edit.branches}
-              />
-            ) : null}
-          </div>
-        </aside>
+        </div>
+        <WholeImageResultPanel
+          task={task}
+          selectedModel={selectedModel}
+          busy={creating}
+          onRetry={(candidate) => void handleRetry(candidate)}
+          candidates={modelCandidates}
+          onSelectCandidate={handleSelectCandidate}
+          onSelectOutput={(versionId, outputId) => void handleSelectOutput(versionId, outputId)}
+          selectingOutput={selectingOutput}
+          selectingCandidateDisabled={!visible || editRunning || selectingOutput}
+          deletingCandidateId={deletingCandidateId}
+          onDeleteCandidate={(candidate) => void handleDeleteCandidate(candidate)}
+          versions={versions}
+          versionsLoading={versionsLoading}
+          versionSelectionDisabled={busy}
+          onSelectVersion={handleSelectVersion}
+        >
+          <WholeChatPanel
+            key={task?.id}
+            initialModel={normalizeImageModel(task?.edit.image_model ?? task?.model_input?.model ?? task?.input.image_model ?? selectedModel) as ImageModel}
+            edit={task?.edit ?? { status: 'idle' }}
+            disabled={!canEdit || busy}
+            onUpload={handleUploadChatImages}
+            downloadHref={downloadHref}
+            currentImage={currentPromptImage}
+            assets={assets}
+            assetsLoading={assetsLoading}
+            onLoadAssets={onLoadAssets}
+            onGoAssets={onGoAssets}
+            onSend={(instruction, attachments, imageModel) =>
+              handleEdit(
+                instruction,
+                task?.current_version_id ?? null,
+                attachments.map((asset) => asset.id),
+                imageModel,
+              )
+            }
+          />
+        </WholeImageResultPanel>
+
+        {activeTab ? (
+          <aside id="studio-utility-panel" className="studio-inspector" aria-label="辅助工具内容">
+            <div className="studio-utility-heading">
+              <button type="button" aria-label="收起辅助工具" onClick={() => selectUtility(null)}>×</button>
+            </div>
+            <div className="studio-tab-body">
+              {activeTab === 'chat_history' ? (
+                <WholeChatHistory messages={chatMessages} edit={task?.edit ?? { status: 'idle' }} />
+              ) : null}
+              {activeTab === 'original_replace' && task ? (
+                <OriginalReplacementPanel key={task.id} task={task} assets={assets} assetsLoading={assetsLoading}
+                  onLoadAssets={onLoadAssets} onGoAssets={onGoAssets}
+                  onApplied={async (next) => {
+                    setTask(next)
+                    lastVersionRef.current = next.current_version_id
+                    await loadVersions(next.id)
+                  }}
+                  onRefreshTask={async () => {
+                    const next = await getWholeImageTask(task.id)
+                    setTask(next)
+                    lastVersionRef.current = next.current_version_id
+                    await loadVersions(next.id)
+                  }} />
+              ) : null}
+              {activeTab === 'model_input' ? (
+                <WholeModelInputPanel
+                  modelInput={task?.model_input ?? null}
+                  outputs={task?.outputs ?? []}
+                  branches={task?.edit.branches}
+                />
+              ) : null}
+            </div>
+          </aside>
+        ) : null}
       </div>
 
       {pendingCandidateDelete ? (
@@ -983,6 +1079,12 @@ export default function WholeImageStudio({
         </div>
       ) : null}
 
+      {sessionSaveFailed ? (
+        <div className="global-error whole-image-error" role="alert">
+          当前浏览器无法暂存编辑内容，刷新页面后可能丢失。
+        </div>
+      ) : null}
+
       <AssetPicker
         key={pickerOpen ? 'whole-picker' : 'whole-closed'}
         open={pickerOpen}
@@ -992,7 +1094,7 @@ export default function WholeImageStudio({
         loading={assetsLoading}
         multi
         selectedIds={products.map((asset) => asset.id)}
-        max={MAX_PRODUCTS}
+        max={null}
         onClose={() => setPickerOpen(false)}
         onConfirm={(selected) => {
           setProducts(selected)
