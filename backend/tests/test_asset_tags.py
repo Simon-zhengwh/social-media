@@ -245,3 +245,50 @@ def test_tag_route_reports_am_permission_errors_without_local_fallback(settings)
 
     assert exc.value.status_code == 403
     assert "tags" not in db.assets.find_one({"_id": "local"})
+
+
+def test_local_single_box_search_matches_the_name_or_a_tag():
+    db = ScopedDatabase(mongomock.MongoClient().db, "m1")
+    db.assets.insert_many(
+        [
+            {"_id": "a", "original_name": "WIDE-DISH.png", "source": "upload", "tags": ["Dish"]},
+            {"_id": "b", "original_name": "SOUP.png", "source": "upload", "tags": ["Wide-pot"]},
+            {"_id": "c", "original_name": "OTHER.png", "source": "upload", "tags": ["Side"]},
+        ]
+    )
+
+    # One keyword crosses both fields; the tag-only filter keeps reporting Tag matches.
+    page = am_assets.list_local(db, "m1", keyword="wide", tag="", skip=0, limit=10)
+    assert {item["id"] for item in page["items"]} == {"a", "b"}
+    assert page["total"] == 2
+
+
+def test_am_single_box_search_merges_the_name_and_tag_matches():
+    seen = []
+
+    def handler(request: httpx.Request):
+        body = json.loads(request.content)
+        seen.append((body["filename"], body["tag"]))
+        if body["tag"]:
+            return httpx.Response(200, json={"media_libraries": [_am_media("m-2", name="soup.png")], "total": 1})
+        return httpx.Response(200, json={"media_libraries": [_am_media("m-1")], "total": 1})
+
+    page = am_assets.list_media(
+        _client(handler), "AMSessionId=abc", "m1", keyword="dish", tag="", skip=0, limit=10
+    )
+
+    assert seen == [("dish", None), (None, "dish")]
+    assert [item["am_media_library_id"] for item in page["items"]] == ["m-1", "m-2"]
+    assert page["total"] == 2
+
+
+def test_am_single_box_search_counts_a_media_matched_twice_once():
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={"media_libraries": [_am_media("m-1")], "total": 1})
+
+    page = am_assets.list_media(
+        _client(handler), "AMSessionId=abc", "m1", keyword="dish", tag="", skip=0, limit=10
+    )
+
+    assert [item["am_media_library_id"] for item in page["items"]] == ["m-1"]
+    assert page["total"] == 1

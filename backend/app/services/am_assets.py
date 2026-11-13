@@ -68,20 +68,55 @@ def list_media(
     skip: int,
     limit: int,
 ) -> dict[str, Any]:
+    # One search box sends only a keyword: AM filters name and tags with AND, so a keyword
+    # on its own is answered by a name search and a tag search merged together.
+    if keyword.strip() and not tag.strip():
+        return _list_media_any(am, cookie, merchant_id, keyword.strip(), skip=skip, limit=limit)
     response = am.search_media(
         cookie, merchant_id, keyword=keyword, tag=tag, skip=skip, limit=limit
     )
+    return {
+        "items": _media_items(response),
+        "total": int(response.get("total") or 0),
+        "skip": skip,
+        "limit": limit,
+    }
+
+
+def _list_media_any(
+    am: AMClient,
+    cookie: str,
+    merchant_id: str,
+    term: str,
+    *,
+    skip: int,
+    limit: int,
+) -> dict[str, Any]:
+    """Name-or-tag match: both filters paginate on their own, so a page can hold up to 2× limit."""
+    by_name = am.search_media(cookie, merchant_id, keyword=term, tag="", skip=skip, limit=limit)
+    by_tag = am.search_media(cookie, merchant_id, keyword="", tag=term, skip=skip, limit=limit)
+    named = _media_items(by_name)
+    tagged = _media_items(by_tag)
+    seen = {item["id"] for item in named}
+    overlap = sum(1 for item in tagged if item["id"] in seen)
+    # The union total is not something AM can report; counting the visible overlap once is the
+    # closest estimate and only ever drives the "load more" affordance.
+    total = int(by_name.get("total") or 0) + int(by_tag.get("total") or 0) - overlap
+    return {
+        "items": [*named, *[item for item in tagged if item["id"] not in seen]],
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+    }
+
+
+def _media_items(response: dict[str, Any]) -> list[dict[str, Any]]:
     items = []
     for media in response.get("media_libraries") or []:
         if not isinstance(media, dict) or not media.get("id"):
             continue
         items.append(_am_item(media))
-    return {
-        "items": items,
-        "total": int(response.get("total") or 0),
-        "skip": skip,
-        "limit": limit,
-    }
+    return items
 
 
 def _am_item(media: dict[str, Any], local: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -144,10 +179,14 @@ def _local_query(keyword: str, tag: str, *, registered_in_am: bool) -> dict[str,
         # would show and count the same image twice.
         query["am_media_library_id"] = {"$exists": False}
     normalized = keyword.strip()
-    if normalized:
-        query["original_name"] = {"$regex": re.escape(normalized), "$options": "i"}
-    # Same semantics as AM: case-insensitive substring match against the tag array.
+    # Same semantics as AM's search box: one query matches the file name or any tag.
     tag_query = tag.strip()
+    if normalized:
+        pattern = {"$regex": re.escape(normalized), "$options": "i"}
+        if tag_query:
+            query["original_name"] = pattern
+        else:
+            query["$or"] = [{"original_name": pattern}, {"tags": pattern}]
     if tag_query:
         query["tags"] = {"$regex": re.escape(tag_query), "$options": "i"}
     return query

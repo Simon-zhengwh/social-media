@@ -10,7 +10,7 @@ from app.api_errors import am_http_error
 from app.api_paths import asset_url
 from app.middleware import is_local_bypass
 from app.request_context import request_db, request_merchant_id, request_store
-from app.services import am_assets, asset_records
+from app.services import am_assets, asset_deletion, asset_records
 from app.services.am_client import AMClientError
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -24,6 +24,13 @@ class AssetTagsUpdate(BaseModel):
 class AssetNameUpdate(BaseModel):
     # The name is display metadata; AM enforces the 256-character stem limit on its side too.
     name: str = Field(min_length=1, max_length=300)
+
+
+class AssetDeletePayload(BaseModel):
+    """Batch delete: the asset page behaves like the AM console, one or many at a time."""
+
+    ids: list[str] = Field(min_length=1, max_length=200)
+    force: bool = False
 
 
 def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
@@ -176,61 +183,35 @@ def get_asset_file(asset_id: str, request: Request) -> FileResponse:
     return RedirectResponse(url, status_code=302)
 
 
-def _asset_referenced(db: Any, asset_id: str) -> bool:
-    if db.background_replace_tasks.find_one({"whole_task_id": {"$type": "string", "$ne": ""}, "$or": [
-        {"input.source_asset_id": asset_id}, {"input.replacements.asset_id": asset_id},
-    ]}):
-        return True
-    if db.whole_tasks.find_one(
-        {
-            "$or": [
-                {"input.product_asset_ids": asset_id},
-                {"input.reference_asset_ids": asset_id},
-                {"input.style_reference_asset_ids": asset_id},
-                {"input.logo_asset_id": asset_id},
-                {"edit.reference_asset_ids": asset_id},
-                {"messages.attachments.asset_id": asset_id},
-            ]
-        }
-    ):
-        return True
-    if db.whole_versions.find_one({"$or": [
-        {"model_input.images.asset_id": asset_id},
-        {"outputs.model_input.images.asset_id": asset_id},
-    ]}):
-        return True
-    if db.merchant_logos.find_one({"logo_asset_ids": asset_id}):
-        return True
-    if db.brands.find_one(
-        {
-            "$or": [
-                {"reference_asset_ids": asset_id},
-                {"logo_asset_ids": asset_id},
-                {"cover_asset_id": asset_id},
-            ]
-        }
-    ):
-        return True
-    return False
+def _delete(request: Request, asset_ids: list[str], *, force: bool) -> dict[str, Any]:
+    # Older callers (and tests) build a request without a state; the cookie is only needed
+    # once an AM media-library record is actually involved.
+    state = getattr(request, "state", None)
+    cookie = str(getattr(state, "am_cookie", "") or "")
+    try:
+        return asset_deletion.delete_assets(
+            request_db(request),
+            request_store(request),
+            getattr(request.app.state, "am", None),
+            cookie,
+            request_merchant_id(request),
+            asset_ids,
+            force=force,
+        )
+    except asset_deletion.AssetDeleteError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except AMClientError as exc:
+        raise am_http_error(exc) from exc
 
 
 @router.delete("/{asset_id}", status_code=204)
 def delete_asset(asset_id: str, request: Request, force: bool = False) -> Response:
-    db = request_db(request)
-    store = request_store(request)
-    asset = db.assets.find_one({"_id": asset_id})
-    if asset is None:
-        raise HTTPException(status_code=404, detail="素材不存在")
-    if asset_records.is_generated_asset(asset):
-        raise HTTPException(status_code=422, detail="生成结果不能从资产库删除")
-    if not force and _asset_referenced(db, asset_id):
-        raise HTTPException(
-            status_code=409,
-            detail="该素材正被品牌配置、任务或历史版本引用；如确认关联可失效，请使用强制删除。",
-        )
-    keys = {asset.get("path"), asset.get("prepared_path")}
-    for key in keys:
-        if key:
-            store.delete(key)
-    db.assets.delete_one({"_id": asset_id})
+    """Single-asset delete kept for callers that predate the batch route."""
+    _delete(request, [asset_id], force=force)
     return Response(status_code=204)
+
+
+@router.post("/delete")
+def delete_asset_batch(request: Request, payload: AssetDeletePayload) -> dict[str, Any]:
+    """Delete one or many assets, including the AM media-library record behind each one."""
+    return _delete(request, payload.ids, force=payload.force)

@@ -17,6 +17,49 @@ def is_uploaded_asset(asset: dict[str, Any]) -> bool:
     return not is_generated_asset(asset)
 
 
+def asset_referenced(db: Any, asset_id: str) -> bool:
+    """True when a brand, logo, task or saved version still points at this asset.
+
+    Deleting a referenced asset is possible, but only deliberately: the caller has to ask
+    for a forced delete, otherwise brand configs and old versions would silently dangle.
+    """
+    if db.background_replace_tasks.find_one({"whole_task_id": {"$type": "string", "$ne": ""}, "$or": [
+        {"input.source_asset_id": asset_id}, {"input.replacements.asset_id": asset_id},
+    ]}):
+        return True
+    if db.whole_tasks.find_one(
+        {
+            "$or": [
+                {"input.product_asset_ids": asset_id},
+                {"input.reference_asset_ids": asset_id},
+                {"input.style_reference_asset_ids": asset_id},
+                {"input.logo_asset_id": asset_id},
+                {"edit.reference_asset_ids": asset_id},
+                {"messages.attachments.asset_id": asset_id},
+            ]
+        }
+    ):
+        return True
+    if db.whole_versions.find_one({"$or": [
+        {"model_input.images.asset_id": asset_id},
+        {"outputs.model_input.images.asset_id": asset_id},
+    ]}):
+        return True
+    if db.merchant_logos.find_one({"logo_asset_ids": asset_id}):
+        return True
+    if db.brands.find_one(
+        {
+            "$or": [
+                {"reference_asset_ids": asset_id},
+                {"logo_asset_ids": asset_id},
+                {"cover_asset_id": asset_id},
+            ]
+        }
+    ):
+        return True
+    return False
+
+
 def uploaded_asset_query() -> dict[str, Any]:
     return {
         "$and": [

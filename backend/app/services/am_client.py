@@ -184,6 +184,16 @@ class AMClient:
         )
         return self._media_library(payload, "AM 素材详情响应格式无效")
 
+    def delete_media(self, cookie: str, merchant_id: str, media_ids: list[str]) -> None:
+        """Remove media-library records; AM answers 204 and the removal cannot be undone."""
+        self._request(
+            "PUT",
+            "/ajax/media-library/delete",
+            cookie=cookie,
+            json={"merchant_id": merchant_id, "media_ids": list(media_ids)},
+            expect_json=False,
+        )
+
     @staticmethod
     def _media_library(payload: Any, message: str) -> dict[str, Any]:
         media = payload.get("media_library") if isinstance(payload, dict) else None
@@ -246,6 +256,7 @@ class AMClient:
         *,
         cookie: str | None = None,
         service_auth: bool = False,
+        expect_json: bool = True,
         **kwargs: Any,
     ) -> dict[str, Any]:
         headers: dict[str, str] = {"Accept": "application/json"}
@@ -263,6 +274,8 @@ class AMClient:
         if response.status_code >= 400:
             code, message = self._error(response)
             raise AMClientError(response.status_code, code, message)
+        if not expect_json:
+            return {}
         try:
             payload = response.json()
         except ValueError as exc:

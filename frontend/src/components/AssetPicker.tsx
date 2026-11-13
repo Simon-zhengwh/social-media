@@ -7,7 +7,7 @@ const PAGE_SIZE = 36
 /** Start the next page before the operator reaches the very last row. */
 const LOAD_MORE_THRESHOLD = 200
 
-type AssetQuery = { keyword: string; tag: string }
+type AssetQuery = string
 /** `loading` is the first page of a filter, `more` an appended page, `idle` nothing in flight. */
 type Phase = 'idle' | 'loading' | 'more'
 
@@ -23,7 +23,8 @@ type Props = {
   loading?: boolean
   multi?: boolean
   selectedIds?: string[]
-  max?: number
+  /** `null` leaves the count open, so the operator decides how many to pick. */
+  max?: number | null
   title?: string
   onClose: () => void
   onSelect?: (asset: Asset) => void
@@ -37,7 +38,7 @@ export default function AssetPicker({
   assets,
   multi = false,
   selectedIds = [],
-  max = 6,
+  max = null,
   title: customTitle,
   onClose,
   onSelect,
@@ -45,10 +46,9 @@ export default function AssetPicker({
   onGoAssets,
 }: Props) {
   const [selected, setSelected] = useState<string[]>(() => selectedIds)
-  // Drafts only become the query on submit, so typing does not refetch per keystroke.
-  const [keywordDraft, setKeywordDraft] = useState('')
-  const [tagDraft, setTagDraft] = useState('')
-  const [query, setQuery] = useState<AssetQuery>({ keyword: '', tag: '' })
+  // The draft only becomes the query on submit, so typing does not refetch per keystroke.
+  const [draft, setDraft] = useState('')
+  const [query, setQuery] = useState<AssetQuery>('')
   const [items, setItems] = useState<Asset[]>([])
   // `loaded` counts rows the server returned, which is also the next skip.
   const [loaded, setLoaded] = useState(0)
@@ -98,7 +98,7 @@ export default function AssetPicker({
   const loadPage = useCallback((nextQuery: AssetQuery, skip: number) => {
     const requestId = requestRef.current + 1
     requestRef.current = requestId
-    void listAssetPage(nextQuery.keyword, skip, PAGE_SIZE, nextQuery.tag)
+    void listAssetPage(nextQuery, skip, PAGE_SIZE)
       .then((page) => {
         if (requestId !== requestRef.current) return
         applyPage(page, skip)
@@ -121,7 +121,7 @@ export default function AssetPicker({
 
   const title = customTitle ?? (purpose === 'product' ? '选择素材图' : '选择品牌 Logo')
   const emptyCopy = purpose === 'product' ? '资产管理中还没有可用素材图' : '资产管理中还没有可用图片'
-  const searching = Boolean(query.keyword || query.tag)
+  const searching = Boolean(query)
   const hasMore = loaded < total
   const listLoading = phase === 'loading'
   const loadingMore = phase === 'more'
@@ -147,7 +147,7 @@ export default function AssetPicker({
       if (previous.includes(assetId)) {
         return previous.filter((id) => id !== assetId)
       }
-      if (previous.length >= max) {
+      if (max !== null && previous.length >= max) {
         return previous
       }
       return [...previous, assetId]
@@ -171,16 +171,6 @@ export default function AssetPicker({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="modal-head">
-          <div>
-            <span className="eyebrow">资产选择</span>
-            <p>
-              {multi
-                ? `最多选择 ${max} 张，由 AI 自由组合。`
-                : purpose === 'logo'
-                  ? '从资产管理中选择一张图片作为 Logo。'
-                  : '从资产管理中选择一张素材。'}
-            </p>
-          </div>
           <button type="button" className="modal-close" onClick={onClose}>
             关闭
           </button>
@@ -190,25 +180,17 @@ export default function AssetPicker({
           className="picker-search"
           onSubmit={(event) => {
             event.preventDefault()
-            startQuery({ keyword: keywordDraft.trim(), tag: tagDraft.trim() })
+            startQuery(draft.trim())
           }}
         >
           <div className="asset-search-group">
             <input
               className="mp-input asset-search-input"
               type="search"
-              value={keywordDraft}
-              aria-label="搜索素材文件名"
-              placeholder="搜索素材文件名"
-              onChange={(event) => setKeywordDraft(event.target.value)}
-            />
-            <input
-              className="mp-input asset-search-input"
-              type="search"
-              value={tagDraft}
-              aria-label="按 Tag 搜索"
-              placeholder="按 Tag 搜索"
-              onChange={(event) => setTagDraft(event.target.value)}
+              value={draft}
+              aria-label="搜索素材名称或 Tag"
+              placeholder="搜索名称或 Tag"
+              onChange={(event) => setDraft(event.target.value)}
             />
             <button type="submit" className="mp-btn-secondary mp-btn-small">
               搜索
@@ -218,9 +200,8 @@ export default function AssetPicker({
                 type="button"
                 className="mp-btn-ghost mp-btn-small"
                 onClick={() => {
-                  setKeywordDraft('')
-                  setTagDraft('')
-                  startQuery({ keyword: '', tag: '' })
+                  setDraft('')
+                  startQuery('')
                 }}
               >
                 清空
@@ -325,7 +306,7 @@ export default function AssetPicker({
         {multi ? (
           <div className="picker-footer">
             <span>
-              已选 {selected.length} / {max}
+              已选 {selected.length}{max === null ? ' 张' : ` / ${max}`}
             </span>
             <div className="picker-footer-actions">
               <button

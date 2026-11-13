@@ -139,3 +139,27 @@ def test_local_listing_returns_uploads_only_and_never_calls_am():
     filtered = am_assets.list_local(db, "m1", keyword="wid", skip=0, limit=10)
     assert [item["original_name"] for item in filtered["items"]] == ["WIDE.png"]
 
+
+
+def test_delete_media_sends_one_batch_and_tolerates_an_empty_204():
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append((request.method, request.url.path, request.headers.get("cookie"), request.content))
+        return httpx.Response(204)
+
+    am = client_with(handler)
+
+    am.delete_media("AMSessionId=abc", "m1", ["media-1", "media-2"])
+
+    method, path, cookie, content = seen[0]
+    assert (method, path, cookie) == ("PUT", "/ajax/media-library/delete", "AMSessionId=abc")
+    assert json.loads(content) == {"merchant_id": "m1", "media_ids": ["media-1", "media-2"]}
+
+
+def test_delete_media_reports_am_errors():
+    am = client_with(lambda request: httpx.Response(403, json={"error": {"code": "forbidden", "message": "no"}}))
+
+    with pytest.raises(AMClientError) as exc:
+        am.delete_media("AMSessionId=abc", "m1", ["media-1"])
+    assert exc.value.status_code == 403

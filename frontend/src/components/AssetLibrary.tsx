@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { ApiError, deleteAsset, renameAsset, updateAssetTags } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { ApiError, deleteAssets, renameAsset, updateAssetTags } from '../api'
 import { MAX_ASSET_TAGS, normalizeTags } from '../assetTags'
 import type { Asset } from '../types'
 import { ZoomableImage } from './ImageLightbox'
@@ -51,12 +51,12 @@ export default function AssetLibrary({
   onNameSaved,
 }: Props) {
   // Null means "show the submitted filter"; typing only overrides it until the next search.
-  const [keywordDraft, setKeywordDraft] = useState<string | null>(null)
-  const [tagDraftValue, setTagDraftValue] = useState<string | null>(null)
+  const [draft, setDraft] = useState<string | null>(null)
   // A referenced asset answers with a conflict; keep it pending so the operator can confirm.
-  const [pendingDelete, setPendingDelete] = useState<{ asset: Asset; force: boolean } | null>(null)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<{ assets: Asset[]; force: boolean } | null>(null)
+  const [deletingIds, setDeletingIds] = useState<string[] | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [tagEditor, setTagEditor] = useState<{ asset: Asset; tags: string[] } | null>(null)
   const [tagInput, setTagInput] = useState('')
   const [tagSaving, setTagSaving] = useState(false)
@@ -65,32 +65,53 @@ export default function AssetLibrary({
   const [nameSaving, setNameSaving] = useState(false)
   const [nameError, setNameError] = useState<string | null>(null)
 
-  const keyword = keywordDraft ?? query
-  const tag = tagDraftValue ?? tagQuery
+  const keyword = draft ?? query
+  // One box matches a name or a tag; typing searches after a short pause instead of a button.
+  const search = useRef(onSearch)
+  useEffect(() => { search.current = onSearch }, [onSearch])
+  useEffect(() => {
+    const value = draft?.trim() ?? null
+    if (value === null || value === query.trim()) return
+    const timer = window.setTimeout(() => search.current(value, ''), 300)
+    return () => window.clearTimeout(timer)
+  }, [draft, query])
 
   const submitSearch = (nextTag: string) => {
-    setTagDraftValue(nextTag)
-    onSearch(keyword.trim(), nextTag.trim())
+    setDraft(nextTag)
+    onSearch(nextTag.trim(), '')
   }
 
-  const removeAsset = async (asset: Asset, force: boolean) => {
-    setDeletingId(asset.id)
+  const removeAssets = async (targets: Asset[], force: boolean) => {
+    if (targets.length === 0) return
+    setDeletingIds(targets.map((asset) => asset.id))
     setDeleteError(null)
     try {
-      await deleteAsset(asset.id, force)
-      onDeleted(asset.id)
+      await deleteAssets(targets.map((asset) => asset.id), force)
+      targets.forEach((asset) => onDeleted(asset.id))
+      const removed = new Set(targets.map((asset) => asset.id))
+      setSelectedIds((previous) => previous.filter((id) => !removed.has(id)))
       setPendingDelete(null)
     } catch (reason: unknown) {
       if (!force && reason instanceof ApiError && reason.code === 'http_409') {
-        setPendingDelete({ asset, force: true })
+        setPendingDelete({ assets: targets, force: true })
         return
       }
       setDeleteError(reason instanceof Error ? reason.message : '删除失败，请稍后重试')
       setPendingDelete(null)
     } finally {
-      setDeletingId(null)
+      setDeletingIds(null)
     }
   }
+
+  const toggleSelected = (assetId: string) => {
+    setSelectedIds((previous) =>
+      previous.includes(assetId) ? previous.filter((id) => id !== assetId) : [...previous, assetId],
+    )
+  }
+
+  const selectedAssets = assets.filter((asset) => selectedIds.includes(asset.id))
+  const allSelected = assets.length > 0 && selectedAssets.length === assets.length
+  const deleting = deletingIds !== null
 
   const openTagEditor = (asset: Asset) => {
     setTagEditor({ asset, tags: asset.tags ?? [] })
@@ -171,32 +192,40 @@ export default function AssetLibrary({
         className="asset-toolbar"
         onSubmit={(event) => {
           event.preventDefault()
-          onSearch(keyword.trim(), tag.trim())
+          onSearch(keyword.trim(), '')
         }}
       >
-        {/* Keyword and its trigger stay in one compact group; the tag filter sits beside it. */}
         <div className="asset-search-group">
           <input
             className="mp-input asset-search-input"
             type="search"
             value={keyword}
-            aria-label="搜索素材文件名"
-            placeholder="搜索素材文件名"
-            onChange={(event) => setKeywordDraft(event.target.value)}
+            aria-label="搜索素材名称或 Tag"
+            placeholder="搜索名称或 Tag"
+            onChange={(event) => setDraft(event.target.value)}
           />
-          <input
-            className="mp-input asset-search-input"
-            type="search"
-            value={tag}
-            aria-label="按 Tag 搜索"
-            placeholder="按 Tag 搜索"
-            onChange={(event) => setTagDraftValue(event.target.value)}
-          />
-          <button type="submit" className="mp-btn-secondary mp-btn-small">
-            搜索
-          </button>
         </div>
         <div className="asset-toolbar-actions">
+          {assets.length > 0 ? (
+            <button
+              type="button"
+              className="mp-btn-secondary mp-btn-small"
+              onClick={() => setSelectedIds(allSelected ? [] : assets.map((asset) => asset.id))}
+              disabled={deleting}
+            >
+              {allSelected ? '取消全选' : '全选'}
+            </button>
+          ) : null}
+          {selectedAssets.length > 0 ? (
+            <button
+              type="button"
+              className="mp-btn-secondary mp-btn-small asset-bulk-delete"
+              onClick={() => setPendingDelete({ assets: selectedAssets, force: false })}
+              disabled={deleting}
+            >
+              删除选中 {selectedAssets.length}
+            </button>
+          ) : null}
           <label className={`mp-btn-secondary mp-btn-small upload-trigger${uploading ? ' is-disabled' : ''}`}>
             <input
               type="file"
@@ -244,24 +273,34 @@ export default function AssetLibrary({
             {assets.map((asset) => (
               <article className="asset-card" key={asset.id}>
                 <div className="asset-thumb">
+                  {/* Selection drives bulk delete; the ✕ next to it deletes just this card. */}
+                  <button
+                    type="button"
+                    className={`asset-select${selectedIds.includes(asset.id) ? ' is-on' : ''}`}
+                    aria-pressed={selectedIds.includes(asset.id)}
+                    aria-label={`${selectedIds.includes(asset.id) ? '取消选择' : '选择'} ${asset.original_name}`}
+                    title="选择后可批量删除"
+                    disabled={deleting}
+                    onClick={() => toggleSelected(asset.id)}
+                  >
+                    {selectedIds.includes(asset.id) ? '✓' : ''}
+                  </button>
                   <ZoomableImage
                     className="asset-thumb-preview"
                     src={asset.url}
                     alt={asset.original_name}
                     title={asset.original_name}
                   />
-                  {asset.source !== 'am' && !asset.read_only ? (
-                    <button
-                      type="button"
-                      className="asset-delete-fab"
-                      title="删除这张素材"
-                      aria-label={`删除 ${asset.original_name}`}
-                      disabled={deletingId === asset.id}
-                      onClick={() => setPendingDelete({ asset, force: false })}
-                    >
-                      {deletingId === asset.id ? '…' : '×'}
-                    </button>
-                  ) : null}
+                  <button
+                    type="button"
+                    className="asset-delete-fab"
+                    title={asset.source === 'am' ? '删除这张素材（含 AM 素材库记录）' : '删除这张素材'}
+                    aria-label={`删除 ${asset.original_name}`}
+                    disabled={deleting}
+                    onClick={() => setPendingDelete({ assets: [asset], force: false })}
+                  >
+                    {deletingIds?.includes(asset.id) ? '…' : '×'}
+                  </button>
                 </div>
                 <div className="asset-card-head">
                   <span className="asset-date">{formatDate(asset.created_at)}</span>
@@ -329,22 +368,26 @@ export default function AssetLibrary({
       >
         <div className="brand-delete-modal" role="dialog" aria-modal="true" aria-labelledby="asset-delete-title">
           <strong id="asset-delete-title">
-            {pendingDelete.force ? '这张图片正在被引用' : '删除这张素材？'}
+            {pendingDelete.force
+              ? `${pendingDelete.assets.length > 1 ? '这些图片' : '这张图片'}正在被引用`
+              : `删除${pendingDelete.assets.length > 1 ? `选中的 ${pendingDelete.assets.length} 张` : '这张'}素材？`}
           </strong>
           <p>
             {pendingDelete.force
               ? '它被品牌配置、任务或历史版本引用。强制删除会让这些引用失效，已生成的海报不受影响。'
-              : `${pendingDelete.asset.original_name}删除后无法恢复。`}
+              : pendingDelete.assets.length > 1
+                ? `${pendingDelete.assets.slice(0, 3).map((asset) => asset.original_name).join('、')}${pendingDelete.assets.length > 3 ? ` 等 ${pendingDelete.assets.length} 张` : ''}删除后无法恢复。`
+                : `${pendingDelete.assets[0].original_name}删除后无法恢复。`}
           </p>
           <div className="brand-delete-modal-actions">
             <button type="button" onClick={() => setPendingDelete(null)} autoFocus>取消</button>
             <button
             type="button"
             className="is-danger"
-            disabled={deletingId !== null}
-            onClick={() => void removeAsset(pendingDelete.asset, pendingDelete.force)}
+            disabled={deleting}
+            onClick={() => void removeAssets(pendingDelete.assets, pendingDelete.force)}
             >
-            {deletingId ? '删除中…' : pendingDelete.force ? '强制删除' : '确认删除'}
+            {deleting ? '删除中…' : pendingDelete.force ? '强制删除' : '确认删除'}
             </button>
           </div>
         </div>
