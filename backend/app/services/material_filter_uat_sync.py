@@ -9,6 +9,7 @@ document for the lifetime of the job and never logged.
 from __future__ import annotations
 
 import io
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,13 +17,33 @@ from typing import Any, Callable
 
 import httpx
 from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
 
 from app.config import Settings
 from app.services import material_filters as store
 from app.services.material_filters import MaterialFilterError
 
+# Local copies of phone photos are often HEIC; the re-encode below needs Pillow to read them.
+register_heif_opener()
+
+logger = logging.getLogger(__name__)
+
 SYNC_COLLECTION = "material_filter_syncs"
 MAX_ASSET_TAGS = 5
+COOKIE_INVALID_CODE = "uat_cookie_invalid"
+WRITE_REJECTED_CODE = "uat_write_rejected"
+FATAL_CODES = frozenset({COOKIE_INVALID_CODE, WRITE_REJECTED_CODE})
+# What UAT rejects with before it has read the upload body: it answers and closes, so the
+# client sees WinError 10054 instead of the status code the operator needs.
+EARLY_REJECT_STATUSES = {401, 403}
+CONNECTION_ERRORS = (
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.RemoteProtocolError,
+)
 CONTENT_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -54,6 +75,18 @@ def base_url(settings: Settings, override: str = "") -> str:
     return value
 
 
+def session_cookie(value: str) -> str:
+    """Accept the bare AM session id the DevTools panel shows, not only a full Cookie header.
+
+    A naked token is sent verbatim as the ``Cookie`` header, AM Console answers 401, and UAT
+    closes the connection mid-body so the operator only sees Errno 10054. Wrap it instead.
+    """
+    token = str(value or "").strip()
+    if not token or "=" in token or ";" in token or " " in token:
+        return token
+    return f"AMSessionId={token}"
+
+
 def start_sync(
     db,
     settings: Settings,
@@ -65,7 +98,7 @@ def start_sync(
     dry_run: bool = False,
     transport: httpx.BaseTransport | None = None,
 ) -> dict[str, Any]:
-    session = str(cookie or "").strip()
+    session = session_cookie(cookie)
     if not session:
         raise SyncError("uat_cookie_required", "请先粘贴 AM 会话 Cookie（AMSessionId=…）", 422)
     active = db[SYNC_COLLECTION].find_one(
@@ -91,16 +124,24 @@ def start_sync(
     }
     db[SYNC_COLLECTION].insert_one(document)
     if dry_run:
-        _dry_plan(
-            db,
-            settings,
-            scheme,
-            str(document["_id"]),
-            cookie=session,
-            force=force,
-            limit=limit,
-            transport=transport,
-        )
+        try:
+            _dry_plan(
+                db,
+                settings,
+                scheme,
+                str(document["_id"]),
+                cookie=session,
+                force=force,
+                limit=limit,
+                transport=transport,
+            )
+        except Exception as exc:
+            # A failed preview must not block every later preview or upload as queued.
+            db[SYNC_COLLECTION].update_one(
+                {"_id": document["_id"]},
+                {"$set": {"status": "failed", "error": str(exc)[:500], "finished_at": now()}},
+            )
+            raise
         return get_sync(db, str(document["_id"]))
     thread = threading.Thread(
         target=_guarded,
@@ -131,21 +172,27 @@ def _dry_plan(db, settings, scheme, sync_id, *, cookie, force, limit, transport)
         with httpx.Client(
             base_url=root, headers=headers, timeout=120, follow_redirects=True, transport=transport
         ) as client:
-            used = _collect_names(client, merchant_id, "/assets") | _collect_names(
+            used = collect_names(client, merchant_id, "/assets") | collect_names(
                 client, merchant_id, "/am-assets"
             )
+    except SyncError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise SyncError("uat_unavailable", f"无法连接 UAT：{exc}", 502) from exc
     items = []
+    manual_names = _manual_names(db, scheme)
     for row in rows:
         suffix = Path(str(row.get("output_name") or "x.jpg")).suffix.lower() or ".jpg"
-        target = _planned_name(row, suffix, used)
+        suffix = upload_suffix(suffix)
+        manual_name = manual_names.get(str(row.get("file_id") or ""))
+        target = _planned_name(row, suffix, used, manual_name)
         base_name = target
         items.append(
             {
                 "name": row["original_name"],
                 "status": "planned",
                 "asset_name": target,
+                "manual_name": manual_name,
                 "renamed": target != f"{target.split('-')[0]}{suffix}",
             }
         )
@@ -189,8 +236,39 @@ def get_sync(db, sync_id: str) -> dict[str, Any]:
     return document
 
 
-def _planned_name(row: dict[str, Any], suffix: str, used: set[str]) -> str:
+def mark_interrupted(db) -> int:
+    """Release uploads whose in-memory worker was lost when the backend stopped."""
+    syncs = list(db[SYNC_COLLECTION].find({"status": {"$in": list(ACTIVE_STATUSES)}}))
+    for document in syncs:
+        counters = document.get("counters") or {}
+        completed = counters.get("uploaded", 0) + counters.get("linked", 0)
+        db[SYNC_COLLECTION].update_one(
+            {"_id": document["_id"], "status": {"$in": list(ACTIVE_STATUSES)}},
+            {"$set": {
+                "status": "partial" if completed else "failed",
+                "current": "",
+                "error": "后端服务重启，同步已中断；再次点击「开始同步」只上传尚未同步的照片。",
+                "finished_at": now(),
+            }},
+        )
+    return len(syncs)
+
+
+def _manual_names(db, scheme: dict[str, Any]) -> dict[str, str]:
+    from app.services import material_groups as group_store
+
+    return group_store.manual_names_by_file(db, scheme)
+
+
+def _planned_name(row: dict[str, Any], suffix: str, used: set[str], manual_name: str | None = None) -> str:
     from app.services.material_filter_files import sanitize_output_stem
+
+    if row.get("naming_mode") == "menu_match":
+        name = str(manual_name or row.get("display_name") or "")
+        if not name or len(name) > 190:
+            raise SyncError("invalid_menu_filename", "菜单双语名称为空或过长，不能静默截断", 422)
+        # Assets have distinct IDs. Repeated menu names must stay identical.
+        return f"{sanitize_output_stem(name, max_length=190)}{suffix}"
 
     stem = sanitize_output_stem(
         row.get("display_name") or row.get("original_name") or "图片", max_length=60
@@ -204,8 +282,23 @@ def _planned_name(row: dict[str, Any], suffix: str, used: set[str]) -> str:
     return f"{candidate}{suffix}"
 
 
-def fit_upload_bytes(data: bytes, max_bytes: int) -> tuple[bytes, str, bool]:
-    if max_bytes <= 0 or len(data) <= max_bytes:
+# AM stores the uploaded bytes and serves them back as-is, so a HEIC original renders as a
+# broken thumbnail in every browser. Send JPEG instead.
+BROWSER_UNSAFE_SUFFIXES = frozenset({".heic", ".heif"})
+
+
+def upload_suffix(suffix: str) -> str:
+    """The suffix the AM record will carry once the bytes are re-encoded for the browser."""
+    value = suffix.lower()
+    if value in BROWSER_UNSAFE_SUFFIXES:
+        return ".jpg"
+    return value or ".jpg"
+
+
+def fit_upload_bytes(data: bytes, max_bytes: int, *, force_jpeg: bool = False) -> tuple[bytes, str, bool]:
+    """Re-encode to JPEG when the body is too large or the source format cannot be rendered."""
+    limit = max_bytes if max_bytes > 0 else None
+    if not force_jpeg and (limit is None or len(data) <= limit):
         return data, "", False
     with Image.open(io.BytesIO(data)) as opened:
         image = ImageOps.exif_transpose(opened).convert("RGB")
@@ -216,7 +309,7 @@ def fit_upload_bytes(data: bytes, max_bytes: int) -> tuple[bytes, str, bool]:
             buffer = io.BytesIO()
             current.save(buffer, format="JPEG", quality=quality, optimize=True)
             encoded = buffer.getvalue()
-            if len(encoded) <= max_bytes:
+            if limit is None or len(encoded) <= limit:
                 return encoded, ".jpg", True
         current = current.resize(
             (max(256, int(current.width * 0.85)), max(256, int(current.height * 0.85))),
@@ -230,14 +323,56 @@ def desired_tags(row: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(tags))[: MAX_ASSET_TAGS - 1] + ["素材筛选"]
 
 
-def _collect_names(client: httpx.Client, merchant_id: str, path: str) -> set[str]:
+def _reject_if_unauthenticated(response: httpx.Response) -> None:
+    """Make an expired session a readable error instead of a wall of upload failures."""
+    if response.status_code not in EARLY_REJECT_STATUSES:
+        return
+    try:
+        error = response.json().get("error") or {}
+        detail = str(error.get("message") or error.get("code") or "")[:120]
+    except (ValueError, AttributeError):
+        detail = ""
+    suffix = f"：{detail}" if detail else ""
+    if response.status_code == 401:
+        raise SyncError(
+            COOKIE_INVALID_CODE,
+            f"AM 会话 Cookie 无效或已过期（UAT 返回 HTTP 401{suffix}），"
+            "请在 UAT 浏览器里重新复制 Cookie 后再同步",
+            401,
+        )
+    raise SyncError(
+        WRITE_REJECTED_CODE,
+        f"UAT 拒绝了这次上传（HTTP 403{suffix}）：请确认 Cookie 属于该商户，"
+        "且 UAT 的 SOCIAL_MEDIA_ORIGIN 与本机配置的 UAT 地址一致",
+        403,
+    )
+
+
+def _probe_access(client: httpx.Client, merchant_id: str) -> None:
+    """Ask UAT a cheap question with the same cookie, so a hidden status can surface."""
+    try:
+        response = client.get(f"/api/merchants/{merchant_id}/assets", params={"limit": 1})
+    except CONNECTION_ERRORS as exc:
+        raise SyncError("uat_unavailable", f"无法连接 UAT：{exc}", 502) from exc
+    _reject_if_unauthenticated(response)
+
+
+def collect_names(client: httpx.Client, merchant_id: str, path: str) -> set[str]:
+    """Existing asset names, paged until the deployed list actually repeats.
+
+    The deployed ``/assets`` list ignores ``skip`` and returns the same page again without a
+    ``total``, so a length-only stop condition spins forever. New ids per page are the only
+    reliable signal that paging still moves.
+    """
     names: set[str] = set()
+    seen: set[str] = set()
     skip = 0
     while True:
         try:
             response = client.get(f"/api/merchants/{merchant_id}{path}", params={"skip": skip, "limit": 100})
-        except Exception:  # noqa: BLE001
+        except CONNECTION_ERRORS:
             break
+        _reject_if_unauthenticated(response)
         if response.status_code != 200:
             break
         payload = response.json()
@@ -246,9 +381,13 @@ def _collect_names(client: httpx.Client, merchant_id: str, path: str) -> set[str
             name = str(item.get("original_name") or "").strip()
             if name:
                 names.add(name.casefold())
+        ids = {str(item.get("id") or item.get("original_name") or "") for item in items}
         total = payload.get("total") if isinstance(payload, dict) else None
         skip += len(items)
-        if not items or len(items) < 100 or (total is not None and skip >= int(total)):
+        if not items or len(items) < 100 or ids <= seen:
+            break
+        seen |= ids
+        if total is not None and skip >= int(total):
             break
     return names
 
@@ -270,6 +409,40 @@ def _find_am_media(client: httpx.Client, merchant_id: str, original_name: str) -
         if stem in str(item.get("original_name") or "").casefold():
             return item
     return None
+
+
+def _post_asset(
+    client: httpx.Client,
+    merchant_id: str,
+    *,
+    file_name: str,
+    data: bytes,
+    suffix: str,
+) -> httpx.Response:
+    """Upload one photo, recovering from the reset UAT answers with when it rejects early.
+
+    UAT validates the AM cookie before it reads the multipart body. On a multi-megabyte
+    photo it closes the connection while the body is still going out, so httpx reports
+    ``[Errno 10054] 远程主机强迫关闭了一个现有的连接。`` and the real status is lost. Probe
+    with a tiny request first, then retry once: if the session is genuinely dead the probe
+    raises the actionable cookie error instead of a network symptom.
+    """
+    files = {"file": (file_name, data, CONTENT_TYPES.get(suffix, "application/octet-stream"))}
+    try:
+        return client.post(f"/api/merchants/{merchant_id}/assets", files=files)
+    except CONNECTION_ERRORS as exc:
+        reset = exc
+    _probe_access(client, merchant_id)
+    logger.warning("UAT closed the connection while uploading %s, retrying once: %s", file_name, reset)
+    try:
+        return client.post(f"/api/merchants/{merchant_id}/assets", files=files)
+    except CONNECTION_ERRORS as exc:
+        raise SyncError(
+            "uat_connection_reset",
+            f"UAT 在上传「{file_name}」时连续关闭连接（{exc}）；会话已验证可用，"
+            "多半是网关的文件大小或超时限制",
+            502,
+        ) from exc
 
 
 def run_sync(
@@ -315,6 +488,7 @@ def run_sync(
 
     counters = {"total": len(rows), "done": 0, "uploaded": 0, "compressed": 0, "linked": 0, "failed": 0}
     items: list[dict[str, Any]] = []
+    manual_names = _manual_names(db, scheme)
     max_file_bytes = int(settings.material_filter_uat_max_body_mb * 1024 * 1024 * 3 / 4)
     try:
         client = httpx.Client(
@@ -324,9 +498,10 @@ def run_sync(
         raise SyncError("uat_unavailable", f"无法连接 UAT：{exc}", 502) from exc
 
     with client:
-        used = _collect_names(client, merchant_id, "/assets") | _collect_names(
+        used = collect_names(client, merchant_id, "/assets") | collect_names(
             client, merchant_id, "/am-assets"
         )
+        fatal: SyncError | None = None
         for row in rows:
             label = row["original_name"]
             db[SYNC_COLLECTION].update_one({"_id": sync_id}, {"$set": {"current": label}})
@@ -334,13 +509,17 @@ def run_sync(
                 path = store.scheme_directory(settings, scheme) / str(row["output_path"])
                 if not path.is_file():
                     raise SyncError("output_missing", f"本机副本不存在：{path.name}", 404)
-                data, new_suffix, recompressed = fit_upload_bytes(path.read_bytes(), max_file_bytes)
-                suffix = new_suffix or path.suffix.lower() or ".jpg"
-                file_name = _planned_name(row, suffix, used)
-                response = client.post(
-                    f"/api/merchants/{merchant_id}/assets",
-                    files={"file": (file_name, data, CONTENT_TYPES.get(suffix, "application/octet-stream"))},
+                data, new_suffix, recompressed = fit_upload_bytes(
+                    path.read_bytes(),
+                    max_file_bytes,
+                    force_jpeg=path.suffix.lower() in BROWSER_UNSAFE_SUFFIXES,
                 )
+                suffix = new_suffix or upload_suffix(path.suffix)
+                file_name = _planned_name(row, suffix, used, manual_names.get(str(row.get("file_id") or "")))
+                response = _post_asset(
+                    client, merchant_id, file_name=file_name, data=data, suffix=suffix
+                )
+                _reject_if_unauthenticated(response)
                 if response.status_code not in {200, 201}:
                     detail = response.text[:200]
                     existing = None
@@ -397,12 +576,17 @@ def run_sync(
                     {"_id": row["_id"]}, {"$set": {"uat_sync_error": str(exc)[:500]}}
                 )
                 items.append({"name": label, "status": "failed", "message": str(exc)[:300]})
+                # A rejected session fails every remaining photo the same way; stop instead.
+                if isinstance(exc, SyncError) and exc.code in FATAL_CODES:
+                    fatal = exc
             finally:
                 counters["done"] = counters["uploaded"] + counters["linked"] + counters["failed"]
                 db[SYNC_COLLECTION].update_one(
                     {"_id": sync_id},
                     {"$set": {"counters": dict(counters), "items": items[-30:]}},
                 )
+            if fatal is not None:
+                break
         status = "succeeded" if counters["failed"] == 0 else (
             "partial" if counters["uploaded"] or counters["linked"] else "failed"
         )
@@ -412,6 +596,7 @@ def run_sync(
                 "$set": {
                     "status": status,
                     "current": "",
+                    "error": fatal.message if fatal is not None else None,
                     "finished_at": now(),
                     "counters": counters,
                     "items": items[-30:],

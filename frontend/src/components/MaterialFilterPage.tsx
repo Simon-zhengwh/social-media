@@ -34,10 +34,12 @@ import type {
   MaterialFilterSync,
 } from '../types'
 import type { MaterialFilterSort } from '../api'
+import MaterialGroupBrowser from './MaterialGroupBrowser'
 import './MaterialFilterPage.css'
 
 const RESULTS_PAGE_SIZE = 60
 const MAX_VISIBLE_RESULTS = 500
+const TAG_GROUPS = ['食材', '员工', '环境'] as const
 
 const STATUS_TABS: Array<{ key: string; label: string }> = [
   { key: 'all', label: '全部' },
@@ -132,7 +134,8 @@ export default function MaterialFilterPage() {
   const [searchDraft, setSearchDraft] = useState('')
   const [search, setSearch] = useState('')
   const [busyEvaluation, setBusyEvaluation] = useState<string | null>(null)
-  const [editing, setEditing] = useState<{ id: string; name: string; tags: string } | null>(null)
+  const [editing, setEditing] = useState<{ id: string; name: string; tags: string; tagGroups?: Partial<Record<typeof TAG_GROUPS[number], string>> } | null>(null)
+  const [browseMode, setBrowseMode] = useState<{ schemeId: string; mode: 'groups' | 'photos' } | null>(null)
 
   const [addingFolder, setAddingFolder] = useState(false)
   const [folderInput, setFolderInput] = useState('')
@@ -176,6 +179,8 @@ export default function MaterialFilterPage() {
   const visibleLimitRef = useRef(RESULTS_PAGE_SIZE)
 
   const activeFolder = folders.find((item) => item.id === activeFolderId) ?? null
+  const groupMode = detail?.naming_mode === 'menu_match' && detail.rules.length === 0
+  const showPhotos = !!detail && (browseMode?.schemeId === detail.id ? browseMode.mode === 'photos' : !groupMode)
   const runActive = run?.status === 'queued' || run?.status === 'running'
   const scannedTotal = run?.counters.scanned ?? 0
   // During a run the live total is freshest; afterwards the stored evaluation
@@ -326,7 +331,7 @@ export default function MaterialFilterPage() {
   }, [status, search, sort])
 
   useEffect(() => {
-    if (runActive) {
+    if (runActive && !groupMode) {
       document.title = `扫描中 ${judgedTotal}/${scannedTotal} · 素材筛选`
     } else {
       document.title = '素材筛选'
@@ -334,7 +339,7 @@ export default function MaterialFilterPage() {
     return () => {
       document.title = '素材筛选'
     }
-  }, [runActive, judgedTotal, scannedTotal])
+  }, [runActive, judgedTotal, scannedTotal, groupMode])
 
   // The overflow menu closes on any outside click or Escape.
   useEffect(() => {
@@ -718,8 +723,7 @@ export default function MaterialFilterPage() {
 
   const saveMetadata = async () => {
     if (!editing) return
-    const tags = editing.tags
-      .split(/[,，、\n]/)
+    const splitTags = (text: string) => text.split(/[,，、\n]/)
       .map((tag) => tag.trim())
       .filter(Boolean)
     setBusyEvaluation(editing.id)
@@ -727,7 +731,9 @@ export default function MaterialFilterPage() {
     try {
       const updated = await updateMaterialFilterMetadata(editing.id, {
         display_name: editing.name.trim(),
-        tags,
+        ...(editing.tagGroups
+          ? { tag_groups: Object.fromEntries(TAG_GROUPS.map(group => [group, splitTags(editing.tagGroups?.[group] ?? '')])) }
+          : { tags: splitTags(editing.tags) }),
       })
       setResults((current) => current.map((item) => (item.id === updated.id ? updated : item)))
       setEditing(null)
@@ -768,7 +774,7 @@ export default function MaterialFilterPage() {
         </button>
       </div>
 
-      {runActive ? (
+      {runActive && !groupMode ? (
         <div className="mf-run-strip" role="status">
           <span className="mf-spinner" aria-hidden="true" />
           <strong>扫描中</strong>
@@ -922,6 +928,7 @@ export default function MaterialFilterPage() {
               {schemesLoading ? <span className="mf-muted">读取中…</span> : null}
 
               <div className="mf-scheme-actions">
+                {!groupMode ? <>
                 <button
                   type="button"
                   className="mp-btn-primary"
@@ -939,6 +946,7 @@ export default function MaterialFilterPage() {
                 >
                   试跑 5 张
                 </button>
+                </> : null}
                 <button
                   type="button"
                   className="mp-btn-secondary"
@@ -989,7 +997,7 @@ export default function MaterialFilterPage() {
                           导出结果清单
                         </a>
                       ) : null}
-                      {run?.status === 'interrupted' ? (
+                      {!groupMode && run?.status === 'interrupted' ? (
                         <button
                           type="button"
                           role="menuitem"
@@ -1002,7 +1010,7 @@ export default function MaterialFilterPage() {
                           继续中断任务
                         </button>
                       ) : null}
-                      {run && (run.status === 'failed' || (run.counters.errors ?? 0) > 0) ? (
+                      {!groupMode && run && (run.status === 'failed' || (run.counters.errors ?? 0) > 0) ? (
                         <button
                           type="button"
                           role="menuitem"
@@ -1133,14 +1141,19 @@ export default function MaterialFilterPage() {
 
           {detail ? (
             <div className="mf-card mf-scheme-summary">
+              <details className="mf-scheme-description">
+                <summary>方案说明 <span>{groupMode ? '按菜单命名 · 每组一张代表图' : `${detail.rules.length} 条筛选要求`}</span></summary>
               <div className="mf-summary-head">
                 <div>
                   <span className="mf-kicker">当前方案</span>
                   <h3>{detail.name}</h3>
                 </div>
-                <span className="mf-summary-status">{runStatusLabel(run)}</span>
+                <span className="mf-summary-status">{groupMode ? '本机分组 · 代表图识别' : runStatusLabel(run)}</span>
               </div>
               <ul className="mf-rule-list">
+                {detail.prompt_version === 'menu-naming-v1' ? (
+                  <li><strong>按菜单生成{detail.name_format === 'en' ? '英文' : '中英文'}名称</strong><span>不启用内容过滤；菜单外图片自由命名，同菜照片允许重名，供人工入选。</span></li>
+                ) : null}
                 {detail.rules.map((rule, index) => (
                   <li key={rule.id}>
                     <strong>{index + 1}. {rule.text}</strong>
@@ -1151,8 +1164,9 @@ export default function MaterialFilterPage() {
               <p className="mf-hint">
                 {detail.recursive ? '包含子目录' : '仅当前目录'} · 模型 {detail.model} · 提示词 {detail.prompt_version} · 输出 {detail.output_root}
               </p>
+              </details>
               {runError ? <p className="mf-error">{runError}</p> : null}
-              {run ? (
+              {run && !groupMode ? (
                 <RunProgress run={run} live={live} judged={judgedTotal} totals={live?.counts ?? counts} />
               ) : null}
             </div>
@@ -1278,7 +1292,19 @@ export default function MaterialFilterPage() {
             </div>
           ) : null}
 
-          {detail ? (
+          {detail && detail.id === activeSchemeId ? (
+            <>
+              <div className="mf-inline-actions" role="tablist" aria-label="照片浏览方式">
+                <button type="button" role="tab" aria-selected={!showPhotos} className={!showPhotos ? 'mp-btn-primary' : 'mp-btn-secondary'} onClick={() => setBrowseMode({ schemeId: detail.id, mode: 'groups' })}>按相似组浏览</button>
+                <button type="button" role="tab" aria-selected={showPhotos} className={showPhotos ? 'mp-btn-primary' : 'mp-btn-secondary'} onClick={() => setBrowseMode({ schemeId: detail.id, mode: 'photos' })}>逐张结果 · 人工入选</button>
+              </div>
+              <div hidden={showPhotos}>
+                <MaterialGroupBrowser key={detail.id} scheme={detail} blockedByFilterRun={runActive} onChanged={() => void loadResults(detail.id, statusRef.current, searchRef.current)} />
+              </div>
+            </>
+          ) : null}
+
+          {detail && showPhotos ? (
             <div className="mf-results">
               <div className="mf-results-head">
                 <div className="mf-status-tabs">
@@ -1380,11 +1406,23 @@ export default function MaterialFilterPage() {
                         {evaluation.category || '未分类'}
                         {evaluation.human_decision ? ' · 人工已复核' : ''}
                       </p>
-                      <div className="mf-tags">
+                      {TAG_GROUPS.some(group => evaluation.tag_groups?.[group]?.length) ? (
+                        <div className="mf-tag-groups">
+                          {TAG_GROUPS.map(group => evaluation.tag_groups?.[group]?.length ? (
+                            <div className="mf-tag-group" key={group}>
+                              <strong>{group}</strong>
+                              <div className="mf-tags">
+                                {evaluation.tag_groups[group]?.map(tag => <span key={tag}>{tag}</span>)}
+                              </div>
+                            </div>
+                          ) : null)}
+                        </div>
+                      ) : <div className="mf-tags">
                         {evaluation.tags.map((tag) => (
                           <span key={tag}>{tag}</span>
                         ))}
-                      </div>
+                      </div>}
+                      {evaluation.description ? <p className="mf-hint">{evaluation.description}</p> : null}
                       {evaluation.rules.length ? (
                         <ul className="mf-verdicts">
                           {evaluation.rules.map((verdict) => (
@@ -1411,13 +1449,21 @@ export default function MaterialFilterPage() {
                               onChange={(event) => setEditing({ ...editing, name: event.target.value })}
                             />
                           </label>
-                          <label>
+                          {editing.tagGroups ? TAG_GROUPS.map(group => (
+                            <label key={group}>
+                              {group}标签（中文，逗号分隔）
+                              <input
+                                value={editing.tagGroups?.[group] ?? ''}
+                                onChange={event => setEditing({ ...editing, tagGroups: { ...editing.tagGroups, [group]: event.target.value } })}
+                              />
+                            </label>
+                          )) : <label>
                             标签（逗号分隔）
                             <input
                               value={editing.tags}
                               onChange={(event) => setEditing({ ...editing, tags: event.target.value })}
                             />
-                          </label>
+                          </label>}
                           <div className="mf-inline-actions">
                             <button type="button" className="mp-btn-primary" onClick={() => void saveMetadata()} disabled={busyEvaluation === evaluation.id}>
                               保存
@@ -1463,14 +1509,14 @@ export default function MaterialFilterPage() {
                               下载原图
                             </a>
                           ) : null}
-                          <button
+                          {!groupMode ? <button
                             type="button"
                             className="mf-text-button"
                             onClick={() => void recheck(evaluation)}
                             disabled={busyEvaluation === evaluation.id}
                           >
                             重新检查
-                          </button>
+                          </button> : null}
                           <button
                             type="button"
                             className="mf-text-button"
@@ -1479,6 +1525,9 @@ export default function MaterialFilterPage() {
                                 id: evaluation.id,
                                 name: evaluation.display_name,
                                 tags: evaluation.tags.join('，'),
+                                tagGroups: TAG_GROUPS.some(group => evaluation.tag_groups?.[group]?.length)
+                                  ? Object.fromEntries(TAG_GROUPS.map(group => [group, evaluation.tag_groups?.[group]?.join('，') ?? '']))
+                                  : undefined,
                               })
                             }
                           >

@@ -19,6 +19,7 @@ from typing import Any, Iterable
 from app.config import Settings
 from app.services import material_filter_classifier as classifier
 from app.services import material_filter_files as files
+from app.services import material_menu_naming as menu_naming
 from app.services.material_filter_files import MaterialFilterFileError
 
 FOLDER_COLLECTION = "material_filter_folders"
@@ -196,6 +197,9 @@ def delete_folder(db, settings: Settings, folder: dict[str, Any], *, purge_local
         "purged_directories": purged,
     }
     db[EVALUATION_COLLECTION].delete_many({"folder_id": folder["_id"]})
+    db.material_filter_groups.delete_many({"folder_id": folder["_id"]})
+    if schemes:
+        db.material_filter_attempts.delete_many({"scheme_id": {"$in": [scheme["_id"] for scheme in schemes]}})
     db[FILE_COLLECTION].delete_many({"folder_id": folder["_id"]})
     db[RUN_COLLECTION].delete_many({"folder_id": folder["_id"]})
     db[SCHEME_COLLECTION].delete_many({"folder_id": folder["_id"]})
@@ -214,13 +218,27 @@ def create_scheme(
     output_root: str = "",
     model: str = "",
     prompt_template: str = classifier.PROMPT_TEMPLATE,
+    naming_mode: str = "descriptive",
+    menu: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     scheme_name = str(name or "").strip()
     if not scheme_name:
         raise MaterialFilterError("scheme_name_required", "方案名称不能为空")
     if len(scheme_name) > 60:
         raise MaterialFilterError("scheme_name_too_long", "方案名称不能超过 60 个字符")
-    normalized_rules = normalize_rules(rules if rules is not None else default_rules())
+    if naming_mode not in {"descriptive", "menu_match"}:
+        raise MaterialFilterError("invalid_naming_mode", "命名模式非法")
+    if naming_mode == "menu_match":
+        if rules:
+            raise MaterialFilterError("menu_filters_disabled", "菜单命名模式不使用内容过滤条件")
+        try:
+            menu = menu_naming.validate_menu(menu, merchant_id=getattr(db, "merchant_id", None))
+        except menu_naming.MenuNamingError as exc:
+            raise MaterialFilterError("invalid_menu", str(exc)) from exc
+        normalized_rules = []
+        prompt_template = menu_naming.build_messages(menu, "placeholder")[0]["content"]
+    else:
+        normalized_rules = normalize_rules(rules if rules is not None else default_rules())
     selected_model = str(model or settings.material_filter_model).strip()
     if not selected_model:
         raise MaterialFilterError("model_required", "筛选模型不能为空")
@@ -240,8 +258,10 @@ def create_scheme(
         "rules": normalized_rules,
         "output_root": str(resolved_root),
         "model": selected_model,
-        "prompt_version": classifier.PROMPT_VERSION,
+        "prompt_version": menu_naming.PROMPT_VERSION if naming_mode == "menu_match" else classifier.PROMPT_VERSION,
         "prompt_template": prompt_template,
+        "naming_mode": naming_mode,
+        "menu": menu if naming_mode == "menu_match" else None,
         "active_run_id": None,
         "created_at": timestamp,
         "updated_at": timestamp,
@@ -296,6 +316,8 @@ def clone_scheme(
         output_root=scheme.get("output_root") or "",
         model=scheme.get("model") or "",
         prompt_template=template,
+        naming_mode=scheme.get("naming_mode") or "descriptive",
+        menu=scheme.get("menu"),
     )
 
 
@@ -321,6 +343,7 @@ def create_run(
     *,
     request_id: str = "",
     limit: int | None = None,
+    kind: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Create (or return) a manual scan. Idempotent per scheme + request_id."""
     scheme_id = scheme["_id"]
@@ -359,6 +382,8 @@ def create_run(
         "started_at": None,
         "finished_at": None,
     }
+    if kind:
+        document["kind"] = kind
     db[RUN_COLLECTION].insert_one(document)
     return db[RUN_COLLECTION].find_one({"_id": run_id}), True
 
@@ -424,15 +449,36 @@ def runtime_scheme(db, scheme_id: str) -> dict[str, Any]:
     return get_scheme(db, scheme_id)
 
 
+def run_kind(run: dict) -> str | None:
+    """Recognize pre-migration local jobs without treating them as model scans."""
+    if run.get("kind"):
+        return run["kind"]
+    key = str(run.get("request_id") or "")
+    for prefix, kind in [("group-scan:", "group_scan"), ("group-recognize:", "recognition"), ("group-merge:", "group_edit")]:
+        if key.startswith(prefix):
+            return kind
+    return None
+
+
 def mark_scheme_interrupted(db) -> list[str]:
     """Mark leftover runs interrupted; the operator resumes explicitly."""
     runs = list(db[RUN_COLLECTION].find({"status": {"$in": list(ACTIVE_RUN_STATUSES)}}))
     run_ids = [str(doc["_id"]) for doc in runs]
-    for run_id in run_ids:
+    for doc in runs:
+        run_id = str(doc["_id"])
+        kind = run_kind(doc)
+        recovered = {"status": "failed" if kind == "group_edit" else "interrupted", "finished_at": now(), "error": "服务重启，任务已中断"}
+        if kind:
+            recovered["kind"] = kind
         db[RUN_COLLECTION].update_one(
             {"_id": run_id},
-            {"$set": {"status": "interrupted", "finished_at": now(), "error": "服务重启，任务已中断"}},
+            {"$set": recovered},
         )
+        if kind == "recognition":
+            db["material_filter_attempts"].update_many(
+                {"scheme_id": doc["scheme_id"], "run_id": run_id, "status": "running", "actual_call": True},
+                {"$set": {"status": "unknown", "finished_at": now(), "error": "服务重启，已发送请求结果未知；请选择图片主动重新识别"}},
+            )
     # Release only the schemes these runs owned; the cluster runs with notablescan,
     # so an unfiltered update_many over active_run_id would be rejected.
     for scheme_id in {str(doc.get("scheme_id") or "") for doc in runs if doc.get("scheme_id")}:
@@ -549,7 +595,11 @@ def save_evaluation(
             "description": result.description if result else "",
             "rules": rule_verdicts,
             "decision": result.decision if result else None,
+            "naming": result.naming if result else None,
         },
+        "naming_mode": scheme.get("naming_mode") or "descriptive",
+        "naming": result.naming if result else None,
+        "tag_groups": (result.naming or {}).get("tag_groups", {}) if result else {},
         "model_decision": result.decision if result else None,
         "decision": decision,
         "human_decision": None,
@@ -686,6 +736,7 @@ def update_metadata(
     *,
     display_name: str | None = None,
     tags: list[str] | None = None,
+    tag_groups: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     updates: dict[str, Any] = {}
     if display_name is not None:
@@ -695,7 +746,16 @@ def update_metadata(
         if len(name) > 60:
             raise MaterialFilterError("display_name_too_long", "名称不能超过 60 个字符")
         updates["display_name"] = name
-    if tags is not None:
+    if tag_groups is not None:
+        try:
+            grouped = menu_naming.validate_tag_groups(tag_groups)
+        except menu_naming.MenuNamingError as exc:
+            raise MaterialFilterError("invalid_tags", str(exc)) from exc
+        updates["tag_groups"] = grouped
+        updates["tags"] = list(dict.fromkeys(tag for values in grouped.values() for tag in values))
+    elif tags is not None:
+        if evaluation.get("tag_groups"):
+            raise MaterialFilterError("invalid_tags", "请按食材、员工、环境分组编辑标签")
         cleaned: list[str] = []
         for item in tags:
             if not isinstance(item, str):
@@ -728,6 +788,9 @@ def review_evaluation(
 ) -> dict[str, Any]:
     if decision not in REVIEW_DECISIONS:
         raise MaterialFilterError("invalid_review_decision", "人工结论只能是通过或不通过")
+    naming = evaluation.get("naming") or {}
+    if decision == "pass" and naming.get("naming_status") == "ambiguous":
+        raise MaterialFilterError("menu_choice_required", "请先明确选择菜单菜品，不能仅通过照片确认口味", 409)
     key = str(request_id or "").strip()
     if key and evaluation.get("review_request_id") == key:
         return evaluation
@@ -771,26 +834,36 @@ def review_evaluation(
         updates["review_request_id"] = key
     if decision == "pass":
         try:
-            file_name, written = files.copy_approved_bytes(
-                directory,
-                display_name=evaluation.get("display_name") or snapshot.relative_path,
-                short_id=evaluation.get("short_id") or evaluation["_id"],
-                suffix=Path(evaluation["original_name"]).suffix,
-                data=snapshot.data,
-                sha256=snapshot.sha256,
-            )
+            if naming:
+                target = menu_naming.write_named_copy(
+                    directory / "passed", evaluation["_id"], menu_naming.MenuNamingResult(**naming),
+                    suffix=Path(evaluation["original_name"]).suffix,
+                    data=snapshot.data, sha256=snapshot.sha256,
+                )
+                file_name, written = target.name, snapshot.sha256
+                output_relative = str(target.relative_to(directory)).replace("\\", "/")
+            else:
+                file_name, written = files.copy_approved_bytes(
+                    directory,
+                    display_name=evaluation.get("display_name") or snapshot.relative_path,
+                    short_id=evaluation.get("short_id") or evaluation["_id"],
+                    suffix=Path(evaluation["original_name"]).suffix,
+                    data=snapshot.data,
+                    sha256=snapshot.sha256,
+                )
+                output_relative = f"passed/{file_name}"
             updates.update(
                 {
-                    "output_path": f"passed/{file_name}",
+                    "output_path": output_relative,
                     "output_name": file_name,
                     "output_sha256": written,
                     "copy_status": "copied",
                     "copy_error": None,
                 }
             )
-        except MaterialFilterFileError as exc:
+        except (MaterialFilterFileError, menu_naming.MenuNamingError) as exc:
             # The human decision is kept; the copy stays retryable and not downloadable.
-            updates.update({"copy_status": "error", "copy_error": exc.message})
+            updates.update({"copy_status": "error", "copy_error": str(exc)})
             update_evaluation(db, evaluation["_id"], updates)
             return get_evaluation(db, evaluation["_id"])
     else:
@@ -843,24 +916,27 @@ def export_picked(db, settings: Settings, scheme: dict[str, Any]) -> dict[str, A
         raise MaterialFilterError(exc.code, exc.message, exc.status_code) from exc
 
     items: list[dict[str, Any]] = []
+    manual_names = _manual_group_names(db, scheme)
     for row in rows:
         source = directory / str(row["output_path"])
         if not source.is_file():
             raise MaterialFilterError("output_missing", f"本机副本不存在：{row.get('output_name')}", 404)
-        items.append({"name": source.name, "row": row})
+        name = _export_name(row, source.name, manual_names)
+        items.append({"name": name, "row": row, "manual_name": manual_names.get(str(row.get("file_id") or ""))})
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(["文件", "名称", "原文件名", "分类", "标签", "内容哈希", "评估ID"])
     for item in items:
         row = item["row"]
-        target = export_dir / item["name"]
+        parent = files.ensure_local_directory(export_dir / row["_id"]) if scheme.get("naming_mode") == "menu_match" else export_dir
+        target = parent / item["name"]
         if not target.exists():
             shutil.copy2(directory / str(row["output_path"]), target)
         writer.writerow(
             [
-                item["name"],
-                _csv_safe(row.get("display_name") or ""),
+                str(target.relative_to(export_dir)),
+                _csv_safe(item["manual_name"] or row.get("display_name") or ""),
                 _csv_safe(row.get("original_name") or ""),
                 _csv_safe(row.get("category") or ""),
                 _csv_safe("、".join(row.get("tags") or [])),
@@ -871,6 +947,21 @@ def export_picked(db, settings: Settings, scheme: dict[str, Any]) -> dict[str, A
     manifest = export_dir / "manifest.csv"
     manifest.write_bytes(bytes.fromhex("efbbbf") + buffer.getvalue().encode("utf-8"))
     return {"directory": str(export_dir), "count": len(items), "manifest": str(manifest)}
+
+
+def _manual_group_names(db, scheme: dict[str, Any]) -> dict[str, str]:
+    """Manual group names only feed menu_mode export/upload file names."""
+    from app.services import material_groups as group_store
+
+    return group_store.manual_names_by_file(db, scheme)
+
+
+def _export_name(row: dict[str, Any], current: str, manual_names: dict[str, str]) -> str:
+    manual = manual_names.get(str(row.get("file_id") or ""))
+    if not manual:
+        return current
+    suffix = Path(current).suffix or ".jpg"
+    return f"{files.sanitize_output_stem(manual, max_length=190)}{suffix.lower()}"
 
 
 def export_csv(db, scheme: dict[str, Any]) -> bytes:

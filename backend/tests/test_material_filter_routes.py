@@ -365,6 +365,23 @@ def test_metadata_edit_keeps_local_filename(monkeypatch, tmp_path):
     assert body["download_url"] == item["download_url"]
 
 
+def test_grouped_tags_roundtrip_through_metadata_api(monkeypatch, tmp_path):
+    web, raw, _ = _build(monkeypatch, tmp_path)
+    raw.material_filter_evaluations.insert_one({
+        "_id": "grouped", "merchant_id": "m1", "scheme_id": "scheme",
+        "display_name": "员工端菜", "tags": [], "relative_path": "original.jpg",
+    })
+    client = TestClient(web)
+    path = "/api/merchants/m1/material-filters/evaluations/grouped/metadata"
+    updated = client.patch(path, json={"tag_groups": {"食材": ["牛肉"], "员工": ["端菜"], "环境": ["吧台"]}}, headers=WRITE_HEADERS)
+    assert updated.status_code == 200
+    assert updated.json()["tag_groups"] == {"食材": ["牛肉"], "员工": ["端菜"], "环境": ["吧台"]}
+    assert updated.json()["tags"] == ["牛肉", "端菜", "吧台"]
+    rejected = client.patch(path, json={"tag_groups": {"食材": ["beef"]}}, headers=WRITE_HEADERS)
+    assert rejected.status_code == 422
+    assert raw.material_filter_evaluations.find_one({"_id": "grouped"})["tags"] == ["牛肉", "端菜", "吧台"]
+
+
 def test_review_rejects_a_changed_source_version(monkeypatch, tmp_path):
     web, raw, _ = _build(monkeypatch, tmp_path)
     client = TestClient(web)

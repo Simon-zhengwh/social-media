@@ -64,6 +64,7 @@ class ClassificationResult:
     verdicts: list[RuleVerdict]
     decision: str
     token_usage: dict[str, Any]
+    naming: dict[str, Any] | None = None
 
 
 def aggregate_rule_verdicts(verdicts: list[str]) -> str:

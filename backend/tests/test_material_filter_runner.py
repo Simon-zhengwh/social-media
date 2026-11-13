@@ -140,6 +140,17 @@ def test_first_scan_evaluates_copies_and_writes_previews(db, settings, source):
         assert preview.is_file()
 
 
+def test_recheck_keeps_manually_edited_generic_copy_name(db, settings, source):
+    (source / "a.jpg").write_bytes(_jpeg())
+    scheme = _scheme(db, settings, source)
+    _scan(db, settings, FakeCoreAI(_payload("uncertain")), scheme)
+    evaluation = db.material_filter_evaluations.find_one({})
+    evaluation = store.update_metadata(db, evaluation, display_name="人工保存名称")
+    checked = runner.recheck_evaluation(db, settings, FakeCoreAI(_payload("pass")), scheme, evaluation)
+    assert checked["display_name"] == "人工保存名称"
+    assert checked["output_name"].startswith("人工保存名称__")
+
+
 def test_second_scan_without_changes_calls_no_model(db, settings, source):
     (source / "a.jpg").write_bytes(_jpeg())
     (source / "b.jpg").write_bytes(_jpeg((10, 10, 10)))

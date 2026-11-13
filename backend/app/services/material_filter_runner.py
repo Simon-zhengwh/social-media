@@ -17,6 +17,7 @@ from app.config import Settings
 from app.services import material_filter_classifier as classifier
 from app.services import material_filter_files as files
 from app.services import material_filters as store
+from app.services import material_menu_naming as menu_naming
 from app.services.material_filter_files import MaterialFilterFileError
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,38 @@ _gate_lock = threading.Lock()
 _gate: tuple[int, threading.BoundedSemaphore] | None = None
 _active_runs: dict[str, threading.Event] = {}
 _active_lock = threading.Lock()
+
+
+def _classify(client, settings, scheme, data_url, original_name):
+    if scheme.get("naming_mode") == "menu_match":
+        try:
+            return menu_naming.as_classification(menu_naming.classify_image(
+                client, menu=scheme["menu"], image_data_url=data_url, original_name=original_name,
+                model=scheme["model"], timeout_seconds=settings.material_filter_timeout_seconds,
+                system_prompt=scheme.get("prompt_template"),
+            ))
+        except Exception as exc:
+            raise classifier.ClassificationError("menu_naming_failed", str(exc)) from exc
+    return classifier.classify_image(
+        client, model=str(scheme.get("model")), rules=scheme.get("rules") or [],
+        image_data_url=data_url, prompt_template=scheme.get("prompt_template") or classifier.PROMPT_TEMPLATE,
+        timeout_seconds=settings.material_filter_timeout_seconds,
+    )
+
+
+def _copy_result(directory, evaluation_id, result, entry_name, snapshot, short_id, *, display_name=None):
+    if result.naming:
+        try:
+            target = menu_naming.write_named_copy(
+                directory / "passed", evaluation_id, menu_naming.MenuNamingResult(**result.naming),
+                suffix=Path(entry_name).suffix, data=snapshot.data, sha256=snapshot.sha256,
+            )
+        except menu_naming.MenuNamingError as exc:
+            raise MaterialFilterFileError("menu_copy_error", str(exc)) from exc
+        return target.name, str(target.relative_to(directory)).replace("\\", "/")
+    name, _ = files.copy_approved_bytes(directory, display_name=display_name or result.name, short_id=short_id,
+                                      suffix=Path(entry_name).suffix, data=snapshot.data, sha256=snapshot.sha256)
+    return name, f"passed/{name}"
 
 
 def _model_semaphore(limit: int) -> threading.BoundedSemaphore:
@@ -316,14 +349,7 @@ class _Evaluator:
                 max_side=self.settings.material_filter_model_image_max_side,
             )
             with self.semaphore:
-                result = classifier.classify_image(
-                    self.client,
-                    model=str(self.scheme.get("model")),
-                    rules=self.rules,
-                    image_data_url=data_url,
-                    prompt_template=self.scheme.get("prompt_template") or classifier.PROMPT_TEMPLATE,
-                    timeout_seconds=self.settings.material_filter_timeout_seconds,
-                )
+                result = _classify(self.client, self.settings, self.scheme, data_url, entry.name)
         except classifier.ClassificationError as exc:
             store.save_evaluation(
                 self.db,
@@ -356,15 +382,7 @@ class _Evaluator:
         copy_error: str | None = None
         if result.decision == "pass":
             try:
-                output_name, _ = files.copy_approved_bytes(
-                    directory,
-                    display_name=result.name,
-                    short_id=short_id,
-                    suffix=Path(entry.name).suffix,
-                    data=snapshot.data,
-                    sha256=snapshot.sha256,
-                )
-                output_path = f"passed/{output_name}"
+                output_name, output_path = _copy_result(directory, evaluation_id, result, entry.name, snapshot, short_id)
                 copy_status = "copied"
                 self._bump(copied=1)
             except MaterialFilterFileError as exc:
@@ -425,18 +443,13 @@ def recheck_evaluation(db, settings: Settings, client, scheme: dict[str, Any], e
     )
     try:
         with _model_semaphore(settings.material_filter_concurrency):
-            result = classifier.classify_image(
-                client,
-                model=str(scheme.get("model")),
-                rules=rules,
-                image_data_url=data_url,
-                prompt_template=scheme.get("prompt_template") or classifier.PROMPT_TEMPLATE,
-                timeout_seconds=settings.material_filter_timeout_seconds,
-            )
+            result = _classify(client, settings, scheme, data_url, evaluation["original_name"])
     except classifier.ClassificationError as exc:
         raise store.MaterialFilterError(exc.code, exc.message, 502) from exc
 
     updates: dict[str, Any] = {
+        "model": scheme.get("model"),
+        "prompt_version": scheme.get("prompt_version"),
         "model_result": {
             "name": result.name,
             "category": result.category,
@@ -447,7 +460,9 @@ def recheck_evaluation(db, settings: Settings, client, scheme: dict[str, Any], e
                 for verdict in result.verdicts
             ],
             "decision": result.decision,
+            "naming": result.naming,
         },
+        "naming": result.naming,
         "model_decision": result.decision,
         "decision": result.decision,
         "category": result.category,
@@ -457,18 +472,29 @@ def recheck_evaluation(db, settings: Settings, client, scheme: dict[str, Any], e
         updates["effective_decision"] = result.decision
     if not evaluation.get("display_name") or evaluation.get("display_name") == evaluation.get("model_result", {}).get("name"):
         updates["display_name"] = result.name
-    if result.decision == "pass" and evaluation.get("copy_status") != "copied":
+    if evaluation.get("tags") == evaluation.get("model_result", {}).get("tags"):
+        updates["tags"] = result.tags
+        updates["tag_groups"] = (result.naming or {}).get("tag_groups", {})
+    if result.naming and result.naming.get("naming_status") == "ambiguous":
+        # Keep historical local bytes, but revoke their active/exportable name.
+        # A previous pass or shortlist cannot settle the newly uncertain flavour.
+        updates.update({
+            "effective_decision": "uncertain", "human_decision": None, "human_decided_at": None,
+            "display_name": result.name, "tags": result.tags,
+            "tag_groups": (result.naming or {}).get("tag_groups", {}),
+            "output_name": None, "output_path": None, "output_sha256": None,
+            "copy_status": "none", "copy_error": None,
+            "manual_pick": False, "picked_at": None,
+        })
+    if result.decision == "pass" and (result.naming or evaluation.get("copy_status") != "copied"):
         try:
-            output_name, _ = files.copy_approved_bytes(
-                store.scheme_directory(settings, scheme),
+            output_name, output_path = _copy_result(
+                store.scheme_directory(settings, scheme), evaluation["_id"], result,
+                evaluation["original_name"], snapshot, evaluation.get("short_id") or evaluation["_id"],
                 display_name=evaluation.get("display_name") or result.name,
-                short_id=evaluation.get("short_id") or evaluation["_id"],
-                suffix=Path(evaluation["original_name"]).suffix,
-                data=snapshot.data,
-                sha256=snapshot.sha256,
             )
             updates.update(
-                {"output_name": output_name, "output_path": f"passed/{output_name}",
+                {"output_name": output_name, "output_path": output_path,
                  "output_sha256": snapshot.sha256, "copy_status": "copied", "copy_error": None}
             )
         except MaterialFilterFileError as exc:

@@ -370,6 +370,10 @@
   color: var(--color-primary-900);
 }
 
+.mf-scheme-description > summary { cursor: pointer; font-size: 12px; line-height: 1.6; color: var(--color-neutral-700); }
+.mf-scheme-description > summary span { margin-left: 12px; color: var(--color-neutral-500); font-weight: 400; }
+.mf-scheme-description[open] > summary { margin-bottom: 16px; }
+
 .mf-rules-editor {
   display: flex;
   flex-direction: column;
@@ -727,6 +731,23 @@
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+}
+
+.mf-tag-groups {
+  display: grid;
+  gap: 6px;
+}
+
+.mf-tag-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mf-tag-group > strong {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--color-neutral-600);
 }
 
 .mf-tags span {

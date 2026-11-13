@@ -20,6 +20,8 @@ from app.request_context import request_db, request_merchant_id
 from app.services import material_filter_runner as runner
 from app.services import material_filter_uat_sync as uat_sync
 from app.services import material_filters as store
+from app.services import material_groups as group_store
+from app.services import material_group_runner as group_runner
 from app.services.material_filters import MaterialFilterError
 from app.time_utils import utc_iso
 
@@ -77,6 +79,7 @@ class SyncUatPayload(BaseModel):
 class MetadataPayload(BaseModel):
     display_name: str | None = None
     tags: list[str] | None = None
+    tag_groups: dict[str, list[str]] | None = None
 
 
 class PickPayload(BaseModel):
@@ -86,6 +89,43 @@ class PickPayload(BaseModel):
 class BulkPickPayload(BaseModel):
     ids: list[str] = Field(default_factory=list, max_length=200)
     picked: bool = True
+
+
+class GroupScanPayload(BaseModel):
+    request_id: str = Field(min_length=1, max_length=160)
+
+
+class GroupRecognitionPayload(GroupScanPayload):
+    mode: str = "representatives"
+    representative_count: int = Field(default=1, ge=1, le=2)
+    group_limit: int | None = Field(default=None, ge=1, le=200)
+    file_ids: list[str] = Field(default_factory=list, max_length=200)
+    force: bool = False
+
+
+class GroupRepresentativesPayload(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=2)
+    version: str
+
+
+class GroupReferencePayload(BaseModel):
+    file_id: str
+    version: str
+
+
+class GroupNamePayload(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    version: str
+
+
+class GroupSplitPayload(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=2000)
+    version: str
+
+
+class GroupMergePayload(GroupScanPayload):
+    group_ids: list[str] = Field(min_length=2, max_length=100)
+    version: str
 
 
 def _require_local(request: Request) -> None:
@@ -131,6 +171,8 @@ def scheme_out(doc: dict[str, Any]) -> dict[str, Any]:
         "output_root": doc.get("output_root") or "",
         "model": doc.get("model") or "",
         "prompt_version": doc.get("prompt_version") or "",
+        "naming_mode": doc.get("naming_mode") or "descriptive",
+        "name_format": (doc.get("menu") or {}).get("name_format", "zh_en"),
         "active_run_id": doc.get("active_run_id"),
         "created_at": utc_iso(doc.get("created_at")),
     }
@@ -180,6 +222,8 @@ def evaluation_out(request: Request, doc: dict[str, Any]) -> dict[str, Any]:
         "relative_path": doc.get("relative_path") or "",
         "category": doc.get("category") or "",
         "tags": list(doc.get("tags") or []),
+        "tag_groups": doc.get("tag_groups") or {},
+        "naming": doc.get("naming"),
         "decision": doc.get("decision"),
         "model_decision": doc.get("model_decision"),
         "human_decision": doc.get("human_decision"),
@@ -213,6 +257,137 @@ def evaluation_out(request: Request, doc: dict[str, Any]) -> dict[str, Any]:
         "created_at": utc_iso(doc.get("created_at")),
         "updated_at": utc_iso(doc.get("updated_at")),
     }
+
+
+def group_run_out(request: Request, doc: dict[str, Any]) -> dict[str, Any]:
+    counters = {key: 0 for key in ["scanned", "processed", "groups", "recognized", "cache_hits", "model_calls", "errors", "copied", "skipped"]}
+    counters.update(doc.get("counters") or {})
+    attempts = {a["file_id"]: a for a in request_db(request)[group_store.ATTEMPTS].find({"run_id": doc["_id"]})}
+    items = [{"file_id": p["file_id"], "status": attempts.get(p["file_id"], {}).get("status", "queued"),
+              "error": attempts.get(p["file_id"], {}).get("error")} for p in doc.get("files", [])]
+    return {"id": doc["_id"], "scheme_id": doc["scheme_id"], "kind": doc.get("kind", "group_scan"),
+        "status": doc["status"], "counters": counters, "items": items, "error": doc.get("error"), "scan_errors": doc.get("scan_errors") or [],
+        "created_at": utc_iso(doc.get("created_at")), "started_at": utc_iso(doc.get("started_at")),
+        "finished_at": utc_iso(doc.get("finished_at"))}
+
+
+def group_file_out(request: Request, row: dict) -> dict:
+    result = dict(row)
+    base = merchant_base(request_merchant_id(request)) + "/material-filters"
+    result["preview_url"] = f"{base}/files/{quote(row['id'], safe='')}/preview?v={str(row.get('source_sha256') or '')[:12]}"
+    result["evaluation"] = evaluation_out(request, row["evaluation"]) if row.get("evaluation") else None
+    return result
+
+
+def group_out(request: Request, row: dict) -> dict:
+    return {**row, "cover": group_file_out(request, row["cover"]),
+            "previews": [{k:v for k,v in group_file_out(request, p).items() if k != "evaluation"} for p in row.get("previews", [])]}
+
+
+@router.post("/schemes/{scheme_id}/group-scans", status_code=202)
+def start_group_scan(request: Request, scheme_id: str, payload: GroupScanPayload):
+    _require_local(request)
+    db = request_db(request)
+    run = group_runner.start_scan(db, request.app.state.settings, store.get_scheme(db, scheme_id), request_id=payload.request_id)
+    return group_run_out(request, run)
+
+
+@router.get("/schemes/{scheme_id}/groups")
+def list_groups(request: Request, scheme_id: str, skip: int = Query(default=0, ge=0), limit: int = Query(default=30, ge=1, le=100), q: str = "", representative_count: int = Query(default=1, ge=1, le=2)):
+    _require_local(request)
+    db = request_db(request)
+    scheme = store.get_scheme(db, scheme_id)
+    page = group_store.list_groups(db, request.app.state.settings, scheme, skip=skip, limit=limit, q=q, representative_count=representative_count)
+    return {**page, "items": [group_out(request, g) for g in page["items"]], "last_run": group_run_out(request, page["last_run"]) if page["last_run"] else None}
+
+
+@router.get("/groups/{group_id}/files")
+def list_group_files(request: Request, group_id: str, skip: int = Query(default=0, ge=0), limit: int = Query(default=48, ge=1, le=200), representative_count: int = Query(default=1, ge=1, le=2)):
+    _require_local(request)
+    page = group_store.list_members(request_db(request), request.app.state.settings, group_id, skip=skip, limit=limit, representative_count=representative_count)
+    return {**page, "items": [group_file_out(request, r) for r in page["items"]]}
+
+
+@router.get("/files/{file_id}/preview")
+def preview_group_file(request: Request, file_id: str):
+    _require_local(request)
+    db = request_db(request)
+    file = group_store.get_file(db, file_id)
+    scheme = store.get_scheme(db, file["scheme_id"])
+    directory = store.scheme_directory(request.app.state.settings, scheme)
+    target = group_store._preview_path(directory, file.get("preview_path"))
+    if target is None:
+        raise MaterialFilterError("preview_missing", "缩略图尚未准备好，请先扫描并分组", 404)
+    return FileResponse(target, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+@router.get("/files/{file_id}/attempts")
+def list_file_attempts(request: Request, file_id: str, skip: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=100)):
+    _require_local(request)
+    return group_store.list_attempts(request_db(request), file_id, skip=skip, limit=limit)
+
+
+@router.post("/groups/{group_id}/split")
+def split_group(request: Request, group_id: str, payload: GroupSplitPayload):
+    _require_local(request)
+    result = group_store.split_group(request_db(request), request.app.state.settings, group_id, payload.file_ids, version=payload.version)
+    return {"groups": [group_out(request, row) for row in result["groups"]]}
+
+
+@router.post("/schemes/{scheme_id}/groups/merge")
+def merge_groups(request: Request, scheme_id: str, payload: GroupMergePayload):
+    _require_local(request)
+    result = group_store.merge_groups(request_db(request), request.app.state.settings, scheme_id,
+        payload.group_ids, version=payload.version, request_id=payload.request_id)
+    return {"group": group_out(request, result["group"])}
+
+
+@router.patch("/groups/{group_id}/representatives")
+def change_group_representatives(request: Request, group_id: str, payload: GroupRepresentativesPayload):
+    _require_local(request)
+    result = group_store.set_representatives(request_db(request), request.app.state.settings, group_id, payload.file_ids, version=payload.version)
+    return group_out(request, result)
+
+
+@router.post("/groups/{group_id}/reference")
+def adopt_group_reference(request: Request, group_id: str, payload: GroupReferencePayload):
+    _require_local(request)
+    result = group_store.adopt_reference(request_db(request), request.app.state.settings, group_id, payload.file_id, version=payload.version)
+    return group_out(request, result)
+
+
+@router.patch("/groups/{group_id}/name")
+def rename_group(request: Request, group_id: str, payload: GroupNamePayload):
+    _require_local(request)
+    result = group_store.rename_group(request_db(request), request.app.state.settings, group_id, payload.name, version=payload.version)
+    return group_out(request, result)
+
+
+@router.post("/schemes/{scheme_id}/recognition-runs", status_code=202)
+def start_group_recognition(request: Request, scheme_id: str, payload: GroupRecognitionPayload):
+    _require_local(request)
+    db = request_db(request)
+    if not request.app.state.settings.core_ai_api_key:
+        raise MaterialFilterError("not_configured", "未配置Core AI Key", 503)
+    result = group_runner.start_recognition(db, request.app.state.settings, request.app.state.core_ai,
+        store.get_scheme(db, scheme_id), **payload.model_dump())
+    return group_run_out(request, result)
+
+
+@router.get("/group-runs/{run_id}")
+def get_group_run(request: Request, run_id: str):
+    _require_local(request)
+    doc = store.get_run(request_db(request), run_id)
+    if doc.get("kind") not in {"group_scan", "recognition"}:
+        raise MaterialFilterError("group_run_not_found", "分组任务不存在", 404)
+    return group_run_out(request, doc)
+
+
+@router.post("/group-runs/{run_id}/resume", status_code=202)
+def resume_group_run(request: Request, run_id: str):
+    _require_local(request)
+    doc = group_runner.resume(request_db(request), request.app.state.settings, request.app.state.core_ai, run_id)
+    return group_run_out(request, doc)
 
 
 @router.get("/defaults")
@@ -321,6 +496,8 @@ def start_run(request: Request, scheme_id: str, payload: RunCreate) -> dict[str,
     _require_local(request)
     db = request_db(request)
     scheme = store.get_scheme(db, scheme_id)
+    if scheme.get("naming_mode") == "menu_match" and not scheme.get("rules"):
+        raise MaterialFilterError("group_scan_required", "请先扫描并分组，再识别代表图；不会逐张全量请求", 409)
     run = runner.start_run(
         db,
         request.app.state.settings,
@@ -341,6 +518,14 @@ def get_run(request: Request, run_id: str) -> dict[str, Any]:
 @router.post("/runs/{run_id}/resume", status_code=202)
 def resume_run(request: Request, run_id: str) -> dict[str, Any]:
     _require_local(request)
+    existing = store.get_run(request_db(request), run_id)
+    kind = store.run_kind(existing)
+    if kind == "group_edit":
+        raise MaterialFilterError("run_not_resumable", "分组编辑不支持作为扫描任务继续", 409)
+    if kind in {"group_scan", "recognition"}:
+        if not existing.get("kind"):
+            request_db(request)[store.RUN_COLLECTION].update_one({"_id": run_id}, {"$set": {"kind": kind}})
+        return group_run_out(request, group_runner.resume(request_db(request), request.app.state.settings, request.app.state.core_ai, run_id))
     run = runner.resume_run(
         request_db(request),
         request.app.state.settings,
@@ -355,6 +540,8 @@ def retry_failed(request: Request, run_id: str) -> dict[str, Any]:
     _require_local(request)
     db = request_db(request)
     run = store.get_run(db, run_id)
+    if store.run_kind(run) in {"group_scan", "recognition", "group_edit"}:
+        raise MaterialFilterError("explicit_selection_required", "请在组内选择需要重试的图片，不自动重试全方案", 409)
     scheme = store.get_scheme(db, run["scheme_id"])
     new_run = runner.retry_failed(db, request.app.state.settings, request.app.state.core_ai, scheme)
     return run_out(new_run)
@@ -390,7 +577,8 @@ def update_metadata(request: Request, evaluation_id: str, payload: MetadataPaylo
     db = request_db(request)
     evaluation = store.get_evaluation(db, evaluation_id)
     updated = store.update_metadata(
-        db, evaluation, display_name=payload.display_name, tags=payload.tags
+        db, evaluation, display_name=payload.display_name, tags=payload.tags,
+        tag_groups=payload.tag_groups,
     )
     return evaluation_out(request, updated)
 

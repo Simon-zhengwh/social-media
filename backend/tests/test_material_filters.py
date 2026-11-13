@@ -302,6 +302,19 @@ def test_export_csv_escapes_formulas_and_quotes(db, settings):
     assert "换行\n标签" in text
     assert text.startswith("名称,分类,标签,状态")
 
+
+def test_grouped_metadata_keeps_chinese_tags_and_preserves_photo_paths(db, settings):
+    scheme = _scheme(db, settings)
+    evaluation = _evaluation(db, scheme)
+    updated = store.update_metadata(db, evaluation, tag_groups={"食材": ["牛肉", "牛肉"], "员工": ["端菜"]})
+    assert updated["tag_groups"] == {"食材": ["牛肉"], "员工": ["端菜"]}
+    assert updated["tags"] == ["牛肉", "端菜"]
+    assert updated["relative_path"] == evaluation["relative_path"]
+    with pytest.raises(store.MaterialFilterError):
+        store.update_metadata(db, updated, tag_groups={"食材": ["beef"]})
+    with pytest.raises(store.MaterialFilterError):
+        store.update_metadata(db, updated, tags=["面条"])
+
 def test_manual_pick_is_a_second_stage_independent_of_the_model(db, settings):
     scheme = _scheme(db, settings)
     evaluation = _evaluation(db, scheme, relative="burst/one.jpg")
