@@ -12,7 +12,9 @@ backend/.pytest_cache
 backend/tests
 docs
 storage
+output
 local_media
+.logs
 朵颐素材
 inspost素材
 seejoy素材
