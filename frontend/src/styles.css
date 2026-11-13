@@ -7516,6 +7516,17 @@ label.product-add.is-disabled {
   margin-left: auto;
 }
 
+/* Scroll sentinel: it only has to be observable, the text appears while a page is loading. */
+.asset-load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--color-neutral-400);
+}
+
 @media (max-width: 760px) {
   .asset-search-group {
     max-width: none;

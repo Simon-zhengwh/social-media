@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, deleteAssets, renameAsset, updateAssetTags } from '../api'
 import { MAX_ASSET_TAGS, normalizeTags } from '../assetTags'
 import type { Asset } from '../types'
@@ -80,6 +80,48 @@ export default function AssetLibrary({
     setDraft(nextTag)
     onSearch(nextTag.trim(), '')
   }
+
+  // The grid pages itself: the sentinel at the end of the list asks for the next page while it
+  // is on screen, so there is no 「加载更多」 button to hunt for.
+  const hasMore = assets.length < total
+  const loadMore = useRef(onLoadMore)
+  useEffect(() => { loadMore.current = onLoadMore }, [onLoadMore])
+  // The row count and the last requested count live in refs, so the observer created by the
+  // callback ref below never reads a stale closure. `requested` also stops a page that brings
+  // nothing from looping, because AM's total is an estimate.
+  const rows = useRef(assets.length)
+  useEffect(() => { rows.current = assets.length }, [assets.length])
+  const paging = useRef<{ requested: number | null; stalled: boolean }>({ requested: null, stalled: false })
+  useEffect(() => {
+    const current = paging.current
+    if (current.requested !== null) current.stalled = current.requested === rows.current
+    current.requested = null
+  }, [assets.length])
+  useEffect(() => {
+    paging.current = { requested: null, stalled: false }
+  }, [query, tagQuery])
+  const observerRef = useRef<IntersectionObserver | null>(null)
+  useEffect(() => () => observerRef.current?.disconnect(), [])
+  // A callback ref attaches on the render that mounts the sentinel: an effect keyed on row
+  // counts would miss it whenever the grid and the skeleton swap in separate renders.
+  const sentinelRef = useCallback((node: HTMLDivElement | null) => {
+    observerRef.current?.disconnect()
+    observerRef.current = null
+    if (!node) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const current = paging.current
+        if (current.stalled || current.requested !== null) return
+        if (!entries.some((entry) => entry.isIntersecting)) return
+        current.requested = rows.current
+        loadMore.current()
+      },
+      // Start the next page before the operator reaches the very last row.
+      { rootMargin: '600px 0px' },
+    )
+    observer.observe(node)
+    observerRef.current = observer
+  }, [])
 
   const removeAssets = async (targets: Asset[], force: boolean) => {
     if (targets.length === 0) return
@@ -351,11 +393,10 @@ export default function AssetLibrary({
               </article>
             ))}
           </div>
-          {assets.length < total ? (
-            <div className="asset-toolbar">
-              <button type="button" className="mp-btn-secondary mp-btn-small" onClick={onLoadMore} disabled={loadingMore}>
-                {loadingMore ? '加载中…' : '加载更多'}
-              </button>
+          {/* Scrolling the grid keeps the sentinel in view, so pages load one after another. */}
+          {hasMore ? (
+            <div className="asset-load-more" ref={sentinelRef} role="status">
+              {loadingMore ? '加载中…' : ''}
             </div>
           ) : null}
         </>
