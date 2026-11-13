@@ -163,8 +163,6 @@ export default function AssetLibrary({
     }
   }
 
-  const label = amMediaLibrary ? 'AM 素材' : '本地素材'
-
   const saveName = async () => {
     if (!nameEditor) return
     const name = nameEditor.draft.trim()
@@ -239,7 +237,9 @@ export default function AssetLibrary({
             />
             {uploading ? '上传中…' : '上传素材'}
           </label>
-          <span className="asset-busy">{label}{total > 0 ? ` · ${total} 张` : ''}</span>
+          {/* Only the count is shown: which library is loaded is clear from the cards and the
+              empty state, and 「AM 素材」read as a filter. */}
+          <span className="asset-busy">{total > 0 ? `共 ${total} 张` : ''}</span>
         </div>
       </form>
 

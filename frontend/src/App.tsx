@@ -459,27 +459,24 @@ export default function App() {
           />
         )}
 
-        <footer className="app-footer">
-          {visibleView === 'whole' ? (
-            <>
-              <span>提示词直出整图 · 模型直接改图，每轮结果自动保存为新版本</span>
-              <span className="footer-sep" aria-hidden="true" />
-              <span>原照替换结果需确认后应用</span>
-            </>
-          ) : visibleView === 'tasks' ? (
-            <span>任务按候选批次归档 · 点击封面回到工作台继续编辑</span>
-          ) : visibleView === 'material-filters' ? (
-            <span>SMB 严格只读 · 通过的原图复制到本机输出目录 · 待复核需人工确认</span>
-          ) : visibleView === 'agent-tests' ? (
-            <span>原始输入 · 独立运行 · Trace 与耗时记录</span>
-          ) : visibleView === 'brands' ? null : (
-            <span>
-              {context?.features?.am_media_library
-                ? '素材库与 AM Console 同步 · 上传的图片会登记为当前商户的正式素材'
-                : '本地开发模式 · 素材只保存在本机，不会写入 AM Console'}
-            </span>
-          )}
-        </footer>
+        {/* Views without a hint line render no footer at all, so no empty margin is left behind. */}
+        {visibleView === 'brands' || visibleView === 'assets' ? null : (
+          <footer className="app-footer">
+            {visibleView === 'whole' ? (
+              <>
+                <span>提示词直出整图 · 模型直接改图，每轮结果自动保存为新版本</span>
+                <span className="footer-sep" aria-hidden="true" />
+                <span>原照替换结果需确认后应用</span>
+              </>
+            ) : visibleView === 'tasks' ? (
+              <span>任务按候选批次归档 · 点击封面回到工作台继续编辑</span>
+            ) : visibleView === 'material-filters' ? (
+              <span>SMB 严格只读 · 通过的原图复制到本机输出目录 · 待复核需人工确认</span>
+            ) : (
+              <span>原始输入 · 独立运行 · Trace 与耗时记录</span>
+            )}
+          </footer>
+        )}
       </div>
     </div>
   )
