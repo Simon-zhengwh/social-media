@@ -29,6 +29,8 @@ function candidates(task: WholeImageTask, assets: Asset[]): Row[] {
 
 function selectRecordUrl(id: string | null) {
   const url = new URL(window.location.href)
+  const view = url.searchParams.get('view')
+  if (view && view !== 'whole') return
   if (id) url.searchParams.set('replacement', id)
   else url.searchParams.delete('replacement')
   window.history.replaceState({}, '', url)

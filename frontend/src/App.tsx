@@ -25,6 +25,7 @@ import {
   storeMerchantId,
 } from './preferences'
 import type { Asset, BrandLogoImage, BrandStyle, MerchantProfile, PlatformPreset } from './types'
+import { clearPosterSession } from './posterSession'
 
 function readView(): AppView {
   const value = new URLSearchParams(window.location.search).get('view')
@@ -271,9 +272,7 @@ export default function App() {
   const handleViewChange = (next: AppView) => {
     if (next === 'agent-tests' && !agentTestsAllowed) return
     if (next === 'material-filters' && !materialFiltersAllowed) return
-    if (next === view && next === 'whole') {
-      setStudioRevision((current) => current + 1)
-    }
+    if (next === view && next === 'whole') return
     setView(next)
     updateUrl(next)
     if (next === 'assets') {
@@ -330,6 +329,7 @@ export default function App() {
     url.searchParams.delete('view')
     url.searchParams.set('whole', taskId)
     window.history.replaceState({}, '', url)
+    setStudioRevision((current) => current + 1)
     setView('whole')
   }
 
@@ -345,6 +345,7 @@ export default function App() {
   }
 
   const handleCreateTask = () => {
+    clearPosterSession(context?.merchant.user_id ?? '', initialMerchantId)
     updateUrl('whole')
     setStudioRevision((current) => current + 1)
     setView('whole')
@@ -393,6 +394,26 @@ export default function App() {
         merchantName={context?.merchant.merchant_name ?? '商家工作区'}
       />
       <div className="app-main">
+        {/* Keep pending uploads/submissions alive when another menu is open. */}
+        <div hidden={visibleView !== 'whole'}>
+          <WholeImageStudio
+            key={`whole-${context.merchant.user_id}-${initialMerchantId}-${studioRevision}`}
+            userId={context.merchant.user_id}
+            active={visibleView === 'whole'}
+            merchantProfile={(context.profile as MerchantProfile | null) ?? null}
+            brands={brands}
+            merchantLogos={merchantLogos}
+            brandsLoading={brandsLoading}
+            brandsError={brandsError}
+            platforms={platforms}
+            platformsLoading={platformsLoading}
+            platformsError={platformsError}
+            assets={assets}
+            assetsLoading={assetsLoading}
+            onLoadAssets={() => void loadAssets()}
+            onGoAssets={() => handleViewChange('assets')}
+          />
+        </div>
         {visibleView === 'material-filters' ? (
           <MaterialFilterPage />
         ) : visibleView === 'poster-edit' ? (
@@ -411,21 +432,7 @@ export default function App() {
             onCreate={handleCreateTask}
           />
         ) : visibleView === 'whole' ? (
-          <WholeImageStudio
-            key={`whole-${studioRevision}`}
-            merchantProfile={(context?.profile as MerchantProfile | null) ?? null}
-            brands={brands}
-            merchantLogos={merchantLogos}
-            brandsLoading={brandsLoading}
-            brandsError={brandsError}
-            platforms={platforms}
-            platformsLoading={platformsLoading}
-            platformsError={platformsError}
-            assets={assets}
-            assetsLoading={assetsLoading}
-            onLoadAssets={() => void loadAssets()}
-            onGoAssets={() => handleViewChange('assets')}
-          />
+          null
         ) : visibleView === 'brands' ? (
           <BrandStudio
             merchantProfile={(context?.profile as MerchantProfile | null) ?? null}
