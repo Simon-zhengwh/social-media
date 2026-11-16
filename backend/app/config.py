@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     core_ai_prompt_agent_timeout_seconds: int = 900
     core_ai_image_agent_id: str = "5a162c34-f333-453f-9835-de6a4f96e3fb"
     core_ai_image_agent_timeout_seconds: int = 1800
+    # A separately published image-editor-v2 Agent; do not silently call the v1 editor.
+    core_ai_editable_poster_agent_id: str = ""
     core_ai_test_agent_id: str = "5a162c34-f333-453f-9835-de6a4f96e3fb"
     core_ai_test_timeout_seconds: int = 1800
     # Original-photo replacements retain the existing environment variable names.

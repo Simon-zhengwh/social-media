@@ -9,7 +9,11 @@ WORKDIR /app
 RUN groupadd --gid 10001 social && useradd --uid 10001 --gid social --create-home social
 COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN python -m playwright install --with-deps chromium && chmod -R a+rX /opt/playwright
 COPY backend/app ./app
+COPY backend/fonts ./fonts
+COPY backend/data ./data
 COPY backend/scripts/__init__.py ./scripts/__init__.py
 COPY backend/scripts/maintenance.py ./scripts/maintenance.py
 RUN mkdir -p /tmp/social-media && chown -R social:social /app /tmp/social-media

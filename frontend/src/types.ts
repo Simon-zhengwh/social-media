@@ -205,6 +205,19 @@ export type WholeImageArtifact = {
   download_url: string | null
 }
 
+export type EditablePosterProject = {
+  id: string
+  task_id: string
+  source_version_id: string
+  source_output_id: string
+  status: 'queued' | 'running' | 'ready' | 'failed' | 'interrupted'
+  stage: string
+  revision: number
+  error?: string | null
+  run_id?: string | null
+  project?: Record<string, unknown>
+}
+
 export type WholeImageOutput = {
   id: string
   channel: 'gateway' | 'agent'

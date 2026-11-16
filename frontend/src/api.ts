@@ -1,5 +1,6 @@
 import type {
   Asset,
+  EditablePosterProject,
   OriginalReplacementItem,
   OriginalReplacementTask,
   BrandDetail,
@@ -154,6 +155,32 @@ export async function listAssetPage(
 export async function listAssets(): Promise<Asset[]> {
   const page = await listAssetPage('', 0, 100)
   return page.items
+}
+
+export async function listEditableProjects(taskId: string): Promise<EditablePosterProject[]> {
+  return parseResponse(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/editable-projects`))
+}
+
+export async function createEditableProject(taskId: string, sourceVersionId: string, sourceOutputId: string, requestId: string): Promise<EditablePosterProject> {
+  return parseResponse(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/editable-projects`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_version_id: sourceVersionId, source_output_id: sourceOutputId, request_id: requestId }),
+  }))
+}
+
+export async function getEditableProject(projectId: string): Promise<EditablePosterProject> {
+  return parseResponse(await apiFetch(`/api/whole-image/editable-projects/${encodeURIComponent(projectId)}`))
+}
+
+export async function saveEditableProject(projectId: string, expectedRevision: number, project: Record<string, unknown>): Promise<EditablePosterProject> {
+  return parseResponse(await apiFetch(`/api/whole-image/editable-projects/${encodeURIComponent(projectId)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expected_revision: expectedRevision, project }),
+  }))
+}
+
+export async function refreshEditableProject(projectId: string): Promise<EditablePosterProject> {
+  return parseResponse(await apiFetch(`/api/whole-image/editable-projects/${encodeURIComponent(projectId)}/refresh`, { method: 'POST' }))
 }
 
 export type MerchantFeatures = {

@@ -17,6 +17,7 @@ from app.routes import (
     brand_logos,
     brand_rules,
     brands,
+    editable_projects,
     material_filters,
     merchant_context,
     platforms,
@@ -29,6 +30,7 @@ from app.services.core_ai import CoreAIClient
 from app.services import storage
 from app.services.object_store import create_object_store
 from app.services import original_replacement_runner
+from app.services import poster_reconstruction
 from app.services import agent_tests as agent_test_service
 from app.services import maintenance, storage, whole_image as whole_image_service
 from app.services import material_filter_files, material_filter_uat_sync
@@ -78,6 +80,8 @@ def _initialize_indexes(db) -> None:
     db.background_replace_tasks.create_index([("merchant_id", 1), ("input.replacements.asset_id", 1)])
     db.media_objects.create_index([("merchant_id", 1), ("status", 1)])
     db.whole_artifacts.create_index([("merchant_id", 1), ("task_id", 1)])
+    db.whole_editable_projects.create_index([("merchant_id", 1), ("task_id", 1), ("request_id", 1)], unique=True)
+    db.whole_editable_projects.create_index([("status", 1), ("run_id", 1)])
     db.agent_test_runs.create_index([("merchant_id", 1), ("batch_id", 1)])
     db.agent_test_runs.create_index([("status", 1), ("merchant_id", 1)])
     db.agent_test_batches.create_index([("merchant_id", 1), ("created_at", -1)])
@@ -155,6 +159,18 @@ def _resume_poster_edits(app: FastAPI) -> None:
             ).start()
 
 
+def _resume_editable_projects(app: FastAPI) -> None:
+    raw = app.state.raw_db
+    for value in raw.whole_editable_projects.distinct('merchant_id', {'status': {'$in': ['queued', 'running']}}):
+        if not value:
+            continue
+        merchant_id = str(value)
+        db = ScopedDatabase(raw, merchant_id)
+        threading.Thread(target=poster_reconstruction.resume,
+                         args=(db, app.state.settings, _scoped_store(app, merchant_id, db), app.state.core_ai),
+                         name=f'resume-editable-projects-{merchant_id}', daemon=True).start()
+
+
 def _mark_material_filter_runs_interrupted(app: FastAPI) -> None:
     """Release leftover scans and uploads; the operator resumes them explicitly."""
     raw = app.state.raw_db
@@ -204,6 +220,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         whole_image_service.mark_interrupted(db)
         _resume_original_replacements(app)
         _resume_poster_edits(app)
+        _resume_editable_projects(app)
         _resume_agent_tests(app)
         _mark_material_filter_runs_interrupted(app)
         app.state.ready = True
@@ -232,6 +249,7 @@ merchant_router.include_router(prompts.router)
 merchant_router.include_router(agent_tests.router)
 merchant_router.include_router(task_center.router)
 merchant_router.include_router(whole_image.router)
+merchant_router.include_router(editable_projects.router)
 merchant_router.include_router(poster_edit.router)
 merchant_router.include_router(material_filters.router)
 app.include_router(merchant_router)

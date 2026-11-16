@@ -34,8 +34,19 @@ def test_admission_is_atomic_with_enable_and_status_counts_every_workflow():
     db.poster_edit_tasks.insert_one({"status": "queued"})
     db.background_replace_tasks.insert_one({"status": "running"})
     state = maintenance.status(db)
-    assert state["active_tasks"] == {"whole_tasks": 1, "whole_edits": 1, "poster_edits": 1, "background_replacements": 1, "agent_tests": 0}
+    assert state["active_tasks"] == {"whole_tasks": 1, "whole_edits": 1, "poster_edits": 1, "background_replacements": 1, "agent_tests": 0, "editable_projects": 0}
     assert state["drained"] is False
+
+
+def test_maintenance_waits_for_editable_poster_projects():
+    db = mongomock.MongoClient().db
+    maintenance.initialize(db)
+    db.whole_editable_projects.insert_one({"_id": "project", "status": "running"})
+    state = maintenance.status(db)
+    assert state["active_tasks"]["editable_projects"] == 1
+    assert state["drained"] is False
+    db.whole_editable_projects.update_one({"_id": "project"}, {"$set": {"status": "ready"}})
+    assert maintenance.status(db)["drained"] is True
 
 
 def test_scoped_database_isolates_queries_updates_upserts_and_brand_rules():

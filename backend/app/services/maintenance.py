@@ -74,6 +74,7 @@ def status(db: Any) -> dict[str, Any]:
         "poster_edits": db.poster_edit_tasks.count_documents({"status": {"$in": ["queued", "running"]}}),
         "background_replacements": db.background_replace_tasks.count_documents({"status": {"$in": ["queued", "running"]}}),
         "agent_tests": db.agent_test_runs.count_documents({"status": {"$in": ["queued", "preparing", "triggering", "running"]}}),
+        "editable_projects": db.whole_editable_projects.count_documents({"status": {"$in": ["queued", "running"]}}),
     }
     active = sum(counts.values())
     admitting = int(control.get("admitting") or 0)

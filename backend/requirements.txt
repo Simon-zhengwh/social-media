@@ -5,6 +5,8 @@ pydantic-settings==2.16.0
 pymongo==4.19.0
 httpx==0.28.1
 Pillow==13.0.0
+fonttools==4.62.1
+playwright==1.58.0
 pillow-heif==1.8.1
 numpy==2.5.4
 opencv-python-headless==4.14.0.94

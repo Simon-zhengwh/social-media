@@ -418,7 +418,7 @@ class CoreAIClient:
             time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
         raise CoreAIError("agent_timeout", f"图片 Agent 等待超时（run_id: {run_id}）", 504)
 
-    def poll_agent_detail(self, run_id: str) -> AgentRunResult | None:
+    def poll_agent_detail(self, run_id: str, *, include_files: bool = False) -> AgentRunResult | None:
         """Query an existing run once; never trigger a replacement run."""
         if not self.settings.core_ai_api_key:
             raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
@@ -434,7 +434,7 @@ class CoreAIClient:
             return AgentRunResult(
                 run_id=run_id, status=status,
                 output=detail.get("output") if isinstance(detail.get("output"), str) else "",
-                artifacts=self._agent_artifacts(detail.get("artifacts")),
+                artifacts=self._agent_artifacts(detail.get("artifacts"), include_files=include_files),
             )
         if status in {"FAILED", "TIMEOUT", "CANCELLED", "SKIPPED"}:
             raise CoreAIError("agent_run_failed", f"图片 Agent 运行失败：{detail.get('error') or status}")
