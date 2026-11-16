@@ -151,7 +151,21 @@ def test_sync_uploads_picked_photo_with_clean_name_and_capped_tags(db, settings)
     assert "红烧肉特写".encode() in upload["body"]
 
     tags_request = next(item for item in uploads if item["path"].endswith("/tags"))
-    assert "素材筛选" in tags_request["body"].decode()
+    assert "素材筛选" not in tags_request["body"].decode()
+
+
+def test_sync_keeps_five_content_tags_without_a_source_marker():
+    row = {"tags": [" 牛肉 ", "素材筛选", "面条", "辣椒", "牛肉", "葱", "香菜", "木耳"]}
+    assert sync_service.desired_tags(row) == ["牛肉", "面条", "辣椒", "葱", "香菜"]
+    assert sync_service.desired_tags({}) == []
+
+
+def test_cli_sync_uses_the_same_content_tags_without_a_source_marker():
+    from scripts.sync_picked_to_uat import desired_tags
+
+    row = {"tags": ["牛肉", "面条", "辣椒", "葱", "香菜", "素材筛选"]}
+    assert desired_tags(row, include_model=True) == ["牛肉", "面条", "辣椒", "葱", "香菜"]
+    assert desired_tags(row, include_model=False) == []
 
 
 def test_sync_recompresses_when_the_upload_body_is_too_large(db, settings):

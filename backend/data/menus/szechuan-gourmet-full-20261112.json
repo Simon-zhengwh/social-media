@@ -1,0 +1,820 @@
+{
+  "merchant_id": "ec3a8e03-28c0-4291-9f94-14289e63cdc7",
+  "menu_version": "szechuan-full-20261112-70c6ee2c0f79",
+  "name_format": "zh_en",
+  "items": [
+    {
+      "id": "sg-6c23d0094271f7a6",
+      "zh": "西湖牛肉羹",
+      "en": "West Lake Beef Chowder"
+    },
+    {
+      "id": "sg-a6ca25d6f808ae46",
+      "zh": "菠菜雞絲湯",
+      "en": "Spinach & Shredded Chicken Soup"
+    },
+    {
+      "id": "sg-29cbab0aecaea573",
+      "zh": "番茄煎蛋湯",
+      "en": "Tomato w. Omelet Soup"
+    },
+    {
+      "id": "sg-e4a4eb9f817de49a",
+      "zh": "素菜豆腐湯",
+      "en": "Mixed Vegetables & Tofu in Broth"
+    },
+    {
+      "id": "sg-96ac5aa903abefde",
+      "zh": "老媽蹄花湯",
+      "en": "Trotters w. Kidney Bean Soup"
+    },
+    {
+      "id": "sg-8f65197f2467d56a",
+      "zh": "海鮮酸辣湯",
+      "en": "Mixed Seafood Hot & Sour Soup"
+    },
+    {
+      "id": "sg-50ae2f8a0fca2585",
+      "zh": "雲吞湯",
+      "en": "Wonton Soup"
+    },
+    {
+      "id": "sg-6956eb0927c687d4",
+      "zh": "酸辣湯",
+      "en": "Hot & Sour Soup"
+    },
+    {
+      "id": "sg-37672e2bfb59626a",
+      "zh": "蛋花湯",
+      "en": "Egg Drop Soup"
+    },
+    {
+      "id": "sg-95bde32b9afc71f8",
+      "zh": "雞絲蕎麥麵",
+      "en": "Shredded Chicken & Cold Soba Noodles in Spicy Sesame Sauce"
+    },
+    {
+      "id": "sg-2d4df493643688d4",
+      "zh": "夫妻肺片",
+      "en": "OX Tongue & Tripe w. Roasted Chilli Peanut Sauce"
+    },
+    {
+      "id": "sg-e932bd913f477ac6",
+      "zh": "椒香西蘭花",
+      "en": "Broccoli w. Sichuan Pepper Corn-Scallion Dressing"
+    },
+    {
+      "id": "sg-6d7b1bd9f3ea7061",
+      "zh": "麻辣牛筋",
+      "en": "Thinly Sliced Beef Tendon w. Roasted Chilli Sauce"
+    },
+    {
+      "id": "sg-c0d1e6e783cb0f13",
+      "zh": "口水雞",
+      "en": "Sichuan Chicken in Red Oil Sauce"
+    },
+    {
+      "id": "sg-d14b736161ce8a46",
+      "zh": "醬香卤牛肉",
+      "en": "Soy-Braised Beef Shank"
+    },
+    {
+      "id": "sg-f941ce568ce793f9",
+      "zh": "葱油海蜇",
+      "en": "Jellyfish w. Scallion Sauce"
+    },
+    {
+      "id": "sg-dc0b17075652b479",
+      "zh": "炝拌黃瓜",
+      "en": "Spicy Cucumber Salad"
+    },
+    {
+      "id": "sg-62a15ddd8fb833e1",
+      "zh": "薑汁菠菜",
+      "en": "Spinach Salad w. Ginger Dressing"
+    },
+    {
+      "id": "sg-2b35b9e0e58d3fd6",
+      "zh": "四川泡菜",
+      "en": "Chef's Sichuan Pickles"
+    },
+    {
+      "id": "sg-acf169a202f4fed5",
+      "zh": "鮮椒蕨菜",
+      "en": "Crispy Lettuce Stem w. Fresh Chilli Peppers"
+    },
+    {
+      "id": "sg-0fad81ff5d29b1f9",
+      "zh": "鮮椒毛肚",
+      "en": "Tripe w. Fresh Chillies"
+    },
+    {
+      "id": "sg-0affd2bac3113eab",
+      "zh": "清炒小白菜",
+      "en": "Stir-Fried Baby Bok Choy"
+    },
+    {
+      "id": "sg-1ee463b0cbb27bed",
+      "zh": "酸辣土豆絲",
+      "en": "Shredded Potato w. Hot & Sour Sauce"
+    },
+    {
+      "id": "sg-6756d25087d055e5",
+      "zh": "糖醋蓮白",
+      "en": "Chinese Sweet & Sour Cabbage"
+    },
+    {
+      "id": "sg-40bf83d3298358bf",
+      "zh": "清炒菠菜",
+      "en": "Sauteed Spinach"
+    },
+    {
+      "id": "sg-ef8ccf2db75e1173",
+      "zh": "乾煸四季豆",
+      "en": "Sauteed String Beans"
+    },
+    {
+      "id": "sg-c9eff6a67de14048",
+      "zh": "魚香茄子",
+      "en": "Baby Eggplant w. Spicy Garlic Sauce"
+    },
+    {
+      "id": "sg-807d9313160ddbaf",
+      "zh": "魚香芥蘭",
+      "en": "Sauteed Broccoli w. Spicy Garlic Sauce"
+    },
+    {
+      "id": "sg-1249f7f41f6a24df",
+      "zh": "蒜炒豆苗",
+      "en": "Stir-Fried Snow Pea Shoots w. Garlic Sauce"
+    },
+    {
+      "id": "sg-58f0ae2053dd4c60",
+      "zh": "素什錦",
+      "en": "Stir-Fried Mixed Vegetables"
+    },
+    {
+      "id": "sg-3dea5f99459ff4b3",
+      "zh": "羊肚菌炒時蔬",
+      "en": "Stir-Fried Mixed Vegetables w. Seasonal Morel"
+    },
+    {
+      "id": "sg-2951d62cae060df0",
+      "zh": "樟茶鴨炒飯",
+      "en": "Tea Smoked Shredded Duck Fried Rice"
+    },
+    {
+      "id": "sg-95f7738202a94461",
+      "zh": "臘腸炒飯",
+      "en": "Chinese Sausage Fried Rice"
+    },
+    {
+      "id": "sg-6b119c92a7040d8a",
+      "zh": "四川芽菜炒飯",
+      "en": "Pickled Vegetable Fried Rice Sichuan Style"
+    },
+    {
+      "id": "sg-20e6c11c7a948cd8",
+      "zh": "揚州炒飯",
+      "en": "Yangzhou Fried Rice"
+    },
+    {
+      "id": "sg-7f564d9661332aa7",
+      "zh": "各式炒飯（牛/豬/雞/蝦/蔬菜）",
+      "en": "Your Choice of Fried Rice (Beef / Pork / Chicken / Shrimp / Vegetable)"
+    },
+    {
+      "id": "sg-cd6be4c4d77cfa56",
+      "zh": "紅燒牛肉麵",
+      "en": "Spicy Beef Stew Noodles Soup"
+    },
+    {
+      "id": "sg-b68663fd0af23c53",
+      "zh": "番茄煎蛋麵",
+      "en": "Tomato & Egg Noodles Soup"
+    },
+    {
+      "id": "sg-ebe1e23ae2b4e3c6",
+      "zh": "大滷麵",
+      "en": "Braised Noodles w. Shrimp (Chicken, Pork & Vegetables)"
+    },
+    {
+      "id": "sg-afb2e2209f473e13",
+      "zh": "海鮮兩面黃",
+      "en": "Pan-Fried Noodles w. Mixed Seafood"
+    },
+    {
+      "id": "sg-cb65304d8263dc4a",
+      "zh": "各式撈麵（牛/豬/雞/蝦/蔬菜）",
+      "en": "Your Choice of Lo Mein (Beef / Pork / Chicken / Shrimp / Vegetable)"
+    },
+    {
+      "id": "sg-86d977ade86310ee",
+      "zh": "乾炒河粉（牛/豬/雞/蝦/蔬菜）",
+      "en": "Stir-Fried Chow Fun (Beef / Pork / Chicken / Shrimp / Vegetable)"
+    },
+    {
+      "id": "sg-daf212d1ff25e482",
+      "zh": "火鍋牛肉粉",
+      "en": "Hot Pot Beef Sweet Potato Noodles"
+    },
+    {
+      "id": "sg-c270c5480735a51f",
+      "zh": "黑松露素菜炒飯",
+      "en": "Vegetable Fried Rice w. Black Truffle"
+    },
+    {
+      "id": "sg-609f2260f50b85ba",
+      "zh": "乾鍋肥腸",
+      "en": "Dry-Pot Pork Intestines w. Mixed Vegetable in Chilli Pepper & Cumin Sauce"
+    },
+    {
+      "id": "sg-f2738198b8e9f2db",
+      "zh": "乾鍋腰花",
+      "en": "Dry-Pot Kidney w. Mixed Vegetable in Chilli Pepper & Cumin Sauce"
+    },
+    {
+      "id": "sg-02aded9def6c777e",
+      "zh": "乾鍋仔雞",
+      "en": "Dry-Pot Chicken w. Mixed Vegetable in Chilli Pepper & Cumin Sauce"
+    },
+    {
+      "id": "sg-9545848f64e3f25d",
+      "zh": "乾鍋田雞",
+      "en": "Dry-Pot Frog w. Mixed Vegetable in Chilli Pepper & Cumin Sauce"
+    },
+    {
+      "id": "sg-7552d02b201b40a0",
+      "zh": "乾鍋手撕包菜",
+      "en": "Dry-Pot Cabbage and Sliced Pork w. Mixed Vegetable in Chilli Pepper & Cumin Sauce"
+    },
+    {
+      "id": "sg-1aa5b4b449126851",
+      "zh": "鐵板豆腐",
+      "en": "Sizzling Tofu w. Mixed Vegetable in Chilli Pepper & Cumin Sauce"
+    },
+    {
+      "id": "sg-3a2a8b5d8e244f3b",
+      "zh": "鐵板蝦",
+      "en": "Sizzling Shrimps w. Mixed Vegetable in Chilli Pepper & Cumin Sauce"
+    },
+    {
+      "id": "sg-13c82061ffb76634",
+      "zh": "鐵板雞/牛/羊",
+      "en": "Sizzling Chicken or Beef or Lamb w. Mixed Vegetable in Chilli Pepper & Cumin Sauce"
+    },
+    {
+      "id": "sg-f29754a93e9b92f8",
+      "zh": "南瓜餅",
+      "en": "Pumpkin Cakes"
+    },
+    {
+      "id": "sg-ac5649352792b5fe",
+      "zh": "爆漿糍粑",
+      "en": "Crispy Glutinous Rice Cake"
+    },
+    {
+      "id": "sg-9a06781cd96c0a41",
+      "zh": "酒釀丸子",
+      "en": "Sticky Rice Ball w. Chinese Sweet Rice Wine"
+    },
+    {
+      "id": "sg-f856786b91741ee3",
+      "zh": "水果綿綿冰",
+      "en": "Fruits Smoothie"
+    },
+    {
+      "id": "sg-330cf793f6b27510",
+      "zh": "紅糖冰粉",
+      "en": "Ice Jelly w. Brown Sugar"
+    },
+    {
+      "id": "sg-034043f0db833bba",
+      "zh": "酸梅湯",
+      "en": "Sour Plum Drink"
+    },
+    {
+      "id": "sg-adce0ea709173531",
+      "zh": "王老吉",
+      "en": "Wong Lo Kat Herbal Tea"
+    },
+    {
+      "id": "sg-6fdb0e29d839a652",
+      "zh": "北冰洋",
+      "en": "Arctic Ocean Orange Soda"
+    },
+    {
+      "id": "sg-3ad353a89d2b75e4",
+      "zh": "椰汁",
+      "en": "Coconut Juice"
+    },
+    {
+      "id": "sg-00bd11a18133bb13",
+      "zh": "可樂",
+      "en": "Coke"
+    },
+    {
+      "id": "sg-0ef0696095ac4a95",
+      "zh": "健怡可樂",
+      "en": "Diet Coke"
+    },
+    {
+      "id": "sg-989781ee6115e492",
+      "zh": "雪碧",
+      "en": "Sprite"
+    },
+    {
+      "id": "sg-8b076262603bd5e3",
+      "zh": "薑汁",
+      "en": "Ginger Ale"
+    },
+    {
+      "id": "sg-5a75ee7908082e60",
+      "zh": "蘇打水",
+      "en": "Seltzer Water"
+    },
+    {
+      "id": "sg-2ade9f18e1a697dd",
+      "zh": "瓶裝水",
+      "en": "Bottled Water"
+    },
+    {
+      "id": "sg-fa910e788a6a3acd",
+      "zh": "成都回鍋肉",
+      "en": "Double Cooked Pork Belly w. Chilli Leeks"
+    },
+    {
+      "id": "sg-d0db5fd02d72b5ca",
+      "zh": "生爆鹽煎肉",
+      "en": "Stir-Fried Fresh Pork Belly w. Chilli Leeks"
+    },
+    {
+      "id": "sg-7d49fb68cf9abc25",
+      "zh": "農家炒豬肉",
+      "en": "Stir-Fried Sun-Dried Pork Belly"
+    },
+    {
+      "id": "sg-5f237902bff111b6",
+      "zh": "香乾肉絲",
+      "en": "Shredded Pork w. Five Spices Tofu"
+    },
+    {
+      "id": "sg-e8158a16085285c7",
+      "zh": "魚香肉絲",
+      "en": "Shredded Pork w. Spicy Garlic Sauce"
+    },
+    {
+      "id": "sg-767fe6c0f0649618",
+      "zh": "麻婆豆腐",
+      "en": "Mapo Tofu w. Minced Pork"
+    },
+    {
+      "id": "sg-5772abf074a20557",
+      "zh": "泡豇豆炒肉末",
+      "en": "Minced Pork w. Pickled Long Bean"
+    },
+    {
+      "id": "sg-fd4058f19687f39b",
+      "zh": "宮保雞丁",
+      "en": "Kung Pao Chicken"
+    },
+    {
+      "id": "sg-29345e8372ad2da5",
+      "zh": "鮮椒雞丁",
+      "en": "Stir-Fried Chicken w. Fresh Chillies"
+    },
+    {
+      "id": "sg-4b624a6e1c962295",
+      "zh": "魚香雞絲",
+      "en": "Shredded Chicken w. Spicy Garlic Sauce"
+    },
+    {
+      "id": "sg-e1d7a7f5b8dbe75a",
+      "zh": "小白菜雞",
+      "en": "Sliced Chicken w. Baby Bok Choy"
+    },
+    {
+      "id": "sg-6b6588aabfcbc889",
+      "zh": "左宗雞",
+      "en": "General Tso's Chicken"
+    },
+    {
+      "id": "sg-56d68b43b6090d9b",
+      "zh": "芝麻雞",
+      "en": "Sesame Chicken"
+    },
+    {
+      "id": "sg-b9418cacc63b93ed",
+      "zh": "陳皮雞",
+      "en": "Orange Chicken"
+    },
+    {
+      "id": "sg-311d5f449a7298db",
+      "zh": "三椒煸雞",
+      "en": "Stir-Fried Chicken w. Roasted Chilli & Green Chilli"
+    },
+    {
+      "id": "sg-6b2f59f837726bb9",
+      "zh": "芥蘭雞",
+      "en": "Chicken w. Broccoli"
+    },
+    {
+      "id": "sg-46c5e50b5bbc38f5",
+      "zh": "豆腐蝦仁",
+      "en": "Braised Silky Tofu w. Baby Shrimp"
+    },
+    {
+      "id": "sg-2ee8649429eb45c4",
+      "zh": "滑蛋蝦仁",
+      "en": "Stir-Fried Shrimp w. Silky Scrambled Eggs"
+    },
+    {
+      "id": "sg-b70d355575b0ce4d",
+      "zh": "蔥爆（牛+$1/羊+$1/雞/蝦仁）",
+      "en": "Stir-Fried w. Scallions & Sweet Miso (Beef +$1 / Lamb +$1 / Chicken / Shrimp)"
+    },
+    {
+      "id": "sg-32d25309434463c9",
+      "zh": "芥蘭牛（牛+$1/羊+$1/雞/蝦仁）",
+      "en": "Stir-Fried Broccoli w. (Beef +$1 / Lamb +$1 / Chicken / Shrimp)"
+    },
+    {
+      "id": "sg-ace68f9d6d443f6d",
+      "zh": "四季豆（牛+$1/羊+$1/雞/蝦仁）",
+      "en": "Stir-Fried String Beans w. (Beef +$1 / Lamb +$1 / Chicken / Shrimp)"
+    },
+    {
+      "id": "sg-275566a854e96284",
+      "zh": "茄子（牛+$1/羊+$1/雞/蝦仁）",
+      "en": "Stir-Fried Eggplant w. (Beef +$1 / Lamb +$1 / Chicken / Shrimp)"
+    },
+    {
+      "id": "sg-f77ad901c6ec75be",
+      "zh": "清炒小白菜",
+      "en": "Sauteed Baby Bok Choy"
+    },
+    {
+      "id": "sg-1ba7710b760f1bd4",
+      "zh": "各式炒飯/炒麵/米粉/河粉 +$1",
+      "en": "Your Choice of Fried Rice / Noodles / Rice Noodles / Chow Fun +$1"
+    },
+    {
+      "id": "sg-e64e3e2c237ad87f",
+      "zh": "鮮菇（牛/羊/雞/魚/蝦仁）",
+      "en": "Stir-Fried Fresh Mushrooms w. (Beef / Lamb / Chicken / Fish / Shrimp)"
+    },
+    {
+      "id": "sg-5ef73c1b8a08101e",
+      "zh": "雞肉湯包",
+      "en": "Steamed Chicken Soup Dumplings (6)"
+    },
+    {
+      "id": "sg-a4d6674f85863049",
+      "zh": "水晶蝦餃",
+      "en": "Steamed Shrimp Dumplings (6)"
+    },
+    {
+      "id": "sg-b3ca66015eb01caa",
+      "zh": "素菜春卷",
+      "en": "Crispy Veggie Spring Rolls (2)"
+    },
+    {
+      "id": "sg-508a6462f679b7d2",
+      "zh": "鮮蝦春卷",
+      "en": "Crispy Shrimp Spring Rolls (2)"
+    },
+    {
+      "id": "sg-cfbb4e5600be1249",
+      "zh": "鮮蝦腐皮卷",
+      "en": "Crispy Shrimp Bean Curd Rolls"
+    },
+    {
+      "id": "sg-b50bfd5c49b73b8c",
+      "zh": "紅油水餃",
+      "en": "Pork Dumplings w. Spicy Sweet Sesame Sauce"
+    },
+    {
+      "id": "sg-dcbccfb2c52f6363",
+      "zh": "紅油抄手",
+      "en": "Pork Wontons w. Spicy Sweet Sesame Sauce"
+    },
+    {
+      "id": "sg-51fdd8dda8f1a075",
+      "zh": "成都涼粉",
+      "en": "Spicy Mung Bean Jello Salad"
+    },
+    {
+      "id": "sg-6f5309f9f6c2c2ea",
+      "zh": "擔擔麵",
+      "en": "Dan Dan Noodles w. Chilli Minced Pork"
+    },
+    {
+      "id": "sg-3d1f5531dd7b8e0a",
+      "zh": "葱油餅",
+      "en": "Scallion Pancakes"
+    },
+    {
+      "id": "sg-5234eba4fb19d23f",
+      "zh": "蒸餃",
+      "en": "Steamed Pork Dumplings / Vegetable Dumplings (6)"
+    },
+    {
+      "id": "sg-ba3b8e7bc6c94f21",
+      "zh": "四川涼麵",
+      "en": "Chilled Noodles w. Spicy Sesame Vinaigrette"
+    },
+    {
+      "id": "sg-0f4e6e2eba54bb1f",
+      "zh": "酸辣粉",
+      "en": "Spicy Hot & Sour Cellophane Noodles"
+    },
+    {
+      "id": "sg-37c73e785430a490",
+      "zh": "生煎包",
+      "en": "Pan-Fried Pork Buns (4)"
+    },
+    {
+      "id": "sg-46ba41615f3acc6a",
+      "zh": "鍋貼",
+      "en": "Pan-Fried Pork Dumplings (6)"
+    },
+    {
+      "id": "sg-5129bb40a3d5f484",
+      "zh": "明爐燒鴨",
+      "en": "Roast Duck"
+    },
+    {
+      "id": "sg-fbb2ceb8ee978c65",
+      "zh": "青花椒黃魚",
+      "en": "Fish Fillet & Throat w. Green Peppercorn"
+    },
+    {
+      "id": "sg-50d316226d219119",
+      "zh": "剁椒肥腸魚",
+      "en": "Hot Chilli Intestines & Fillet"
+    },
+    {
+      "id": "sg-ccd45faf70e0b76e",
+      "zh": "黃金稻草土雞",
+      "en": "Braised Chicken w. Bamboo Shoots"
+    },
+    {
+      "id": "sg-8d26083dff7894dc",
+      "zh": "豆花黃牛肉",
+      "en": "Sliced Beef w. Silky Tofu in Spicy Sichuan Broth"
+    },
+    {
+      "id": "sg-4bef695148522564",
+      "zh": "糖醋三鮮鍋巴",
+      "en": "Crispy Rice w. Seafood in Sweet & Sour Sauce"
+    },
+    {
+      "id": "sg-a484731dddd280da",
+      "zh": "蛋黃汁三鮮鍋巴",
+      "en": "Crispy Rice w. Seafood in Salted Egg Yolk Sauce"
+    },
+    {
+      "id": "sg-9298a84ef4c3440b",
+      "zh": "江湖毛血旺",
+      "en": "Stewed Pork Blood in Chilli Oil"
+    },
+    {
+      "id": "sg-c92512cb2531fd36",
+      "zh": "三椒田雞",
+      "en": "Stir-Fried Frog w. Roasted Chilli & Asian Green Chillies"
+    },
+    {
+      "id": "sg-356c6e2e05173948",
+      "zh": "農家老臘肉",
+      "en": "Farmhouse-Style Stir-Fried Smoked Pork"
+    },
+    {
+      "id": "sg-8d5f3b8f3f20387e",
+      "zh": "藤椒蹄花",
+      "en": "Pork Knuckle w. Spicy Sauce & Pepper"
+    },
+    {
+      "id": "sg-0981661d1ab78ad5",
+      "zh": "火爆腰花",
+      "en": "Stir-Fried Pork Kidney w. Chilli Peppers"
+    },
+    {
+      "id": "sg-5c174dff2fde9468",
+      "zh": "乾煸肥腸",
+      "en": "Sichuan Dry-Fried Pork Intestines"
+    },
+    {
+      "id": "sg-d55b82c6f5eed849",
+      "zh": "麻辣豆腐腦",
+      "en": "Spicy Silky Tofu Pudding w. Crispy Noodles"
+    },
+    {
+      "id": "sg-7294cb2976c77d1e",
+      "zh": "朵頤烤全魚",
+      "en": "Grilled Whole Fish w. Spicy Sauce"
+    },
+    {
+      "id": "sg-7c0c945d26eaeb07",
+      "zh": "鮑魚紅燒肉",
+      "en": "Braised Slow Pork w. Abalone"
+    },
+    {
+      "id": "sg-75385f931a850324",
+      "zh": "盤龍茄子",
+      "en": "Spiral-Cut Eggplant in Sichuan Sauce"
+    },
+    {
+      "id": "sg-b1208c8386cc6bce",
+      "zh": "樟茶鴨",
+      "en": "Camphor Tea Smoked Duck"
+    },
+    {
+      "id": "sg-baf10a264cffdd2f",
+      "zh": "一品蒜香排骨",
+      "en": "Crispy Spare Ribs w. Garlic Sauce & Pepper"
+    },
+    {
+      "id": "sg-faa6e9546243965e",
+      "zh": "泡豇豆炒肉末",
+      "en": "Minced Pork w. Pickled Long Beans"
+    },
+    {
+      "id": "sg-4944e3f9c46fdb81",
+      "zh": "重慶辣子雞",
+      "en": "Crispy Spicy Chicken w. Dried Chillies"
+    },
+    {
+      "id": "sg-4d0b27edeb0e93e1",
+      "zh": "紅燒獅子頭",
+      "en": "Braised Lion's Head Meatballs"
+    },
+    {
+      "id": "sg-e8a6e4c9154e4b94",
+      "zh": "四川扣肉",
+      "en": "Steamed Pork Belly w. Preserved Mustard Greens"
+    },
+    {
+      "id": "sg-3583a49c5c1aecc9",
+      "zh": "火爆雙脆",
+      "en": "Stir-Fried Ox Tripe"
+    },
+    {
+      "id": "sg-aa025045f3372872",
+      "zh": "朵頤沸騰魚",
+      "en": "Fish w. Hot Chilli Oil"
+    },
+    {
+      "id": "sg-f3352a9039047e08",
+      "zh": "松鼠全魚",
+      "en": "Squirrel-Cut Whole Fish"
+    },
+    {
+      "id": "sg-2cc7ff1fe9e40fb5",
+      "zh": "豆瓣全魚",
+      "en": "Braised Whole Bass w. Sichuan Chilli-Miso (Authentic Sichuan Taste)"
+    },
+    {
+      "id": "sg-e660622b0c700e35",
+      "zh": "燴鍋全魚",
+      "en": "Braised Whole Bass w. Spicy Chilli"
+    },
+    {
+      "id": "sg-ec52c572658463a5",
+      "zh": "清蒸全魚",
+      "en": "Steamed Whole Bass"
+    },
+    {
+      "id": "sg-db11e3261fa1c5a1",
+      "zh": "豆花魚片",
+      "en": "Fish Fillets w. Silky Tofu in Spicy Sichuan Broth"
+    },
+    {
+      "id": "sg-a8fa760153259f05",
+      "zh": "水煮魚片",
+      "en": "Braised Fish Fillets w. Mixed Vegetable in Spicy Sichuan Peppercorn Broth"
+    },
+    {
+      "id": "sg-b96f8deb280a12ea",
+      "zh": "朵頤酸菜魚",
+      "en": "Fish Fillets in Spicy Pickled Mustard Broth"
+    },
+    {
+      "id": "sg-c76ca339c1cee13a",
+      "zh": "鮮菇魚片",
+      "en": "Fish Fillets w. Fresh Mushroom in Oyster"
+    },
+    {
+      "id": "sg-71004002638cb460",
+      "zh": "核桃大蝦",
+      "en": "Honey Walnut Shrimp"
+    },
+    {
+      "id": "sg-cd6d268ffbe67072",
+      "zh": "左宗大蝦",
+      "en": "General Tso's Prawns"
+    },
+    {
+      "id": "sg-2fc4365dc1981e0d",
+      "zh": "芝麻大蝦",
+      "en": "Sesame Prawns"
+    },
+    {
+      "id": "sg-09c050fcd20c9979",
+      "zh": "陳皮大蝦",
+      "en": "Orange Prawns"
+    },
+    {
+      "id": "sg-0a3c0f719443ac0e",
+      "zh": "魚香大蝦",
+      "en": "Prawns w. Spicy Garlic Sauce"
+    },
+    {
+      "id": "sg-0bf0fba88a320727",
+      "zh": "宮保蝦仁",
+      "en": "Kung Pao Baby Shrimp"
+    },
+    {
+      "id": "sg-7ef0b590da9ec63c",
+      "zh": "芥蘭大蝦",
+      "en": "Prawns w. Broccoli"
+    },
+    {
+      "id": "sg-4cb7396d3c196545",
+      "zh": "芥蘭蝦仁",
+      "en": "Baby Shrimp w. Broccoli"
+    },
+    {
+      "id": "sg-9dd0800e085701de",
+      "zh": "椒鹽大蝦",
+      "en": "Salt & Pepper Jumbo Shrimp"
+    },
+    {
+      "id": "sg-9fb0be84c7b017f7",
+      "zh": "魚香雞",
+      "en": "Chicken w. Spicy Garlic Sauce"
+    },
+    {
+      "id": "sg-ae78884335356a77",
+      "zh": "鮮菇雞片",
+      "en": "Chicken w. Fresh Mushroom"
+    },
+    {
+      "id": "sg-6e08137855123cb7",
+      "zh": "四季豆雞",
+      "en": "Stir-Fried Chicken w. String Beans"
+    },
+    {
+      "id": "sg-697797da21ca5c6d",
+      "zh": "茄子雞",
+      "en": "Sliced Chicken w. Baby Eggplant"
+    },
+    {
+      "id": "sg-2f0259963d149595",
+      "zh": "京醬肉絲",
+      "en": "Shredded Pork w. Sweet Miso Sauce"
+    },
+    {
+      "id": "sg-e2637c4c97fc8c33",
+      "zh": "香乾肉絲",
+      "en": "Shredded Pork w. Five Spice Tofu"
+    },
+    {
+      "id": "sg-97267feb8d2117ee",
+      "zh": "孜然牛/羊",
+      "en": "Wok-Tossed Crispy Beef or Lamb w. Roasted Chilli Cumin"
+    },
+    {
+      "id": "sg-d4f184b6082327d5",
+      "zh": "葱爆牛/羊",
+      "en": "Stir-Fried Beef or Lamb w. Scallions & Sweet Miso"
+    },
+    {
+      "id": "sg-95055a9ffe1cf0b1",
+      "zh": "水煮牛/羊",
+      "en": "Sliced Beef or Lamb w. Mixed Vegetable in Spicy Sichuan Broth"
+    },
+    {
+      "id": "sg-f7fc0c46c44d2097",
+      "zh": "芥蘭牛/羊",
+      "en": "Beef or Lamb w. Broccoli"
+    },
+    {
+      "id": "sg-4bb4350063b8cc4b",
+      "zh": "鮮菇牛/羊",
+      "en": "Beef or Lamb w. Fresh Mushrooms in Oyster Sauce"
+    },
+    {
+      "id": "sg-edd6b806191c62ba",
+      "zh": "四季豆牛",
+      "en": "Stir-Fried Beef w. String Beans"
+    },
+    {
+      "id": "sg-6080fb8c1818a181",
+      "zh": "茄子牛/羊",
+      "en": "Sliced Beef or Lamb w. Baby Eggplant"
+    }
+  ],
+  "ambiguity_groups": [],
+  "source_count": 177,
+  "exact_duplicate_count": 15
+}

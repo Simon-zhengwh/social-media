@@ -44,6 +44,7 @@ from app.services import material_filter_files as files  # noqa: E402
 from app.services import material_filters as store  # noqa: E402
 from app.services.material_filter_uat_sync import (  # noqa: E402
     BROWSER_UNSAFE_SUFFIXES,
+    desired_tags as content_tags,
     fit_upload_bytes,
     upload_suffix,
 )
@@ -178,11 +179,8 @@ def upload(
 
 
 def desired_tags(row: dict[str, Any], *, include_model: bool) -> list[str]:
-    """Deployed assets allow at most five tags; keep four model tags plus the marker."""
-    tags = [] if not include_model else [str(tag).strip() for tag in row.get("tags") or [] if str(tag).strip()]
-    tags = list(dict.fromkeys(tags))[:4]
-    tags.append("素材筛选")
-    return list(dict.fromkeys(tag for tag in tags if tag))[:5]
+    """Use the same content-only tags as the in-page sync."""
+    return content_tags(row) if include_model else []
 
 
 def find_existing_am_media(
@@ -234,7 +232,7 @@ def main() -> int:
         action="store_true",
         help="只检查目标文件名：列出与 UAT 资产库或本批次重名后会追加 -2/-3 的条目",
     )
-    parser.add_argument("--no-model-tags", action="store_true", help="不写入 AI 标签，只写「素材筛选」")
+    parser.add_argument("--no-model-tags", action="store_true", help="不写入 AI 标签")
     parser.add_argument("--base-url", default=os.environ.get("UAT_BASE_URL", DEFAULT_BASE_URL))
     parser.add_argument("--merchant", default="", help="默认取本地配置的商户")
     parser.add_argument("--cookie", default=os.environ.get("AM_SESSION_COOKIE", ""))

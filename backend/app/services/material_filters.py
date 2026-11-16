@@ -28,7 +28,7 @@ RUN_COLLECTION = "material_filter_runs"
 FILE_COLLECTION = "material_filter_files"
 EVALUATION_COLLECTION = "material_filter_evaluations"
 
-DECISIONS = ("pass", "fail", "uncertain", "error")
+DECISIONS = ("unprocessed", "pass", "fail", "uncertain", "error")
 REVIEW_DECISIONS = ("pass", "fail")
 ACTIVE_RUN_STATUSES = ("queued", "running")
 FINISHED_RUN_STATUSES = ("succeeded", "interrupted", "failed")
@@ -454,7 +454,7 @@ def run_kind(run: dict) -> str | None:
     if run.get("kind"):
         return run["kind"]
     key = str(run.get("request_id") or "")
-    for prefix, kind in [("group-scan:", "group_scan"), ("group-recognize:", "recognition"), ("group-merge:", "group_edit")]:
+    for prefix, kind in [("group-scan:", "group_scan"), ("group-recognize:", "recognition"), ("group-merge:", "group_edit"), ("auto-pick:", "auto_pick")]:
         if key.startswith(prefix):
             return kind
     return None
@@ -467,7 +467,7 @@ def mark_scheme_interrupted(db) -> list[str]:
     for doc in runs:
         run_id = str(doc["_id"])
         kind = run_kind(doc)
-        recovered = {"status": "failed" if kind == "group_edit" else "interrupted", "finished_at": now(), "error": "服务重启，任务已中断"}
+        recovered = {"status": "failed" if kind in {"group_edit", "auto_pick"} else "interrupted", "finished_at": now(), "error": "服务重启，任务已中断"}
         if kind:
             recovered["kind"] = kind
         db[RUN_COLLECTION].update_one(
@@ -586,8 +586,8 @@ def save_evaluation(
         "source_sha256": snapshot.sha256,
         "source_size": snapshot.size,
         "source_mtime_ns": snapshot.mtime_ns,
-        "model": scheme.get("model"),
-        "prompt_version": scheme.get("prompt_version"),
+        "model": None if decision == "unprocessed" else scheme.get("model"),
+        "prompt_version": None if decision == "unprocessed" else scheme.get("prompt_version"),
         "model_result": {
             "name": model_name,
             "category": category,
@@ -713,7 +713,7 @@ def set_manual_pick(db, evaluation: dict[str, Any], *, picked: bool) -> dict[str
     return update_evaluation(
         db,
         evaluation["_id"],
-        {"manual_pick": bool(picked), "picked_at": now() if picked else None},
+        {"manual_pick": bool(picked), "picked_at": now() if picked else None, "pick_source": "manual"},
     )
 
 
@@ -751,11 +751,10 @@ def update_metadata(
             grouped = menu_naming.validate_tag_groups(tag_groups)
         except menu_naming.MenuNamingError as exc:
             raise MaterialFilterError("invalid_tags", str(exc)) from exc
-        updates["tag_groups"] = grouped
-        updates["tags"] = list(dict.fromkeys(tag for values in grouped.values() for tag in values))
+        updates["tag_groups"] = {}
+        updates["tags"] = list(dict.fromkeys(tag for group, values in grouped.items() for tag in [group, *values]))
     elif tags is not None:
-        if evaluation.get("tag_groups"):
-            raise MaterialFilterError("invalid_tags", "请按食材、员工、环境分组编辑标签")
+        updates["tag_groups"] = {}
         cleaned: list[str] = []
         for item in tags:
             if not isinstance(item, str):
@@ -996,6 +995,7 @@ def _csv_safe(value: Any) -> str:
 
 def _status_label(status: Any) -> str:
     return {
+        "unprocessed": "未筛选",
         "pass": "通过",
         "fail": "不通过",
         "uncertain": "待复核",

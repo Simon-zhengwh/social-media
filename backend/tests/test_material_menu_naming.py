@@ -39,8 +39,7 @@ def payload(status="matched", selected="keke-027"):
         "reason": "可见面条与条状牛肚，原文件名也一致。",
         "uncertain_attributes": [],
         "category": "食物",
-        "tags": ["面食", "牛肚", "菜品特写"],
-        "tag_groups": {"食材": ["面条", "牛肚"]},
+        "tags": ["食材", "面条", "牛肚"],
     }
 
 
@@ -86,7 +85,7 @@ def test_generated_chinese_description_does_not_require_english(service, menu):
     {"selected_menu_id": "unknown"},
     {"candidate_menu_ids": ["unknown"]},
     {"category": "随便分类"},
-    {"tag_groups": {"食材": ["beef"]}},
+    {"tags": ["食材", "beef"]},
     {"naming_status": "invented"},
     {"reason": ""},
 ])
@@ -301,41 +300,61 @@ def test_generated_names_use_chinese_even_with_legacy_english_menu(service,engli
     assert "非菜品只用中文" in prompt
 
 
-def test_nonfood_portrait_uses_chinese_and_keeps_chinese_staff_tags(service, english_menu):
+def test_nonfood_portrait_uses_chinese_and_flat_staff_tags(service, english_menu):
     data = payload("generated", None)
     data.update(category="人物", name_zh="黑衬衫棕围裙男子肖像", name_en="Portrait of a Man",
-                tag_groups={"员工": ["围裙", "人物肖像"]})
+                tags=["员工", "围裙", "人物肖像"])
     result = service.validate_result(data, english_menu)
     assert result.name == "黑衬衫棕围裙男子肖像"
     assert result.name_en is None
-    assert result.tag_groups == {"员工": ["围裙", "人物肖像"]}
-    assert result.tags == ["围裙", "人物肖像"]
+    assert result.tag_groups == {}
+    assert result.tags == ["员工", "围裙", "人物肖像"]
 
 
-def test_photo_can_have_multiple_chinese_tag_groups(service, menu):
+def test_person_type_tag_uses_the_requested_staff_label(service, menu):
+    data = payload("generated", None)
+    data.update(category="人物", name_zh="围裙男子肖像", tags=["人物", "围裙", "眼镜"])
+    assert service.validate_result(data, menu).tags == ["员工", "围裙", "眼镜"]
+
+
+def test_type_labels_are_ordinary_flat_tags_alongside_specific_tags(service, menu):
     data = payload()
-    data["tag_groups"] = {"食材": ["牛肚", "面条", "牛肚"], "员工": ["端菜"], "环境": ["吧台"]}
+    data["tags"] = ["食材", "员工", "牛肚", "面条", "端菜", "牛肚"]
     result = service.validate_result(data, menu)
-    assert result.tag_groups == {"食材": ["牛肚", "面条"], "员工": ["端菜"], "环境": ["吧台"]}
-    assert result.tags == ["牛肚", "面条", "端菜", "吧台"]
-    assert service.as_classification(result).naming["tag_groups"] == result.tag_groups
+    assert result.tag_groups == {}
+    assert result.tags == ["食材", "员工", "牛肚", "面条", "端菜"]
+    assert service.as_classification(result).tags == result.tags
+
+
+def test_food_tags_do_not_include_incidental_backgrounds(service, menu):
+    data = payload()
+    data["tags"] = ["食材", "鱼片", "青花椒", "环境", "木桌"]
+    result = service.validate_result(data, menu)
+    assert result.tags == ["食材", "鱼片", "青花椒"]
+
+
+def test_environment_is_an_ordinary_tag_for_a_scene_photo(service, menu):
+    data = payload("generated", None)
+    data.update(category="场景", name_zh="餐厅吧台与卡座", tags=["环境", "吧台", "卡座"])
+    result = service.validate_result(data, menu)
+    assert result.tags == ["环境", "吧台", "卡座"]
+    assert result.tag_groups == {}
 
 
 def test_persisted_legacy_prompt_receives_current_tag_protocol_once(service, menu):
     legacy = "用户原有的识别要求。tags为3–6个标签。"
     prompt = service.build_messages(menu, "placeholder", system_prompt=legacy)[0]["content"]
     assert prompt.startswith(legacy)
-    assert "tag_groups" in prompt
+    assert '"tags"' in prompt
     assert "禁止英文标签" in prompt
     current = service.build_messages(menu, "placeholder")[0]["content"]
     assert service.build_messages(menu, "placeholder", system_prompt=current)[0]["content"] == current
 
 
-@pytest.mark.parametrize("tag_groups", [None, {}, {"品牌": ["门头"]}, {"食材": ["beef"]},
-                                         {"员工": ["服务员waiter"]}, {"环境": ["123"]}, {"食材": "牛肉"}])
-def test_invalid_or_nonchinese_grouped_tags_are_rejected(service, menu, tag_groups):
+@pytest.mark.parametrize("tags", [None, {}, [], ["beef"], ["服务员waiter"], ["123"], [["食材", "牛肉"]]])
+def test_invalid_or_nonchinese_flat_tags_are_rejected(service, menu, tags):
     data = payload()
-    data["tag_groups"] = tag_groups
+    data["tags"] = tags
     with pytest.raises(service.MenuNamingError):
         service.validate_result(data, menu)
 

@@ -21,6 +21,7 @@ class FakeAM:
 
 def _client(tmp_path, *, local: bool) -> TestClient:
     raw = mongomock.MongoClient().db
+    raw.merchants.insert_one({"_id": "m1", "name": "Imported Merchant"})
     maintenance.initialize(raw)
     settings = Settings(
         storage_dir=str(tmp_path / "storage"),

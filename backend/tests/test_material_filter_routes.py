@@ -58,6 +58,7 @@ class FakeCoreAI:
 
 def _build(monkeypatch, tmp_path, *, local=True):
     raw = mongomock.MongoClient().db
+    raw.merchants.insert_one({"_id": "m1", "name": "Imported Merchant"})
     maintenance.initialize(raw)
     settings = Settings(
         storage_dir=str(tmp_path / "storage"),
@@ -365,7 +366,7 @@ def test_metadata_edit_keeps_local_filename(monkeypatch, tmp_path):
     assert body["download_url"] == item["download_url"]
 
 
-def test_grouped_tags_roundtrip_through_metadata_api(monkeypatch, tmp_path):
+def test_legacy_tag_groups_roundtrip_as_ordinary_flat_tags(monkeypatch, tmp_path):
     web, raw, _ = _build(monkeypatch, tmp_path)
     raw.material_filter_evaluations.insert_one({
         "_id": "grouped", "merchant_id": "m1", "scheme_id": "scheme",
@@ -375,11 +376,11 @@ def test_grouped_tags_roundtrip_through_metadata_api(monkeypatch, tmp_path):
     path = "/api/merchants/m1/material-filters/evaluations/grouped/metadata"
     updated = client.patch(path, json={"tag_groups": {"食材": ["牛肉"], "员工": ["端菜"], "环境": ["吧台"]}}, headers=WRITE_HEADERS)
     assert updated.status_code == 200
-    assert updated.json()["tag_groups"] == {"食材": ["牛肉"], "员工": ["端菜"], "环境": ["吧台"]}
-    assert updated.json()["tags"] == ["牛肉", "端菜", "吧台"]
+    assert updated.json()["tag_groups"] == {}
+    assert updated.json()["tags"] == ["食材", "牛肉", "员工", "端菜", "环境", "吧台"]
     rejected = client.patch(path, json={"tag_groups": {"食材": ["beef"]}}, headers=WRITE_HEADERS)
     assert rejected.status_code == 422
-    assert raw.material_filter_evaluations.find_one({"_id": "grouped"})["tags"] == ["牛肉", "端菜", "吧台"]
+    assert raw.material_filter_evaluations.find_one({"_id": "grouped"})["tags"] == ["食材", "牛肉", "员工", "端菜", "环境", "吧台"]
 
 
 def test_review_rejects_a_changed_source_version(monkeypatch, tmp_path):
@@ -417,6 +418,7 @@ def test_review_rejects_a_changed_source_version(monkeypatch, tmp_path):
 
 def test_folder_records_are_merchant_scoped(monkeypatch, tmp_path):
     web, raw, _ = _build(monkeypatch, tmp_path)
+    raw.merchants.insert_one({"_id": "m2", "name": "Imported Other"})
     client = TestClient(web)
     folder = _create_folder(client)
     other = client.get("/api/merchants/m2/material-filters/folders").json()
@@ -492,6 +494,24 @@ def test_manual_pick_endpoints_and_sorts(monkeypatch, tmp_path):
     ).content.decode("utf-8-sig")
     assert "人工入选" in export
 
+def test_backfill_picks_endpoint_handles_existing_menu_scheme(monkeypatch, tmp_path):
+    web, raw, _ = _build(monkeypatch, tmp_path)
+    client = TestClient(web)
+    folder = _create_folder(client)
+    scheme = _create_scheme(client, folder["id"])
+    raw.material_filter_schemes.update_one(
+        {"_id": scheme["id"]}, {"$set": {"naming_mode": "menu_match", "rules": [], "group_revision": "rev-1"}}
+    )
+
+    response = client.post(
+        f"/api/merchants/m1/material-filters/schemes/{scheme['id']}/auto-pick-passed",
+        headers=WRITE_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"groups": 0, "photos_picked": 0, "errors": []}
+
+
 def test_delete_folder_endpoint_removes_the_tab(monkeypatch, tmp_path):
     web, raw, _ = _build(monkeypatch, tmp_path)
     client = TestClient(web)
@@ -516,3 +536,30 @@ def test_delete_folder_endpoint_removes_the_tab(monkeypatch, tmp_path):
         f"/api/merchants/m2/material-filters/folders/{other['id']}",
         headers=WRITE_HEADERS,
     ).status_code == 404
+
+
+def test_group_list_requests_the_shortlist_sweep_when_groups_are_pending(monkeypatch, tmp_path):
+    from app.services import material_groups as group_store
+
+    web, raw, _ = _build(monkeypatch, tmp_path)
+    client = TestClient(web)
+    folder = _create_folder(client)
+    scheme = _create_scheme(client, folder["id"])
+    sweep = []
+    monkeypatch.setattr(group_store, "list_groups", lambda *args, **kwargs: {
+        "items": [], "total": 0, "stats": {"pending_picks": 3}, "last_run": None,
+        "scan_errors": [], "sampling_enabled": True, "version": "rev-1",
+    })
+    monkeypatch.setattr(group_store, "start_auto_pick", lambda _db, _settings, scheme_doc: sweep.append(scheme_doc["_id"]) or True)
+
+    page = client.get(f"/api/merchants/m1/material-filters/schemes/{scheme['id']}/groups")
+
+    assert page.status_code == 200 and page.json()["stats"]["pending_picks"] == 3
+    assert sweep == [scheme["id"]]
+
+    monkeypatch.setattr(group_store, "list_groups", lambda *args, **kwargs: {
+        "items": [], "total": 0, "stats": {"pending_picks": 0}, "last_run": None,
+        "scan_errors": [], "sampling_enabled": True, "version": "rev-1",
+    })
+    client.get(f"/api/merchants/m1/material-filters/schemes/{scheme['id']}/groups")
+    assert sweep == [scheme["id"]]

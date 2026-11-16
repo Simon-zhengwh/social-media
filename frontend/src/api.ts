@@ -833,7 +833,7 @@ export function materialFilterExportPath(schemeId: string): string {
 
 export async function listMaterialGroups(
   schemeId: string,
-  options: { skip?: number; limit?: number; q?: string; representative_count?: 1 | 2 } = {},
+  options: { skip?: number; limit?: number; q?: string; status?: string; representative_count?: 1 | 2 } = {},
 ): Promise<MaterialGroupsPage> {
   const params = new URLSearchParams({
     skip: String(options.skip ?? 0),
@@ -841,6 +841,7 @@ export async function listMaterialGroups(
     representative_count: String(options.representative_count ?? 1),
   })
   if (options.q) params.set('q', options.q)
+  if (options.status && options.status !== 'all') params.set('status', options.status)
   return parseResponse<MaterialGroupsPage>(await apiFetch(
     `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/groups?${params.toString()}`,
   ))
@@ -867,10 +868,28 @@ export async function startMaterialGroupScan(schemeId: string, requestId: string
   ))
 }
 
+export async function backfillMaterialGroupPicks(schemeId: string): Promise<{ groups: number; photos_picked: number; errors: string[] }> {
+  return parseResponse<{ groups: number; photos_picked: number; errors: string[] }>(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/auto-pick-passed`,
+    { method: 'POST' },
+  ))
+}
+
 export async function startMaterialRecognitionRun(schemeId: string, payload: MaterialRecognitionRequest): Promise<MaterialGroupRun> {
   return parseResponse<MaterialGroupRun>(await apiFetch(
     `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/recognition-runs`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
+  ))
+}
+
+export async function listMaterialUnsettledRepresentatives(
+  schemeId: string,
+  options: { verdict?: string; limit?: number } = {},
+): Promise<{ file_ids: string[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(options.limit ?? 200) })
+  if (options.verdict) params.set('verdict', options.verdict)
+  return parseResponse(await apiFetch(
+    `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/unsettled-representatives?${params.toString()}`,
   ))
 }
 
@@ -895,6 +914,14 @@ export async function adoptMaterialGroupReference(groupId: string, fileId: strin
   return parseResponse<MaterialGroup>(await apiFetch(
     `/api/material-filters/groups/${encodeURIComponent(groupId)}/reference`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: fileId, version }) },
+  ))
+}
+
+/** Pick a group photo that has no result yet, inheriting the representative's result. */
+export async function inheritMaterialGroupPick(groupId: string, fileId: string): Promise<MaterialFilterEvaluation> {
+  return parseResponse<MaterialFilterEvaluation>(await apiFetch(
+    `/api/material-filters/groups/${encodeURIComponent(groupId)}/files/${encodeURIComponent(fileId)}/inherit-pick`,
+    { method: 'POST' },
   ))
 }
 

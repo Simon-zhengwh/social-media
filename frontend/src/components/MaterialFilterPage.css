@@ -594,6 +594,54 @@
   gap: 12px;
 }
 
+.mf-recognition-batch {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mf-recognition-batch-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.mf-recognition-batch-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--color-neutral-600);
+  font-size: 12px;
+}
+
+.mf-recognition-batch-controls input {
+  width: 112px;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 8px;
+  color: var(--color-neutral-800);
+  font: inherit;
+}
+
+.mf-recognition-batch-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-neutral-200);
+}
+
+.mf-recognition-batch-status > strong {
+  color: var(--color-primary-900);
+  font-size: 12.5px;
+}
+
+.mf-recognition-batch-status .mf-progress-track > span {
+  background: var(--color-secondary-500, #7d8f6f);
+}
+
 .mf-status-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -733,23 +781,6 @@
   gap: 5px;
 }
 
-.mf-tag-groups {
-  display: grid;
-  gap: 6px;
-}
-
-.mf-tag-group {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.mf-tag-group > strong {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--color-neutral-600);
-}
-
 .mf-tags span {
   padding: 2px 8px;
   border-radius: 6px;
@@ -845,6 +876,13 @@
   }
   .mf-search {
     max-width: none;
+  }
+  .mf-recognition-batch-controls label,
+  .mf-recognition-batch-controls input {
+    width: 100%;
+  }
+  .mf-recognition-batch-controls > button {
+    flex: 1 1 100%;
   }
 }
 

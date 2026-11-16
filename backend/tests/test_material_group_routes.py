@@ -4,7 +4,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from tests.test_material_filter_routes import _build, _create_folder, _point_folder_at, WRITE_HEADERS
+from tests.test_material_filter_routes import _build, _create_folder, _create_scheme, _point_folder_at, WRITE_HEADERS
 from tests.test_material_groups import jpeg
 
 
@@ -129,3 +129,65 @@ def test_group_name_patch_names_the_group_and_rejects_stale_versions(monkeypatch
         foreign=base.replace("/m1/","/other/")
         assert client.patch(foreign+"/groups/"+group["id"]+"/name",json={"name":"x","version":group["version"]},headers=WRITE_HEADERS).status_code in {403,404}
         assert app.state.core_ai.calls==0
+
+
+def test_group_list_route_forwards_the_status_filter(monkeypatch,tmp_path):
+    from app.services import material_groups as group_store
+    app,raw,settings=_build(monkeypatch,tmp_path)
+    seen=[]
+    def fake_groups(db,settings_,scheme,**kwargs):
+        seen.append(kwargs)
+        return {"items":[],"total":0,"counts":{"all":0,"picked":0},"stats":{"pending_picks":0},
+            "last_run":None,"scan_errors":[],"sampling_enabled":True,"version":None}
+    monkeypatch.setattr(group_store,"list_groups",fake_groups)
+    with TestClient(app) as client:
+        folder=_create_folder(client)
+        scheme=_create_scheme(client,folder["id"])
+        base=f"/api/merchants/m1/material-filters/schemes/{scheme['id']}/groups"
+        assert client.get(base).json()["counts"]=={"all":0,"picked":0}
+        assert seen[-1]["status"]=="all"
+        filtered=client.get(base,params={"status":"uncertain","q":"汤"})
+        assert filtered.status_code==200 and filtered.json()["counts"]["all"]==0
+        assert seen[-1]["status"]=="uncertain" and seen[-1]["q"]=="汤"
+
+
+def test_unsettled_representative_route_forwards_verdict_and_limit(monkeypatch,tmp_path):
+    from app.services import material_groups as group_store
+    app,raw,settings=_build(monkeypatch,tmp_path)
+    seen=[]
+    def fake(db,scheme,**kwargs):
+        seen.append(kwargs)
+        return {"file_ids":["file-a"],"total":9}
+    monkeypatch.setattr(group_store,"unsettled_representatives",fake)
+    with TestClient(app) as client:
+        folder=_create_folder(client)
+        scheme=_create_scheme(client,folder["id"])
+        base=f"/api/merchants/m1/material-filters/schemes/{scheme['id']}/unsettled-representatives"
+        response=client.get(base)
+        assert response.status_code==200,response.text
+        assert response.json()=={"file_ids":["file-a"],"total":9}
+        assert seen[-1]=={"verdict":"uncertain","limit":200}
+        assert client.get(base,params={"verdict":"error","limit":40}).status_code==200
+        assert seen[-1]=={"verdict":"error","limit":40}
+        assert client.get(base,params={"limit":0}).status_code==422
+        assert client.get(base.replace("/m1/","/other/")).status_code in {403,404}
+
+
+def test_inherit_pick_route_returns_the_new_evaluation(monkeypatch,tmp_path):
+    from app.services import material_groups as group_store
+    app,raw,settings=_build(monkeypatch,tmp_path)
+    seen=[]
+    def fake(db,settings_,group_id,file_id):
+        seen.append((group_id,file_id))
+        return {"_id":"eval-inherited","file_id":file_id,"display_name":"Test Dish","manual_pick":True,
+                "decision":"uncertain","effective_decision":"uncertain","model_result":{}}
+    monkeypatch.setattr(group_store,"manual_inherit_pick",fake)
+    with TestClient(app) as client:
+        folder=_create_folder(client)
+        scheme=_create_scheme(client,folder["id"])
+        response=client.post(f"/api/merchants/m1/material-filters/groups/mgroup_1/files/mfile_2/inherit-pick",
+                             headers=WRITE_HEADERS)
+        assert response.status_code==200,response.text
+        body=response.json()
+        assert body["id"]=="eval-inherited" and body["manual_pick"] is True
+        assert seen==[("mgroup_1","mfile_2")]

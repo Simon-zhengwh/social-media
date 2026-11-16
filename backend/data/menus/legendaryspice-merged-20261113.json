@@ -1,0 +1,1030 @@
+{
+  "merchant_id": "legendaryspice",
+  "merchant_name": "Legendary Spice 宽窄",
+  "menu_version": "legendaryspice-supplied-20261113-46c0822aa7d8",
+  "name_format": "zh_en",
+  "items": [
+    {
+      "id": "ls-dry-chili-chicken",
+      "zh": "宽窄辣子鸡",
+      "en": "Legendary Dry Chili Chicken",
+      "aliases": {
+        "zh": [
+          "辣子鸡"
+        ]
+      }
+    },
+    {
+      "id": "ls-mapo-tofu",
+      "zh": "麻婆豆腐",
+      "en": "Mapo Tofu"
+    },
+    {
+      "id": "ls-boiled-beef",
+      "zh": "水煮牛肉",
+      "en": "Boiled Beef in Spicy Szechuan Sauce"
+    },
+    {
+      "id": "ls-twice-cooked-pork",
+      "zh": "四川回锅肉",
+      "en": "Twice-Cooked Pork"
+    },
+    {
+      "id": "ls-hong-sue-pork",
+      "zh": "红烧肉",
+      "en": "Hong Sue Pork"
+    },
+    {
+      "id": "ls-chili-bean-fish",
+      "zh": "豆瓣鱼片",
+      "en": "Sole Fish Fillet Chili Bean Sauce"
+    },
+    {
+      "id": "ls-mapo-fish",
+      "zh": "麻婆豆腐鱼片",
+      "en": "Sole Fish Fillet with Mapo Tofu Flavor"
+    },
+    {
+      "id": "ls-cumin-lamb",
+      "zh": "孜然羊肉",
+      "en": "Lamb with Pure Cumin"
+    },
+    {
+      "id": "ls-garlic-sauce-pork",
+      "zh": "鱼香肉丝",
+      "en": "Pork in Garlic Sauce"
+    },
+    {
+      "id": "ls-three-chili-chicken",
+      "zh": "三椒鸡丁",
+      "en": "Tony’s Chicken with Three Chili",
+      "aliases": {
+        "en": [
+          "Tonys Chicken with Three Chili"
+        ],
+        "zh": [
+          "三椒鸡"
+        ]
+      }
+    },
+    {
+      "id": "ls-stir-fried-beef",
+      "zh": "小炒黄牛肉",
+      "en": "Stir-Fried Beef with Chili Pepper",
+      "aliases": {
+        "zh": [
+          "特色爆炒小黄牛"
+        ],
+        "en": [
+          "Stir - Fried Beef with Chili Peper"
+        ]
+      }
+    },
+    {
+      "id": "ls-dry-bean-curd-pork",
+      "zh": "香干肉丝",
+      "en": "Sliced Pork with Dry Bean Curd & Chives"
+    },
+    {
+      "id": "ls-black-bean-fish",
+      "zh": "豆豉鱼片",
+      "en": "Sole Fish Fillet Black Bean Sauce"
+    },
+    {
+      "id": "ls-three-cup-wings",
+      "zh": "三杯鸡翅",
+      "en": "Three Cup Chicken Wings(with Bone)"
+    },
+    {
+      "id": "ls-mongolian-beef",
+      "zh": "蒙古牛肉",
+      "en": "Mongolian Beef Tenderloin",
+      "aliases": {
+        "zh": [
+          "蒙古牛"
+        ],
+        "en": [
+          "Mongolian Beef"
+        ]
+      }
+    },
+    {
+      "id": "ls-lemon-shrimp",
+      "zh": "柠檬脆皮虾",
+      "en": "Crispy Shrimp with Lemon Sauce"
+    },
+    {
+      "id": "ls-string-bean",
+      "zh": "干煸四季豆",
+      "en": "Szechuan String Bean"
+    },
+    {
+      "id": "ls-peapod-leaves",
+      "zh": "蒜味豆苗",
+      "en": "Fresh Garlic Peapod Leaves",
+      "aliases": {
+        "zh": [
+          "蒜炒豆苗"
+        ],
+        "en": [
+          "Fresh Garlic Peapod Leave"
+        ]
+      }
+    },
+    {
+      "id": "ls-garlic-sauce-eggplant",
+      "zh": "鱼香茄子",
+      "en": "Eggplant in Garlic Sauce"
+    },
+    {
+      "id": "ls-garlic-spinach",
+      "zh": "蒜味菠菜",
+      "en": "Garlic Spinach"
+    },
+    {
+      "id": "ls-beef-maw",
+      "zh": "夫妻肺片",
+      "en": "Sliced Beef & Maw Szechuan Style"
+    },
+    {
+      "id": "ls-szechuan-wontons",
+      "zh": "红油抄手",
+      "en": "Szechuan Wontons",
+      "aliases": {
+        "en": [
+          "Szechuan Wonton"
+        ]
+      }
+    },
+    {
+      "id": "ls-crab-rangoons",
+      "zh": "酥炸蟹角",
+      "en": "Crab Rangoons",
+      "aliases": {
+        "en": [
+          "Crab Rangoon’s"
+        ]
+      }
+    },
+    {
+      "id": "ls-cucumber-salad",
+      "zh": "蒜泥黄瓜",
+      "en": "Cucumber Salad With Fresh Garlic",
+      "aliases": {
+        "en": [
+          "Cucumber Salad"
+        ]
+      }
+    },
+    {
+      "id": "ls-pork-pot-stickers",
+      "zh": "猪肉锅贴",
+      "en": "Pork Pot Stickers"
+    },
+    {
+      "id": "ls-garlic-beef",
+      "zh": "蒜香牛柳",
+      "en": "Garlic Beef Tenderloin"
+    },
+    {
+      "id": "ls-garlic-broccoli",
+      "zh": "蒜炒西兰花",
+      "en": "Garlic Broccoli"
+    },
+    {
+      "id": "ls-garlic-vermicelli-shrimp",
+      "zh": "蒜蓉开背虾",
+      "en": "Garlic Vermicelli Butter Fried Shrimp"
+    },
+    {
+      "id": "ls-fried-rice",
+      "zh": "招牌炒饭",
+      "en": "Fried Rice",
+      "protein_options": [
+        "Chicken",
+        "Shrimp",
+        "Beef",
+        "Vegetable"
+      ]
+    },
+    {
+      "id": "ls-fried-noodle",
+      "zh": "招牌炒面",
+      "en": "Fried Noodle - Soft Noodle",
+      "protein_options": [
+        "Chicken",
+        "Shrimp",
+        "Beef",
+        "Vegetable"
+      ]
+    },
+    {
+      "id": "ls-egg-drop-soup",
+      "zh": "蛋花汤",
+      "en": "Egg Drop Soup"
+    },
+    {
+      "id": "ls-hot-sour-soup",
+      "zh": "酸辣汤",
+      "en": "Hot & Sour Soup"
+    },
+    {
+      "id": "ls-pork-yam-soup",
+      "zh": "山药排骨汤",
+      "en": "Pork Rib W. Chinese Yam Soup"
+    },
+    {
+      "id": "ls-west-lake-beef-soup",
+      "zh": "西湖牛肉羹",
+      "en": "West Lake Beef Soup"
+    },
+    {
+      "id": "ls-sesame-balls",
+      "zh": "芝麻球",
+      "en": "Sesame Balls"
+    },
+    {
+      "id": "ls-rice-ball-wine",
+      "zh": "酒酿桂花汤圆",
+      "en": "Glutinous Rice Ball In Wine Sauce"
+    },
+    {
+      "id": "ls-brown-sugar-rice-cake",
+      "zh": "红糖糍粑",
+      "en": "Glutinous Rice Cake"
+    },
+    {
+      "id": "ls-dan-dan-noodle",
+      "zh": "担担面",
+      "en": "Dan Dan Noodle"
+    },
+    {
+      "id": "ls-peanut-rice-cake",
+      "zh": "花生糍粑",
+      "en": "Glutinous Rice Cake (Peanuts)"
+    },
+    {
+      "id": "ls-shanghai-spring-roll",
+      "zh": "上海春卷",
+      "en": "Shanghai Spring Roll"
+    }
+  ],
+  "ambiguity_groups": [
+    {
+      "menu_ids": [
+        "ls-brown-sugar-rice-cake",
+        "ls-peanut-rice-cake"
+      ],
+      "reason": "红糖糍粑与花生糍粑保留为不同菜单项；不能凭外观推断花生配料或过敏原，不能确定时需人工确认。"
+    }
+  ],
+  "sources": [
+    {
+      "id": "set-menu",
+      "label": "套餐菜单",
+      "file": "storage/legendaryspice/menu-sources/set-menu.png",
+      "sha256": "49beadbcb33d5d1b71e308242c3e8c7043c28f3131a1f49e0db782c74262032f",
+      "provided_by": "user"
+    },
+    {
+      "id": "top20",
+      "label": "宽窄必点 TOP 20",
+      "file": "storage/legendaryspice/menu-sources/top20.png",
+      "sha256": "01ab73c0b9e10db6ed40a056f7cf4709b5db638f20dcb4badf22ac66392b4747",
+      "provided_by": "user"
+    },
+    {
+      "id": "daily-special",
+      "label": "每日特价",
+      "file": "storage/legendaryspice/menu-sources/daily-special.png",
+      "sha256": "fc38002a0c977ea1d5d5a43c93a0edbbdd2d2f9693c9cbf190fe1daa0c0c24e3",
+      "provided_by": "user"
+    },
+    {
+      "id": "takeout",
+      "label": "外带加购",
+      "file": "storage/legendaryspice/menu-sources/takeout.png",
+      "sha256": "c4956559f6747ee3f02b66691f2e6d78c68fbb9bb32ed1445f8a77fe85941184",
+      "provided_by": "user"
+    }
+  ],
+  "provenance": {
+    "ls-dry-chili-chicken": [
+      {
+        "source_id": "top20",
+        "source_code": "S01",
+        "name_zh": "宽窄辣子鸡",
+        "name_en": "Legendary Dry Chili Chicken",
+        "price_usd": 19.95
+      },
+      {
+        "source_id": "set-menu",
+        "source_code": "entree-1",
+        "name_zh": "辣子鸡",
+        "name_en": "Legendary Dry Chili Chicken"
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "1",
+        "name_zh": "宽窄辣子鸡",
+        "name_en": "Legendary Dry Chili Chicken"
+      }
+    ],
+    "ls-mapo-tofu": [
+      {
+        "source_id": "top20",
+        "source_code": "S02",
+        "name_zh": "麻婆豆腐",
+        "name_en": "Mapo Tofu",
+        "price_usd": 16.45
+      },
+      {
+        "source_id": "set-menu",
+        "source_code": "entree-2",
+        "name_zh": "麻婆豆腐",
+        "name_en": "Mapo Tofu"
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "2",
+        "name_zh": "麻婆豆腐",
+        "name_en": "Mapo Tofu"
+      }
+    ],
+    "ls-boiled-beef": [
+      {
+        "source_id": "top20",
+        "source_code": "S03",
+        "name_zh": "水煮牛肉",
+        "name_en": "Boiled Beef in Spicy Szechuan Sauce",
+        "price_usd": 23.65
+      },
+      {
+        "source_id": "set-menu",
+        "source_code": "entree-7",
+        "name_zh": "水煮牛肉",
+        "name_en": "Boiled Beef in Spicy Szechuan Sauce"
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "5",
+        "name_zh": "水煮牛肉",
+        "name_en": "Boiled Beef in Spicy Szechuan Sauce"
+      }
+    ],
+    "ls-twice-cooked-pork": [
+      {
+        "source_id": "top20",
+        "source_code": "S04",
+        "name_zh": "四川回锅肉",
+        "name_en": "Twice-Cooked Pork",
+        "price_usd": 18.95
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "6",
+        "name_zh": "四川回锅肉",
+        "name_en": "Twice-Cooked Pork"
+      }
+    ],
+    "ls-hong-sue-pork": [
+      {
+        "source_id": "top20",
+        "source_code": "S05",
+        "name_zh": "红烧肉",
+        "name_en": "Hong Sue Pork",
+        "price_usd": 20.45
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "7",
+        "name_zh": "红烧肉",
+        "name_en": "Hong Sue Pork"
+      }
+    ],
+    "ls-chili-bean-fish": [
+      {
+        "source_id": "top20",
+        "source_code": "S06",
+        "name_zh": "豆瓣鱼片",
+        "name_en": "Sole Fish Fillet Chili Bean Sauce",
+        "price_usd": 20.95
+      }
+    ],
+    "ls-mapo-fish": [
+      {
+        "source_id": "top20",
+        "source_code": "S07",
+        "name_zh": "麻婆豆腐鱼片",
+        "name_en": "Sole Fish Fillet with Mapo Tofu Flavor",
+        "price_usd": 20.95
+      }
+    ],
+    "ls-cumin-lamb": [
+      {
+        "source_id": "top20",
+        "source_code": "S08",
+        "name_zh": "孜然羊肉",
+        "name_en": "Lamb with Pure Cumin",
+        "price_usd": 22.65
+      }
+    ],
+    "ls-garlic-sauce-pork": [
+      {
+        "source_id": "top20",
+        "source_code": "S09",
+        "name_zh": "鱼香肉丝",
+        "name_en": "Pork in Garlic Sauce",
+        "price_usd": 18.65
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "8",
+        "name_zh": "鱼香肉丝",
+        "name_en": "Pork in Garlic Sauce"
+      }
+    ],
+    "ls-three-chili-chicken": [
+      {
+        "source_id": "top20",
+        "source_code": "S10",
+        "name_zh": "三椒鸡丁",
+        "name_en": "Tonys Chicken with Three Chili",
+        "price_usd": 19.95
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "9",
+        "name_zh": "三椒鸡",
+        "name_en": "Tony’s Chicken with Three Chili"
+      }
+    ],
+    "ls-stir-fried-beef": [
+      {
+        "source_id": "top20",
+        "source_code": "S11",
+        "name_zh": "特色爆炒小黄牛",
+        "name_en": "Stir - Fried Beef with Chili Peper",
+        "price_usd": 22.65
+      },
+      {
+        "source_id": "set-menu",
+        "source_code": "entree-3",
+        "name_zh": "小炒黄牛肉",
+        "name_en": "Stir-Fried Beef with Chili Pepper"
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "3",
+        "name_zh": "小炒黄牛肉",
+        "name_en": "Stir-Fried Beef with Chili Pepper"
+      }
+    ],
+    "ls-dry-bean-curd-pork": [
+      {
+        "source_id": "top20",
+        "source_code": "S12",
+        "name_zh": "香干肉丝",
+        "name_en": "Sliced Pork with Dry Bean Curd & Chives",
+        "price_usd": 18.45
+      }
+    ],
+    "ls-black-bean-fish": [
+      {
+        "source_id": "top20",
+        "source_code": "S13",
+        "name_zh": "豆豉鱼片",
+        "name_en": "Sole Fish Fillet Black Bean Sauce",
+        "price_usd": 20.95
+      }
+    ],
+    "ls-three-cup-wings": [
+      {
+        "source_id": "top20",
+        "source_code": "S14",
+        "name_zh": "三杯鸡翅",
+        "name_en": "Three Cup Chicken Wings(with Bone)",
+        "price_usd": 19.95
+      }
+    ],
+    "ls-mongolian-beef": [
+      {
+        "source_id": "top20",
+        "source_code": "S15",
+        "name_zh": "蒙古牛肉",
+        "name_en": "Mongolian Beef Tenderloin",
+        "price_usd": 20.45
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "10",
+        "name_zh": "蒙古牛",
+        "name_en": "Mongolian Beef"
+      }
+    ],
+    "ls-lemon-shrimp": [
+      {
+        "source_id": "top20",
+        "source_code": "S16",
+        "name_zh": "柠檬脆皮虾",
+        "name_en": "Crispy Shrimp with Lemon Sauce",
+        "price_usd": 23.65
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "4",
+        "name_zh": "柠檬脆皮虾",
+        "name_en": "Crispy Shrimp with Lemon Sauce"
+      }
+    ],
+    "ls-string-bean": [
+      {
+        "source_id": "top20",
+        "source_code": "S17",
+        "name_zh": "干煸四季豆",
+        "name_en": "Szechuan String Bean",
+        "price_usd": 17.45
+      },
+      {
+        "source_id": "set-menu",
+        "source_code": "entree-6",
+        "name_zh": "干煸四季豆",
+        "name_en": "Szechuan String Bean"
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "11",
+        "name_zh": "干煸四季豆",
+        "name_en": "Szechuan String Bean"
+      }
+    ],
+    "ls-peapod-leaves": [
+      {
+        "source_id": "top20",
+        "source_code": "S18",
+        "name_zh": "蒜炒豆苗",
+        "name_en": "Fresh Garlic Peapod Leave",
+        "price_usd": 19.65
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "12",
+        "name_zh": "蒜味豆苗",
+        "name_en": "Fresh Garlic Peapod Leaves"
+      }
+    ],
+    "ls-garlic-sauce-eggplant": [
+      {
+        "source_id": "top20",
+        "source_code": "S19",
+        "name_zh": "鱼香茄子",
+        "name_en": "Eggplant in Garlic Sauce",
+        "price_usd": 18.45
+      },
+      {
+        "source_id": "takeout",
+        "source_code": "13",
+        "name_zh": "鱼香茄子",
+        "name_en": "Eggplant in Garlic Sauce"
+      }
+    ],
+    "ls-garlic-spinach": [
+      {
+        "source_id": "top20",
+        "source_code": "S20",
+        "name_zh": "蒜味菠菜",
+        "name_en": "Garlic Spinach",
+        "price_usd": 16.95
+      }
+    ],
+    "ls-beef-maw": [
+      {
+        "source_id": "set-menu",
+        "source_code": "appetizer-1",
+        "name_zh": "夫妻肺片",
+        "name_en": "Sliced Beef & Maw Szechuan Style"
+      }
+    ],
+    "ls-szechuan-wontons": [
+      {
+        "source_id": "set-menu",
+        "source_code": "appetizer-2",
+        "name_zh": "红油抄手",
+        "name_en": "Szechuan Wontons",
+        "quantity": 8
+      },
+      {
+        "source_id": "daily-special",
+        "source_code": "Tuesday",
+        "name_zh": null,
+        "name_en": "Szechuan Wonton"
+      }
+    ],
+    "ls-crab-rangoons": [
+      {
+        "source_id": "set-menu",
+        "source_code": "appetizer-3",
+        "name_zh": null,
+        "name_en": "Crab Rangoons",
+        "quantity": 4
+      },
+      {
+        "source_id": "daily-special",
+        "source_code": "Saturday",
+        "name_zh": null,
+        "name_en": "Crab Rangoon’s"
+      }
+    ],
+    "ls-cucumber-salad": [
+      {
+        "source_id": "set-menu",
+        "source_code": "appetizer-4",
+        "name_zh": "蒜泥黄瓜",
+        "name_en": "Cucumber Salad With Fresh Garlic"
+      },
+      {
+        "source_id": "daily-special",
+        "source_code": "Sunday",
+        "name_zh": null,
+        "name_en": "Cucumber Salad"
+      }
+    ],
+    "ls-pork-pot-stickers": [
+      {
+        "source_id": "set-menu",
+        "source_code": "appetizer-5",
+        "name_zh": null,
+        "name_en": "Pork Pot Stickers",
+        "quantity": 6
+      },
+      {
+        "source_id": "daily-special",
+        "source_code": "Wednesday",
+        "name_zh": null,
+        "name_en": "Pork Pot Stickers"
+      }
+    ],
+    "ls-garlic-beef": [
+      {
+        "source_id": "set-menu",
+        "source_code": "entree-4",
+        "name_zh": "蒜香牛柳",
+        "name_en": "Garlic Beef Tenderloin"
+      }
+    ],
+    "ls-garlic-broccoli": [
+      {
+        "source_id": "set-menu",
+        "source_code": "entree-5",
+        "name_zh": "蒜炒西兰花",
+        "name_en": "Garlic Broccoli"
+      }
+    ],
+    "ls-garlic-vermicelli-shrimp": [
+      {
+        "source_id": "set-menu",
+        "source_code": "entree-8",
+        "name_zh": "蒜蓉开背虾",
+        "name_en": "Garlic Vermicelli Butter Fried Shrimp"
+      }
+    ],
+    "ls-fried-rice": [
+      {
+        "source_id": "set-menu",
+        "source_code": "main-1",
+        "name_zh": "招牌炒饭",
+        "name_en": "Fried Rice"
+      }
+    ],
+    "ls-fried-noodle": [
+      {
+        "source_id": "set-menu",
+        "source_code": "main-2",
+        "name_zh": "招牌炒面",
+        "name_en": "Fried Noodle - Soft Noodle"
+      }
+    ],
+    "ls-egg-drop-soup": [
+      {
+        "source_id": "set-menu",
+        "source_code": "soup-1",
+        "name_zh": "蛋花汤",
+        "name_en": "Egg Drop Soup"
+      }
+    ],
+    "ls-hot-sour-soup": [
+      {
+        "source_id": "set-menu",
+        "source_code": "soup-2",
+        "name_zh": "酸辣汤",
+        "name_en": "Hot & Sour Soup"
+      }
+    ],
+    "ls-pork-yam-soup": [
+      {
+        "source_id": "set-menu",
+        "source_code": "soup-3",
+        "name_zh": "山药排骨汤",
+        "name_en": "Pork Rib W. Chinese Yam Soup"
+      }
+    ],
+    "ls-west-lake-beef-soup": [
+      {
+        "source_id": "set-menu",
+        "source_code": "soup-4",
+        "name_zh": "西湖牛肉羹",
+        "name_en": "West Lake Beef Soup"
+      }
+    ],
+    "ls-sesame-balls": [
+      {
+        "source_id": "set-menu",
+        "source_code": "dessert-1",
+        "name_zh": "芝麻球",
+        "name_en": "Sesame Balls"
+      }
+    ],
+    "ls-rice-ball-wine": [
+      {
+        "source_id": "set-menu",
+        "source_code": "dessert-2",
+        "name_zh": "酒酿桂花汤圆",
+        "name_en": "Glutinous Rice Ball In Wine Sauce"
+      }
+    ],
+    "ls-brown-sugar-rice-cake": [
+      {
+        "source_id": "set-menu",
+        "source_code": "dessert-3",
+        "name_zh": "红糖糍粑",
+        "name_en": "Glutinous Rice Cake",
+        "quantity": 6
+      }
+    ],
+    "ls-dan-dan-noodle": [
+      {
+        "source_id": "daily-special",
+        "source_code": "Monday",
+        "name_zh": null,
+        "name_en": "Dan Dan Noodle"
+      }
+    ],
+    "ls-peanut-rice-cake": [
+      {
+        "source_id": "daily-special",
+        "source_code": "Thursday",
+        "name_zh": null,
+        "name_en": "Glutinous Rice Cake (Peanuts)"
+      }
+    ],
+    "ls-shanghai-spring-roll": [
+      {
+        "source_id": "daily-special",
+        "source_code": "Friday",
+        "name_zh": null,
+        "name_en": "Shanghai Spring Roll"
+      }
+    ]
+  },
+  "translated_chinese_names": [
+    {
+      "id": "ls-crab-rangoons",
+      "zh": "酥炸蟹角",
+      "reason": "套餐图中文小字不够清晰，依据 Crab Rangoons 补充中文通用名。"
+    },
+    {
+      "id": "ls-pork-pot-stickers",
+      "zh": "猪肉锅贴",
+      "reason": "套餐图中文小字不够清晰，依据 Pork Pot Stickers 补充中文通用名。"
+    },
+    {
+      "id": "ls-dan-dan-noodle",
+      "zh": "担担面",
+      "reason": "每日特价图仅有英文，中文由 Dan Dan Noodle 翻译。"
+    },
+    {
+      "id": "ls-peanut-rice-cake",
+      "zh": "花生糍粑",
+      "reason": "每日特价图仅有英文，中文由 Glutinous Rice Cake (Peanuts) 翻译；不与红糖糍粑强行合并。"
+    },
+    {
+      "id": "ls-shanghai-spring-roll",
+      "zh": "上海春卷",
+      "reason": "每日特价图仅有英文，中文由 Shanghai Spring Roll 翻译。"
+    }
+  ],
+  "set_menus": [
+    {
+      "people": 2,
+      "zh": "成都经典套餐",
+      "en": "CLASSIC SET FOR 2",
+      "price_usd": 79.99,
+      "appetizers": {
+        "choose": 1,
+        "item_ids": [
+          "ls-beef-maw",
+          "ls-szechuan-wontons",
+          "ls-crab-rangoons",
+          "ls-cucumber-salad",
+          "ls-pork-pot-stickers"
+        ]
+      },
+      "entrees": {
+        "choose": 2,
+        "item_ids": [
+          "ls-dry-chili-chicken",
+          "ls-mapo-tofu",
+          "ls-stir-fried-beef",
+          "ls-garlic-beef",
+          "ls-garlic-broccoli",
+          "ls-string-bean",
+          "ls-boiled-beef",
+          "ls-garlic-vermicelli-shrimp"
+        ]
+      },
+      "main_dishes": {
+        "choose": 1,
+        "item_ids": [
+          "ls-fried-rice",
+          "ls-fried-noodle"
+        ]
+      },
+      "soups": {
+        "choose": 2,
+        "item_ids": [
+          "ls-egg-drop-soup",
+          "ls-hot-sour-soup"
+        ]
+      },
+      "desserts": {
+        "fixed_item_id": "ls-sesame-balls",
+        "quantity": 2
+      }
+    },
+    {
+      "people": 4,
+      "zh": "成都招牌套餐",
+      "en": "CLASSIC FEAST FOR 4",
+      "price_usd": 149.99,
+      "appetizers": {
+        "choose": 2,
+        "item_ids": [
+          "ls-beef-maw",
+          "ls-szechuan-wontons",
+          "ls-crab-rangoons",
+          "ls-cucumber-salad",
+          "ls-pork-pot-stickers"
+        ]
+      },
+      "entrees": {
+        "choose": 4,
+        "item_ids": [
+          "ls-dry-chili-chicken",
+          "ls-mapo-tofu",
+          "ls-stir-fried-beef",
+          "ls-garlic-beef",
+          "ls-garlic-broccoli",
+          "ls-string-bean",
+          "ls-boiled-beef",
+          "ls-garlic-vermicelli-shrimp"
+        ]
+      },
+      "main_dishes": {
+        "choose": 1,
+        "item_ids": [
+          "ls-fried-rice",
+          "ls-fried-noodle"
+        ]
+      },
+      "soups": {
+        "bowls": 4,
+        "choose_from": 2,
+        "item_ids": [
+          "ls-egg-drop-soup",
+          "ls-hot-sour-soup"
+        ]
+      },
+      "desserts": {
+        "fixed_item_id": "ls-sesame-balls",
+        "quantity": 4
+      }
+    },
+    {
+      "people": 6,
+      "zh": "成都家庭宴",
+      "en": "FAMILY FEAST FOR 6",
+      "price_usd": 189.99,
+      "appetizers": {
+        "choose": 3,
+        "item_ids": [
+          "ls-beef-maw",
+          "ls-szechuan-wontons",
+          "ls-crab-rangoons",
+          "ls-cucumber-salad",
+          "ls-pork-pot-stickers"
+        ]
+      },
+      "entrees": {
+        "choose": 6,
+        "item_ids": [
+          "ls-dry-chili-chicken",
+          "ls-mapo-tofu",
+          "ls-stir-fried-beef",
+          "ls-garlic-beef",
+          "ls-garlic-broccoli",
+          "ls-string-bean",
+          "ls-boiled-beef",
+          "ls-garlic-vermicelli-shrimp"
+        ]
+      },
+      "main_dishes": {
+        "choose": 2,
+        "item_ids": [
+          "ls-fried-rice",
+          "ls-fried-noodle"
+        ]
+      },
+      "soups": {
+        "choose": 1,
+        "item_ids": [
+          "ls-pork-yam-soup",
+          "ls-west-lake-beef-soup"
+        ]
+      },
+      "desserts": {
+        "choose": 1,
+        "item_ids": [
+          "ls-sesame-balls",
+          "ls-rice-ball-wine",
+          "ls-brown-sugar-rice-cake"
+        ],
+        "sesame_balls_quantity": 6,
+        "rice_cake_quantity": 6
+      }
+    }
+  ],
+  "promotions": {
+    "daily_special": {
+      "source_id": "daily-special",
+      "minimum_purchase_usd": 30,
+      "limit_per_table": 1,
+      "schedule": [
+        {
+          "day": "Monday",
+          "item_id": "ls-dan-dan-noodle"
+        },
+        {
+          "day": "Tuesday",
+          "item_id": "ls-szechuan-wontons"
+        },
+        {
+          "day": "Wednesday",
+          "item_id": "ls-pork-pot-stickers"
+        },
+        {
+          "day": "Thursday",
+          "item_id": "ls-peanut-rice-cake"
+        },
+        {
+          "day": "Friday",
+          "item_id": "ls-shanghai-spring-roll"
+        },
+        {
+          "day": "Saturday",
+          "item_id": "ls-crab-rangoons"
+        },
+        {
+          "day": "Sunday",
+          "item_id": "ls-cucumber-salad"
+        }
+      ]
+    },
+    "takeout_add_on": {
+      "source_id": "takeout",
+      "add_on_price_usd": 10,
+      "condition_text": "ADD ANY ENTRÉE TO YOUR TAKE OUT ORDER",
+      "item_ids": [
+        "ls-dry-chili-chicken",
+        "ls-mapo-tofu",
+        "ls-stir-fried-beef",
+        "ls-lemon-shrimp",
+        "ls-boiled-beef",
+        "ls-twice-cooked-pork",
+        "ls-hong-sue-pork",
+        "ls-garlic-sauce-pork",
+        "ls-three-chili-chicken",
+        "ls-mongolian-beef",
+        "ls-string-bean",
+        "ls-peapod-leaves",
+        "ls-garlic-sauce-eggplant"
+      ]
+    },
+    "validity_note": "仅记录用户提供图片中的价格和活动；图片未注明有效期，未核实当前是否仍适用。"
+  },
+  "notes": [
+    "只整合用户提供的4张图，不混入先前官网文字菜单或网页价格。",
+    "合并同菜异名；份数和套餐选择规则独立保留，不把同菜不同份数重复建成菜名。",
+    "不在这份菜单里的照片可按画面生成中文描述名，不强行匹配。",
+    "中文为翻译补充的5项均有独立标记；套餐图两处小字不清晰，保留英文并标记中文来源。"
+  ]
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from app.routes.material_filters import GroupRecognitionPayload
 from app.services import material_filters as store
 from app.services.core_ai import CoreAIError
 from tests.test_material_groups import env, jpeg, populate
@@ -13,7 +14,7 @@ class FakeClient:
     def chat_json(self,*args,**kwargs):
         self.calls+=1
         if isinstance(self.response,Exception):raise self.response
-        return self.response or {"naming_status":"matched","selected_menu_id":"dish-1","candidate_menu_ids":["dish-1"],"visual_subject":"菜品","reason":"可见菜品","uncertain_attributes":[],"category":"食物","tag_groups":{"食材":["蔬菜"]}}
+        return self.response or {"naming_status":"matched","selected_menu_id":"dish-1","candidate_menu_ids":["dish-1"],"visual_subject":"菜品","reason":"可见菜品","uncertain_attributes":[],"category":"食物","tags":["食材","蔬菜"]}
 
 
 def setup_groups(env):
@@ -38,10 +39,30 @@ def test_ten_similar_members_use_one_call_and_same_operation_is_idempotent(env):
     assert run["counters"]["model_calls"]==1
     again=run_recognition(db,settings,scheme,client,"operation-1")
     assert again["_id"]==run["_id"] and client.calls==1
-    assert db.material_filter_evaluations.count_documents({})==1
+    assert db.material_filter_evaluations.count_documents({})==2
     saved = db.material_filter_evaluations.find_one()
-    assert saved["tag_groups"] == {"食材": ["蔬菜"]}
-    assert saved["tags"] == ["蔬菜"]
+    assert saved["tag_groups"] == {}
+    assert saved["tags"] == ["食材", "蔬菜"]
+
+
+def test_stop_request_prevents_further_model_calls(env):
+    from app.services import material_group_runner as runner
+
+    groups, db, settings, source, scheme = setup_groups(env)
+    group = groups.list_groups(db, settings, scheme)["items"][0]
+    ids = [row["id"] for row in groups.list_members(db, settings, group["id"])["items"][:2]]
+    run, _ = runner.create_recognition_run(db, settings, scheme, request_id="stop-after-first",
+                                          mode="selected_files", file_ids=ids, force=True)
+    class StopAfterFirst(FakeClient):
+        def chat_json(self, *args, **kwargs):
+            db.material_filter_runs.update_one({"_id": run["_id"]}, {"$set": {"cancel_requested": True}})
+            return super().chat_json(*args, **kwargs)
+    client = StopAfterFirst()
+    result = runner.run_job(db, settings, client, run["_id"])
+    assert client.calls == 1
+    assert result["status"] == "failed"
+    assert "停止" in result["error"]
+    assert db.material_filter_attempts.count_documents({"run_id": run["_id"]}) == 1
 
 
 def test_new_similar_members_reuse_existing_representative_without_call(env):
@@ -68,6 +89,49 @@ def test_force_two_selected_images_adds_exactly_two_calls_and_preserves_attempts
     run_recognition(db,settings,scheme,client,"manual-repeat",mode="selected_files",file_ids=ids,force=True)
     assert client.calls==3
     assert db.material_filter_attempts.count_documents({"actual_call":True})==3
+
+
+def test_successful_group_auto_picks_two_named_and_tagged_members(env):
+    groups,db,settings,source,scheme=setup_groups(env)
+    client=FakeClient()
+    run=run_recognition(db,settings,scheme,client,"pick-successful-group")
+    assert run["status"]=="succeeded"
+    group=groups.list_groups(db,settings,scheme)["items"][0]
+    members=groups.list_members(db,settings,group["id"])["items"]
+    picked=[member for member in members if member["evaluation"] and member["evaluation"]["manual_pick"]]
+    assert [member["relative_path"] for member in picked]==["00.jpg","01.jpg"]
+    assert all(member["evaluation"]["display_name"]=="Test Dish" for member in picked)
+    assert all(member["evaluation"]["tags"]==["食材","蔬菜"] for member in picked)
+    assert all(member["evaluation"]["copy_status"]=="copied" for member in picked)
+    assert all(store.output_file(member["evaluation"], settings, scheme).is_file() for member in picked)
+
+
+def test_selected_recognition_accepts_up_to_500_files(env, monkeypatch):
+    from app.services import material_groups as groups_module
+    from app.services import material_group_runner as runner
+
+    _, db, settings, _, scheme = setup_groups(env)
+    group = db[groups_module.COLLECTION].find_one({"scheme_id": scheme["_id"]})
+    file_ids = [f"batch-file-{index}" for index in range(201)]
+    db[groups_module.COLLECTION].update_one({"_id": group["_id"]}, {"$set": {"file_ids": file_ids, "count": len(file_ids)}})
+    monkeypatch.setattr(groups_module, "get_file", lambda _db, file_id: {
+        "_id": file_id, "scheme_id": scheme["_id"], "sha256": f"sha-{file_id}",
+        "relative_path": f"{file_id}.jpg",
+    })
+    run, created = runner.create_recognition_run(
+        db, settings, scheme, request_id="batch-201", mode="selected_files",
+        file_ids=file_ids, force=True,
+    )
+    assert created and len(run["files"]) == 201
+
+
+def test_recognition_request_model_accepts_500_and_rejects_501_file_ids():
+    from pydantic import ValidationError
+
+    base = {"request_id": "batch", "mode": "selected_files", "force": True}
+    assert len(GroupRecognitionPayload(**base, file_ids=[str(index) for index in range(500)]).file_ids) == 500
+    with pytest.raises(ValidationError):
+        GroupRecognitionPayload(**base, file_ids=[str(index) for index in range(501)])
 
 
 def test_changed_source_is_not_sent_using_stale_plan(env):

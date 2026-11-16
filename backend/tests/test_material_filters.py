@@ -87,7 +87,7 @@ def _evaluation(db, scheme, *, relative="a.jpg", data=b"image-bytes", decision="
         sha256=snapshot.sha256,
         latest_evaluation_id=None,
     )
-    result = None if decision == "error" else _result(decision)
+    result = None if decision in {"error", "unprocessed"} else _result(decision)
     evaluation = store.save_evaluation(
         db,
         scheme,
@@ -250,10 +250,17 @@ def test_results_paging_filters_and_counts(db, settings):
     _evaluation(db, scheme, relative="b.jpg", data=b"bbb", decision="fail")
     _evaluation(db, scheme, relative="sub/c.jpg", data=b"ccc", decision="uncertain")
     _evaluation(db, scheme, relative="d.jpg", data=b"ddd", decision="error")
+    imported = _evaluation(db, scheme, relative="imported.jpg", decision="unprocessed")
 
     page = store.list_results(db, scheme["_id"], status="all")
-    assert page["total"] == 4
-    assert page["counts"] == {"all": 4, "pass": 1, "fail": 1, "uncertain": 1, "error": 1, "picked": 0}
+    assert page["total"] == 5
+    assert page["counts"] == {"all": 5, "unprocessed": 1, "pass": 1, "fail": 1, "uncertain": 1, "error": 1, "picked": 0}
+
+    unprocessed = store.list_results(db, scheme["_id"], status="unprocessed")
+    assert [item["_id"] for item in unprocessed["items"]] == [imported["_id"]]
+    assert imported["model_decision"] is None
+    assert imported["human_decision"] is None
+    assert "未筛选" in store.export_csv(db, scheme).decode("utf-8-sig")
 
     uncertain = store.list_results(db, scheme["_id"], status="uncertain")
     assert [item["relative_path"] for item in uncertain["items"]] == ["sub/c.jpg"]
@@ -303,17 +310,18 @@ def test_export_csv_escapes_formulas_and_quotes(db, settings):
     assert text.startswith("名称,分类,标签,状态")
 
 
-def test_grouped_metadata_keeps_chinese_tags_and_preserves_photo_paths(db, settings):
+def test_legacy_grouped_metadata_becomes_ordinary_flat_tags(db, settings):
     scheme = _scheme(db, settings)
     evaluation = _evaluation(db, scheme)
     updated = store.update_metadata(db, evaluation, tag_groups={"食材": ["牛肉", "牛肉"], "员工": ["端菜"]})
-    assert updated["tag_groups"] == {"食材": ["牛肉"], "员工": ["端菜"]}
-    assert updated["tags"] == ["牛肉", "端菜"]
+    assert updated["tag_groups"] == {}
+    assert updated["tags"] == ["食材", "牛肉", "员工", "端菜"]
     assert updated["relative_path"] == evaluation["relative_path"]
     with pytest.raises(store.MaterialFilterError):
         store.update_metadata(db, updated, tag_groups={"食材": ["beef"]})
-    with pytest.raises(store.MaterialFilterError):
-        store.update_metadata(db, updated, tags=["面条"])
+    edited = store.update_metadata(db, updated, tags=["食材", "面条"])
+    assert edited["tags"] == ["食材", "面条"]
+    assert edited["tag_groups"] == {}
 
 def test_manual_pick_is_a_second_stage_independent_of_the_model(db, settings):
     scheme = _scheme(db, settings)

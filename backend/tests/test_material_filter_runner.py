@@ -324,6 +324,62 @@ def test_interrupted_run_resumes_only_when_asked(db, settings, source):
     assert client.calls == 2
 
 
+def test_scan_evaluates_unprocessed_import_without_losing_metadata_or_shortlist(db, settings, source):
+    (source / "a.jpg").write_bytes(_jpeg())
+    scheme = _scheme(db, settings, source)
+    _scan(db, settings, FakeCoreAI(), scheme, request_id="prepare-copy")
+    evaluation = db.material_filter_evaluations.find_one({})
+    store.update_evaluation(db, evaluation["_id"], {
+        "decision": "unprocessed", "effective_decision": "unprocessed",
+        "model_decision": None, "model": None, "model_result": {},
+        "display_name": "官网原文件名", "tags": ["官网"], "manual_pick": True,
+    })
+    client = FakeCoreAI(_payload("pass"))
+
+    run = _scan(db, settings, client, scheme, request_id="first-real-scan")
+
+    assert run["status"] == "succeeded"
+    assert client.calls == 1
+    assert run["counters"]["passed"] == 1
+    assert db.material_filter_evaluations.count_documents({}) == 1
+    updated = store.get_evaluation(db, evaluation["_id"])
+    assert updated["effective_decision"] == "pass"
+    assert updated["model_decision"] == "pass"
+    assert updated["display_name"] == "官网原文件名"
+    assert updated["tags"] == ["官网"]
+    assert updated["manual_pick"] is True
+    assert store.output_file(updated, settings, scheme).read_bytes() == _jpeg()
+
+
+def test_first_menu_recognition_names_import_and_adds_content_tags_beside_source_tag(db, settings, source):
+    (source / "a.jpg").write_bytes(_jpeg())
+    menu = {"merchant_id": db.merchant_id, "menu_version": "supplied-v1", "name_format": "zh_en",
+            "items": [{"id": "mapo", "zh": "麻婆豆腐", "en": "Mapo Tofu"}]}
+    scheme = store.create_scheme(db, settings, _folder(db, source), name="按菜单命名", naming_mode="menu_match", menu=menu)
+    response = {"naming_status": "matched", "selected_menu_id": "mapo", "candidate_menu_ids": ["mapo"],
+                "name_zh": None, "name_en": None, "visual_subject": "豆腐", "reason": "可见豆腐，与菜单一致。",
+                "uncertain_attributes": [], "category": "食物", "tags": ["豆腐", "辣椒", "热菜"]}
+    _scan(db, settings, FakeCoreAI(response), scheme, request_id="prepare-import-copy")
+    evaluation = db.material_filter_evaluations.find_one({})
+    store.update_evaluation(db, evaluation["_id"], {
+        "decision": "unprocessed", "effective_decision": "unprocessed", "model_decision": None,
+        "model_result": {}, "naming": None, "display_name": "原图描述名", "tags": ["官网"],
+    })
+    client = FakeCoreAI(response)
+
+    run = _scan(db, settings, client, scheme, request_id="recognize-import")
+
+    assert run["status"] == "succeeded"
+    assert client.calls == 1
+    updated = store.get_evaluation(db, evaluation["_id"])
+    assert updated["display_name"] == "麻婆豆腐_Mapo Tofu"
+    assert updated["tags"] == ["官网", "豆腐", "辣椒", "热菜"]
+    assert updated["model_result"]["tags"] == ["豆腐", "辣椒", "热菜"]
+    assert updated["model_decision"] == "pass"
+    assert updated["naming"]["menu_version"] == "supplied-v1"
+    assert updated["output_name"] == "麻婆豆腐_Mapo Tofu.jpg"
+
+
 def test_deleting_a_source_file_keeps_local_copies(db, settings, source):
     path = source / "a.jpg"
     path.write_bytes(_jpeg())

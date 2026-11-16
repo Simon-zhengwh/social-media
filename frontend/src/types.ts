@@ -466,7 +466,7 @@ export type MaterialFilterFolder = {
 
 export type MaterialFilterFolderCreateResult = MaterialFilterFolder & { created: boolean }
 
-export type MaterialFilterDecision = 'pass' | 'fail' | 'uncertain' | 'error'
+export type MaterialFilterDecision = 'unprocessed' | 'pass' | 'fail' | 'uncertain' | 'error'
 
 export type MaterialFilterCounters = {
   scanned: number
@@ -655,6 +655,8 @@ export type MaterialGroup = {
   representative_file_ids: string[]
   recognized_count: number
   picked_count: number
+  /** Filter bucket of the representative verdict; drives the card badge. */
+  verdict?: 'pass' | 'fail' | 'uncertain' | 'error' | 'unrecognized'
   picked_file_ids?: string[]
   reference_stale: boolean
   manual: boolean
@@ -680,6 +682,7 @@ export type MaterialGroupRun = {
   error: string | null
   items?: Array<{ file_id: string; status: string; error: string | null }>
   scan_errors?: MaterialGroupScanError[]
+  auto_pick_errors?: string[]
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -688,6 +691,7 @@ export type MaterialGroupRun = {
 export type MaterialGroupsPage = {
   items: MaterialGroup[]
   total: number
+  counts?: Record<string, number>
   sampling_enabled: boolean
   version: string | null
   stats: {
@@ -698,6 +702,7 @@ export type MaterialGroupsPage = {
     cache_hits: number
     new_calls: number
     blocked_unknown: number
+    pending_picks: number
   }
   last_run: MaterialGroupRun | null
   scan_errors: MaterialGroupScanError[]

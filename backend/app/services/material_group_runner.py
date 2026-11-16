@@ -65,8 +65,8 @@ def create_recognition_run(db, settings, scheme, *, request_id, mode="representa
         ids = [fid for g in chosen_groups for fid in groups.representatives(g, representative_count)]
     else:
         ids = requested["file_ids"]
-        if not 1 <= len(ids) <= 200:
-            raise store.MaterialFilterError("file_selection_required", "请选择1–200张照片")
+        if not 1 <= len(ids) <= 500:
+            raise store.MaterialFilterError("file_selection_required", "请选择1–500张照片")
     # Published group membership is authoritative. File pointers are a cache
     # and can lag if a process stops after publishing a new revision.
     current_groups = chosen_groups or list(db[groups.COLLECTION].find({"scheme_id": scheme["_id"], "version": revision}))
@@ -92,7 +92,8 @@ def create_recognition_run(db, settings, scheme, *, request_id, mode="representa
             store.release_scheme_run(db, scheme["_id"], run["_id"])
             raise store.MaterialFilterError("group_stale", "分组已更新，请刷新", 409)
         db[store.RUN_COLLECTION].update_one({"_id": run["_id"]}, {"$set": {"kind": "recognition", "mode": mode,
-            "force": bool(force), "representative_count": representative_count, "group_ids": [g["_id"] for g in chosen_groups],
+            "force": bool(force), "representative_count": representative_count,
+            "group_ids": list(dict.fromkeys([*(g["_id"] for g in chosen_groups), *(plan["group_id"] for plan in plans)])),
             "group_revision": revision, "group_algorithm_version": scheme["group_algorithm_version"],
             "files": plans, "counters": dict(_counters(), scanned=len(plans)), "input_fingerprint": fingerprint}})
     return store.get_run(db, run["_id"]), created
@@ -130,6 +131,8 @@ def _recognize(db, settings, client, run, scheme, counters):
                     cache_hits=sum(a["status"] == "cached" for a in settled),
                     copied=sum(bool(a.get("copied")) for a in settled))
     for plan in run["files"]:
+        if store.get_run(db, run["_id"]).get("cancel_requested"):
+            raise store.MaterialFilterError("recognition_cancelled", "已按用户要求停止识别", 409)
         fid = plan["file_id"]
         old = prior.get(fid)
         if old and old["status"] != "running":
@@ -192,10 +195,6 @@ def _recognize(db, settings, client, run, scheme, counters):
         finally:
             counters["processed"] += 1
             store.set_run_counters(db, run["_id"], counters)
-    if run["mode"] == "representatives":
-        for gid in run.get("group_ids", []):
-            group = groups.get_group(db, gid)
-            groups._refresh_reference(db, group, count=run["representative_count"])
 
 
 def _validate_recognition_revision(run, scheme):
@@ -228,7 +227,28 @@ def run_job(db, settings, client, run_id):
     except Exception as exc:
         status, error = "failed", str(exc)[:1500]
     finally:
-        db[store.RUN_COLLECTION].update_one({"_id": run_id}, {"$set": {"status": status, "error": error, "counters": counters, "finished_at": store.now()}})
+        auto_pick_errors = []
+        if run.get("kind") == "recognition":
+            cache = groups.cached_evaluations(db, scheme)
+            for group_id in run.get("group_ids", []):
+                try:
+                    group = groups.get_group(db, group_id)
+                    groups._refresh_reference(db, group, cached=cache, count=run.get("representative_count", 1))
+                except Exception as exc:
+                    auto_pick_errors.append(f"{group_id}: {exc}")
+            # Sweep every passing group, not only this run's: results captured by
+            # earlier runs or by the per-photo filter must also get their first two picks.
+            try:
+                current = store.get_scheme(db, scheme["_id"])
+                outcome = groups.sync_auto_picks(db, settings, current, max_groups=groups.AUTO_PICK_BATCH_GROUPS)
+                auto_pick_errors.extend(outcome["errors"])
+                groups._mark_auto_pick(db, current, None if outcome["remaining"] else current.get("group_revision"))
+            except Exception as exc:
+                auto_pick_errors.append(str(exc)[:500])
+        db[store.RUN_COLLECTION].update_one({"_id": run_id}, {"$set": {
+            "status": status, "error": error, "counters": counters,
+            "auto_pick_errors": auto_pick_errors, "finished_at": store.now(),
+        }})
         store.release_scheme_run(db, scheme["_id"], run_id)
     return store.get_run(db, run_id)
 

@@ -313,6 +313,19 @@ class _Evaluator:
             self._bump(changed=1)
 
         existing = store.find_evaluation(self.db, self.scheme_id, file_doc["_id"], snapshot.sha256)
+        if existing and existing.get("decision") == "unprocessed":
+            self.evaluated += 1
+            try:
+                updated = recheck_evaluation(self.db, self.settings, self.client, self.scheme, existing)
+            except store.MaterialFilterError as exc:
+                store.record_run_error(self.db, self.run_id, entry.relative_path, exc.message)
+                self._bump(errors=1)
+                return
+            counter = {"pass": "passed", "fail": "failed", "uncertain": "uncertain"}[updated["decision"]]
+            self._bump(**{counter: 1})
+            if existing.get("copy_status") != "copied" and updated.get("copy_status") == "copied":
+                self._bump(copied=1)
+            return
         if existing and existing.get("decision") == "error":
             # One row per content version: the failed attempt is replaced on retry.
             self.db[store.EVALUATION_COLLECTION].delete_one({"_id": existing["_id"]})
@@ -484,7 +497,15 @@ def recheck_evaluation(db, settings: Settings, client, scheme: dict[str, Any], e
             "tag_groups": (result.naming or {}).get("tag_groups", {}),
             "output_name": None, "output_path": None, "output_sha256": None,
             "copy_status": "none", "copy_error": None,
-            "manual_pick": False, "picked_at": None,
+            "manual_pick": False, "picked_at": None, "pick_source": None,
+        })
+    if evaluation.get("decision") == "unprocessed" and scheme.get("naming_mode") == "menu_match":
+        # Imported HTML names are provisional; the first recognition adopts the menu name.
+        updates.update({
+            "display_name": result.name,
+            "tags": list(dict.fromkeys([*(evaluation.get("tags") or []), *result.tags])),
+            "tag_groups": {},
+            "naming_mode": "menu_match",
         })
     if result.decision == "pass" and (result.naming or evaluation.get("copy_status") != "copied"):
         try:

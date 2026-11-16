@@ -140,3 +140,33 @@ test('group rename is a versioned patch that sends the exact label', async () =>
   assert.deepEqual(JSON.parse(String(requests[0].init?.body)), { name: '卤牛腱肉_Spiced Beef', version: 'grev_9' })
   assert.equal(new Headers(requests[0].init?.headers).get('X-Media-Request'), '1')
 })
+
+test('group filters travel as one status parameter and default to all', async () => {
+  const requests = mockBrowser()
+  await api.listMaterialGroups('scheme/a', { status: 'uncertain', q: '汤' })
+  await api.listMaterialGroups('scheme/a', { status: 'all' })
+  const filtered = new URL(requests[0].path, 'http://localhost')
+  assert.equal(filtered.searchParams.get('status'), 'uncertain')
+  assert.equal(filtered.searchParams.get('q'), '汤')
+  assert.equal(new URL(requests[1].path, 'http://localhost').searchParams.get('status'), null)
+})
+
+test('batch re-recognition asks the server for the uncertain group representatives', async () => {
+  const requests = mockBrowser({ file_ids: ['file/a'], total: 12 })
+  const page = await api.listMaterialUnsettledRepresentatives('scheme/a', { verdict: 'uncertain', limit: 60 })
+  assert.deepEqual(page, { file_ids: ['file/a'], total: 12 })
+  const url = new URL(requests[0].path, 'http://localhost')
+  assert.equal(url.pathname, '/api/merchants/merchant%2Fa/material-filters/schemes/scheme%2Fa/unsettled-representatives')
+  assert.equal(url.searchParams.get('verdict'), 'uncertain')
+  assert.equal(url.searchParams.get('limit'), '60')
+  assert.equal(requests[0].init?.method, 'GET')
+})
+
+test('picking a photo without its own result borrows the representative record', async () => {
+  const requests = mockBrowser({ id: 'eval/inherited', file_id: 'file/a', manual_pick: true })
+  const evaluation = await api.inheritMaterialGroupPick('group/a', 'file/a')
+  assert.equal(evaluation.manual_pick, true)
+  assert.equal(requests[0].path, '/api/merchants/merchant%2Fa/material-filters/groups/group%2Fa/files/file%2Fa/inherit-pick')
+  assert.equal(requests[0].init?.method, 'POST')
+  assert.equal(new Headers(requests[0].init?.headers).get('X-Media-Request'), '1')
+})

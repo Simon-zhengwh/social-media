@@ -23,6 +23,7 @@
 .mg-list-head .mf-search input { min-width: 0; flex: 1; }
 .mg-list-head .mf-search button { flex-shrink: 0; }
 .mg-groups { display: flex; flex-direction: column; gap: 14px; }
+.mg-scroll-sentinel { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; font-size: 12px; color: var(--color-neutral-500); }
 .mg-group { padding: 16px; }
 .mg-group.is-conflict { border-color: #e5c19f; }
 .mg-group-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
@@ -86,3 +87,7 @@
   .mg-file-grid { grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); }
   .mg-file-media { height: 150px; }
 }
+
+.mg-group-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.mg-group-tags .mf-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.mg-file-tags { margin-top: 6px; }

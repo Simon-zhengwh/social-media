@@ -320,7 +320,7 @@ def fit_upload_bytes(data: bytes, max_bytes: int, *, force_jpeg: bool = False) -
 
 def desired_tags(row: dict[str, Any]) -> list[str]:
     tags = [str(tag).strip() for tag in row.get("tags") or [] if str(tag).strip()]
-    return list(dict.fromkeys(tags))[: MAX_ASSET_TAGS - 1] + ["素材筛选"]
+    return list(dict.fromkeys(tag for tag in tags if tag != "素材筛选"))[:MAX_ASSET_TAGS]
 
 
 def _reject_if_unauthenticated(response: httpx.Response) -> None:

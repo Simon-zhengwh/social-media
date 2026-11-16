@@ -138,6 +138,47 @@ def _add_result(db,scheme,file_row,name="Test Dish"):
     return row
 
 
+def test_backfill_picks_first_two_members_from_an_existing_successful_group(env):
+    db,settings,source,scheme,_=env
+    populate(source,3)
+    groups.scan_scheme(db,settings,scheme)
+
+    class MatchedClient:
+        def chat_json(self,*args,**kwargs):
+            return {"naming_status":"matched","selected_menu_id":"dish-1","candidate_menu_ids":["dish-1"],
+                "visual_subject":"菜品","reason":"菜单菜品特征相符","uncertain_attributes":[],"category":"食物","tags":["食材","蔬菜"]}
+
+    run,_=runner.create_recognition_run(db,settings,scheme,request_id="existing-success",mode="representatives")
+    runner.run_job(db,settings,MatchedClient(),run["_id"])
+    group=groups.list_groups(db,settings,scheme)["items"][0]
+    members=groups.list_members(db,settings,group["id"])["items"]
+    representative=next(item for item in members if item["evaluation"])
+    store.update_evaluation(db,representative["evaluation"]["_id"],{"manual_pick":False,"picked_at":None})
+
+    result=groups.backfill_picks_for_passed_groups(db,settings,store.get_scheme(db,scheme["_id"]))
+    assert result["groups"]==1 and result["photos_picked"]==2
+    refreshed=groups.list_members(db,settings,group["id"])["items"]
+    chosen=refreshed[:2]
+    assert all(item["evaluation"] and item["evaluation"]["manual_pick"] for item in chosen)
+    assert all(item["evaluation"]["display_name"]=="Test Dish" for item in chosen)
+    second_evaluation = db[store.EVALUATION_COLLECTION].find_one({"_id": chosen[1]["evaluation"]["_id"]})
+    store.set_manual_pick(db, second_evaluation, picked=False)
+    repeated=groups.backfill_picks_for_passed_groups(db,settings,store.get_scheme(db,scheme["_id"]))
+    assert repeated["photos_picked"]==1
+    refreshed=groups.list_members(db,settings,group["id"])["items"]
+    assert refreshed[0]["evaluation"]["manual_pick"] is True
+    assert refreshed[1]["evaluation"]["manual_pick"] is False
+    assert db[store.EVALUATION_COLLECTION].count_documents({"scheme_id":scheme["_id"],"manual_pick":True})==1
+    store.update_evaluation(db,representative["evaluation"]["_id"],{
+        "decision":"uncertain","model_decision":"uncertain","effective_decision":"uncertain"})
+    groups.backfill_picks_for_passed_groups(db,settings,store.get_scheme(db,scheme["_id"]))
+    stale=groups.list_members(db,settings,group["id"])["items"][:2]
+    # 待复核 groups stay shortlisted for upload; the operator's unpick survives.
+    assert all(item["evaluation"]["decision"]=="uncertain" for item in stale)
+    assert all(item["evaluation"]["effective_decision"]=="uncertain" for item in stale)
+    assert [item["evaluation"]["manual_pick"] for item in stale]==[True,False]
+
+
 def test_manual_group_name_is_editable_and_becomes_the_picked_file_name(env):
     from pathlib import Path
     db,settings,source,scheme,page=separated(env)
@@ -197,3 +238,253 @@ def test_picked_previews_lead_the_group_strip_and_are_flagged(env):
     item=next(g for g in groups.list_groups(db,settings,scheme)["items"] if g["id"]==group["id"])
     assert item["previews"][0]["id"]==file_row["_id"] and item["previews"][0]["manual_pick"] is True
     assert item["picked_file_ids"]==[file_row["_id"]] and item["picked_count"]==1
+
+
+class _MatchedClient:
+    def chat_json(self,*args,**kwargs):
+        return {"naming_status":"matched","selected_menu_id":"dish-1","candidate_menu_ids":["dish-1"],
+            "visual_subject":"菜品","reason":"菜单菜品特征相符","uncertain_attributes":[],"category":"食物","tags":["食材","蔬菜"]}
+
+
+def test_recognition_run_shortlists_groups_left_over_from_earlier_runs(env):
+    """A newer run must heal passed groups whose picks predate the shortlist step."""
+    db,settings,source,scheme,_=separated(env)
+    first,_=runner.create_recognition_run(db,settings,store.get_scheme(db,scheme["_id"]),
+                                          request_id="first-pass",mode="representatives")
+    runner.run_job(db,settings,_MatchedClient(),first["_id"])
+    ordered=list(db[groups.COLLECTION].find({"scheme_id":scheme["_id"]}).sort("_id",1))
+    assert len(ordered)==2
+    older=db[store.EVALUATION_COLLECTION].find_one({"scheme_id":scheme["_id"],"file_id":ordered[1]["file_ids"][0]})
+    store.update_evaluation(db,older["_id"],{"manual_pick":False,"picked_at":None})
+    db[groups.COLLECTION].update_many({"scheme_id":scheme["_id"]},{"$unset":{"auto_picked":""}})
+    assert groups.list_groups(db,settings,store.get_scheme(db,scheme["_id"]))["stats"]["pending_picks"]==1
+
+    touched=ordered[0]["file_ids"][0]
+    second,_=runner.create_recognition_run(db,settings,store.get_scheme(db,scheme["_id"]),
+                                            request_id="touch-one-group",mode="selected_files",file_ids=[touched])
+    runner.run_job(db,settings,_MatchedClient(),second["_id"])
+
+    assert second["group_ids"]==[ordered[0]["_id"]]
+    assert db[store.EVALUATION_COLLECTION].find_one({"_id":older["_id"]})["manual_pick"] is True
+    assert groups.list_groups(db,settings,store.get_scheme(db,scheme["_id"]))["stats"]["pending_picks"]==0
+
+
+def test_auto_pick_sweep_claims_one_background_job_per_grouping_revision(env,monkeypatch):
+    db,settings,source,scheme,page=separated(env)
+
+    class InlineThread:
+        def __init__(self,target=None,args=(),kwargs=None,name=None,daemon=None):
+            self.target,self.args=target,args or ()
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(groups,"Thread",InlineThread)
+    assert groups.start_auto_pick(db,settings,store.get_scheme(db,scheme["_id"])) is True
+    current=store.get_scheme(db,scheme["_id"])
+    assert current["auto_pick_revision"]==current["group_revision"] and current["active_run_id"] is None
+    run=db[store.RUN_COLLECTION].find_one({"scheme_id":scheme["_id"],"kind":"auto_pick"})
+    assert run["status"]=="succeeded" and run["kind"]=="auto_pick"
+    assert groups.start_auto_pick(db,settings,current) is False
+    assert db[store.RUN_COLLECTION].count_documents({"scheme_id":scheme["_id"],"kind":"auto_pick"})==1
+
+
+def test_auto_pick_sweep_runs_one_batch_per_page_load_until_done(env,monkeypatch):
+    db,settings,source,scheme,_=separated(env)
+
+    class InlineThread:
+        def __init__(self,target=None,args=(),kwargs=None,name=None,daemon=None):
+            self.target,self.args=target,args or ()
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(groups,"Thread",InlineThread)
+    monkeypatch.setattr(groups,"AUTO_PICK_BATCH_GROUPS",1)
+    first,_=runner.create_recognition_run(db,settings,store.get_scheme(db,scheme["_id"]),
+                                          request_id="batch-pass",mode="representatives")
+    runner.run_job(db,settings,_MatchedClient(),first["_id"])
+    assert db[store.EVALUATION_COLLECTION].count_documents({"scheme_id":scheme["_id"],"manual_pick":True})==1
+    assert store.get_scheme(db,scheme["_id"])["auto_pick_revision"] is None
+    assert groups.list_groups(db,settings,store.get_scheme(db,scheme["_id"]))["stats"]["pending_picks"]==1
+
+    assert groups.start_auto_pick(db,settings,store.get_scheme(db,scheme["_id"])) is True
+    assert db[store.EVALUATION_COLLECTION].count_documents({"scheme_id":scheme["_id"],"manual_pick":True})==2
+    current=store.get_scheme(db,scheme["_id"])
+    assert current["auto_pick_revision"]==current["group_revision"]
+    assert groups.list_groups(db,settings,store.get_scheme(db,scheme["_id"]))["stats"]["pending_picks"]==0
+    assert groups.start_auto_pick(db,settings,store.get_scheme(db,scheme["_id"])) is False
+
+
+def test_auto_pick_does_not_override_an_operator_unpick(env,monkeypatch):
+    db,settings,source,scheme,_=separated(env)
+
+    class InlineThread:
+        def __init__(self,target=None,args=(),kwargs=None,name=None,daemon=None):
+            self.target,self.args=target,args or ()
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(groups,"Thread",InlineThread)
+    first,_=runner.create_recognition_run(db,settings,store.get_scheme(db,scheme["_id"]),
+                                          request_id="operator-unpick",mode="representatives")
+    runner.run_job(db,settings,_MatchedClient(),first["_id"])
+    picked=db[store.EVALUATION_COLLECTION].find_one({"scheme_id":scheme["_id"],"manual_pick":True})
+    store.update_evaluation(db,picked["_id"],{"manual_pick":False,"picked_at":None})
+    assert groups.list_groups(db,settings,store.get_scheme(db,scheme["_id"]))["stats"]["pending_picks"]==0
+    assert groups.start_auto_pick(db,settings,store.get_scheme(db,scheme["_id"])) is False
+    assert groups.backfill_picks_for_passed_groups(db,settings,store.get_scheme(db,scheme["_id"]))["photos_picked"]==1
+
+
+def test_group_browser_filters_groups_by_representative_verdict_and_picks(env):
+    db,settings,source,scheme,_=env
+    for name,color in [("a.jpg","red"),("b.jpg","blue"),("c.jpg","green")]:
+        (source/name).write_bytes(jpeg(color=color))
+    groups.scan_scheme(db,settings,scheme)
+    page=groups.list_groups(db,settings,scheme)
+    assert page["total"]==3
+    assert page["counts"]=={"all":3,"unrecognized":3,"pass":0,"fail":0,"uncertain":0,"error":0,"picked":0}
+    ordered=sorted(page["items"],key=lambda group:group["id"])
+    passing,failing,silent=ordered
+
+    def representative(group):
+        return db[store.FILE_COLLECTION].find_one({"_id":group["representative_file_ids"][0]})
+
+    passed=_add_result(db,scheme,representative(passing))
+    failed=_add_result(db,scheme,representative(failing))
+    store.update_evaluation(db,passed["_id"],{"decision":"pass","effective_decision":"pass","manual_pick":True})
+    store.update_evaluation(db,failed["_id"],{"decision":"fail","effective_decision":"fail","manual_pick":False})
+    silent_file=representative(silent)
+    db[groups.ATTEMPTS].insert_one({"_id":"attempt-silent","scheme_id":scheme["_id"],"file_id":silent_file["_id"],
+        "source_sha256":silent_file["sha256"],"model":scheme["model"],"prompt_version":scheme.get("prompt_version"),
+        "menu_version":(scheme.get("menu") or {}).get("menu_version"),"status":"failed","error":"超时","created_at":store.now()})
+
+    page=groups.list_groups(db,settings,scheme)
+    assert page["counts"]=={"all":3,"unrecognized":0,"pass":1,"fail":1,"uncertain":0,"error":1,"picked":1}
+    assert groups.list_groups(db,settings,scheme,status="pass")["items"][0]["id"]==passing["id"]
+    assert groups.list_groups(db,settings,scheme,status="fail")["items"][0]["id"]==failing["id"]
+    assert groups.list_groups(db,settings,scheme,status="error")["items"][0]["id"]==silent["id"]
+    assert groups.list_groups(db,settings,scheme,status="picked")["items"][0]["id"]==passing["id"]
+    assert groups.list_groups(db,settings,scheme,status="uncertain")["total"]==0
+    filtered=groups.list_groups(db,settings,scheme,status="pass")
+    assert filtered["counts"]["all"]==3 and filtered["stats"]["groups"]==3
+    first_file=db[groups.COLLECTION].find_one({"_id":passing["id"]})["file_ids"][0]
+    member=db[store.FILE_COLLECTION].find_one({"_id":first_file})["relative_path"]
+    assert groups.list_groups(db,settings,scheme,status="pass",q=member)["total"]==1
+    assert groups.list_groups(db,settings,scheme,status="fail",q=member)["total"]==0
+    store.update_evaluation(db,failed["_id"],{"effective_decision":"error"})
+    assert groups.list_groups(db,settings,scheme)["counts"]=={"all":3,"unrecognized":0,"pass":1,"fail":0,"uncertain":0,"error":2,"picked":1}
+    with pytest.raises(store.MaterialFilterError):
+        groups.list_groups(db,settings,scheme,status="bogus")
+
+
+def test_uncertain_representatives_feed_the_group_batch_re_recognition(env):
+    db,settings,source,scheme,_=env
+    for name,color in [("a.jpg","red"),("b.jpg","blue")]:
+        (source/name).write_bytes(jpeg(color=color))
+    groups.scan_scheme(db,settings,scheme)
+    page=groups.list_groups(db,settings,scheme)
+    assert groups.unsettled_representatives(db,scheme)=={"file_ids":[],"total":0}
+    for item in page["items"]:
+        row=db[store.FILE_COLLECTION].find_one({"_id":item["representative_file_ids"][0]})
+        evaluation=_add_result(db,scheme,row)
+        store.update_evaluation(db,evaluation["_id"],{"decision":"uncertain","effective_decision":"uncertain",
+            "manual_pick":False,"picked_at":None})
+    # A non-representative photo conclusion must not add another batch target.
+    other=db[store.FILE_COLLECTION].find_one({"scheme_id":scheme["_id"],
+        "_id":{"$nin":[item["representative_file_ids"][0] for item in page["items"]]}})
+    if other:
+        extra=_add_result(db,scheme,other,name="非代表图")
+        store.update_evaluation(db,extra["_id"],{"decision":"uncertain","effective_decision":"uncertain","manual_pick":False})
+    result=groups.unsettled_representatives(db,scheme)
+    assert result["total"]==2 and sorted(result["file_ids"])==sorted(
+        item["representative_file_ids"][0] for item in page["items"])
+    assert groups.unsettled_representatives(db,scheme,limit=1)=={"file_ids":result["file_ids"][:1],"total":2}
+
+
+def test_uncertain_group_member_borrows_the_representative_result_when_picked(env):
+    db,settings,source,scheme,_=env
+    populate(source,3)
+    groups.scan_scheme(db,settings,scheme)
+    group=groups.list_groups(db,settings,scheme)["items"][0]
+    members=groups.list_members(db,settings,group["id"])["items"]
+    stray=next(m for m in members if m["id"]!=group["representative_file_ids"][0])
+    # Nothing to borrow until the representative has a result.
+    with pytest.raises(store.MaterialFilterError):groups.manual_inherit_pick(db,settings,group["id"],stray["id"])
+    representative_row=db[store.FILE_COLLECTION].find_one({"_id":group["representative_file_ids"][0]})
+    result=_add_result(db,scheme,representative_row)
+    naming={"naming_status":"matched","selected_menu_id":"dish-1","candidate_menu_ids":["dish-1"],
+        "name_zh":"测试菜","name_en":"Test Dish","visual_subject":"菜品","reason":"菜单菜品特征相符",
+        "uncertain_attributes":[],"category":"食物","tags":["食材"],"menu_version":"v1"}
+    store.update_evaluation(db,result["_id"],{"naming":naming,"decision":"uncertain","effective_decision":"uncertain",
+        "manual_pick":False,"picked_at":None})
+
+    picked=groups.manual_inherit_pick(db,settings,group["id"],stray["id"])
+    assert picked["manual_pick"] is True and picked["pick_source"]=="manual"
+    assert picked["decision"]=="uncertain" and picked["effective_decision"]=="uncertain"
+    assert picked["display_name"]=="Test Dish" and picked["copy_status"]=="copied"
+    copy=store.scheme_directory(settings,store.get_scheme(db,scheme["_id"]))/picked["output_path"]
+    assert copy.is_file()
+    # Repeating the pick keeps the same record instead of copying again.
+    assert groups.manual_inherit_pick(db,settings,group["id"],stray["id"])["_id"]==picked["_id"]
+    refreshed=next(g for g in groups.list_groups(db,settings,scheme)["items"] if g["id"]==group["id"])
+    assert refreshed["picked_count"]==1
+
+    store.update_evaluation(db,result["_id"],{"decision":"fail","effective_decision":"fail"})
+    another=next(m for m in members if m["id"] not in {group["representative_file_ids"][0],stray["id"]})
+    with pytest.raises(store.MaterialFilterError):groups.manual_inherit_pick(db,settings,group["id"],another["id"])
+    with pytest.raises(store.MaterialFilterError):groups.manual_inherit_pick(db,settings,group["id"],"mfile_missing")
+
+
+def test_uncertain_groups_are_shortlisted_so_they_can_be_uploaded(env):
+    db,settings,source,scheme,_=env
+    populate(source,4)
+    groups.scan_scheme(db,settings,scheme)
+
+    class AmbiguousClient:
+        def chat_json(self,*args,**kwargs):
+            return {"naming_status":"ambiguous","selected_menu_id":None,"candidate_menu_ids":["dish-1","dish-2"],
+                "visual_subject":"抄手或水饺","reason":"两种菜品特征都符合","uncertain_attributes":["菜名"],
+                "category":"食物","tags":["食材","红油"]}
+
+    run,_=runner.create_recognition_run(db,settings,store.get_scheme(db,scheme["_id"]),
+                                        request_id="uncertain-shortlist",mode="representatives")
+    runner.run_job(db,settings,AmbiguousClient(),run["_id"])
+    group=groups.list_groups(db,settings,scheme)["items"][0]
+    assert group["verdict"]=="uncertain"
+    shortlist=groups.list_members(db,settings,group["id"])["items"][:2]
+    assert all(item["evaluation"] for item in shortlist)
+    assert all(item["evaluation"]["manual_pick"] is True for item in shortlist)
+    assert all(item["evaluation"]["decision"]=="uncertain" for item in shortlist)
+    assert all(item["evaluation"]["effective_decision"]=="uncertain" for item in shortlist)
+    assert all(item["evaluation"]["copy_status"]=="copied" for item in shortlist)
+    assert all("菜名待确认" in item["evaluation"]["output_name"] for item in shortlist)
+    directory=store.scheme_directory(settings,store.get_scheme(db,scheme["_id"]))
+    assert all((directory/item["evaluation"]["output_path"]).is_file() for item in shortlist)
+    assert groups.list_groups(db,settings,scheme)["stats"]["pending_picks"]==0
+
+    # A later fail verdict still clears the automatic shortlist.
+    representative=next(item for item in groups.list_members(db,settings,group["id"])["items"] if item["evaluation"])
+    store.update_evaluation(db,representative["evaluation"]["_id"],
+        {"decision":"fail","effective_decision":"fail"})
+    groups.auto_pick_successful_group(db,settings,store.get_scheme(db,scheme["_id"]),groups.get_group(db,group["id"]))
+    cleared=groups.list_members(db,settings,group["id"])["items"][:2]
+    assert all(item["evaluation"]["manual_pick"] is False for item in cleared)
+
+
+def test_uncertain_groups_marked_by_the_older_policy_are_swept_again(env):
+    db,settings,source,scheme,_=env
+    populate(source,3)
+    groups.scan_scheme(db,settings,scheme)
+    group=groups.get_group(db,groups.list_groups(db,settings,scheme)["items"][0]["id"])
+    representative=next(row for row in db[store.FILE_COLLECTION].find({"scheme_id":scheme["_id"]}) if row["_id"] in group["representative_file_ids"])
+    result=_add_result(db,scheme,representative)
+    naming={"naming_status":"ambiguous","selected_menu_id":None,"candidate_menu_ids":["dish-1"],
+        "name_zh":None,"name_en":None,"visual_subject":"抄手或水饺","reason":"特征都符合",
+        "uncertain_attributes":["菜名"],"category":"食物","tags":["食材"],"menu_version":"v1"}
+    store.update_evaluation(db,result["_id"],{"naming":naming,"decision":"uncertain","effective_decision":"uncertain",
+        "manual_pick":False,"picked_at":None})
+    # An older sweep visited the group while 待复核 groups were ineligible.
+    db[groups.COLLECTION].update_one({"_id":group["_id"]},{"$set":{"auto_picked":True}})
+    assert groups.list_groups(db,settings,scheme)["stats"]["pending_picks"]==1
+    totals=groups.sync_auto_picks(db,settings,store.get_scheme(db,scheme["_id"]))
+    assert totals["groups"]==1 and totals["photos_picked"]==2
+    assert groups.list_groups(db,settings,scheme)["stats"]["pending_picks"]==0

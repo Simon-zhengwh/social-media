@@ -99,7 +99,7 @@ class GroupRecognitionPayload(GroupScanPayload):
     mode: str = "representatives"
     representative_count: int = Field(default=1, ge=1, le=2)
     group_limit: int | None = Field(default=None, ge=1, le=200)
-    file_ids: list[str] = Field(default_factory=list, max_length=200)
+    file_ids: list[str] = Field(default_factory=list, max_length=500)
     force: bool = False
 
 
@@ -268,7 +268,7 @@ def group_run_out(request: Request, doc: dict[str, Any]) -> dict[str, Any]:
     return {"id": doc["_id"], "scheme_id": doc["scheme_id"], "kind": doc.get("kind", "group_scan"),
         "status": doc["status"], "counters": counters, "items": items, "error": doc.get("error"), "scan_errors": doc.get("scan_errors") or [],
         "created_at": utc_iso(doc.get("created_at")), "started_at": utc_iso(doc.get("started_at")),
-        "finished_at": utc_iso(doc.get("finished_at"))}
+        "finished_at": utc_iso(doc.get("finished_at")), "auto_pick_errors": doc.get("auto_pick_errors") or []}
 
 
 def group_file_out(request: Request, row: dict) -> dict:
@@ -293,12 +293,23 @@ def start_group_scan(request: Request, scheme_id: str, payload: GroupScanPayload
 
 
 @router.get("/schemes/{scheme_id}/groups")
-def list_groups(request: Request, scheme_id: str, skip: int = Query(default=0, ge=0), limit: int = Query(default=30, ge=1, le=100), q: str = "", representative_count: int = Query(default=1, ge=1, le=2)):
+def list_groups(request: Request, scheme_id: str, skip: int = Query(default=0, ge=0), limit: int = Query(default=30, ge=1, le=100), q: str = "", status: str = "all", representative_count: int = Query(default=1, ge=1, le=2)):
     _require_local(request)
     db = request_db(request)
     scheme = store.get_scheme(db, scheme_id)
-    page = group_store.list_groups(db, request.app.state.settings, scheme, skip=skip, limit=limit, q=q, representative_count=representative_count)
+    page = group_store.list_groups(db, request.app.state.settings, scheme, skip=skip, limit=limit, q=q, status=status, representative_count=representative_count)
+    if page["stats"].get("pending_picks"):
+        # Older recognition runs never shortlisted their groups; heal them in the
+        # background instead of waiting for a maintenance button.
+        group_store.start_auto_pick(db, request.app.state.settings, scheme)
     return {**page, "items": [group_out(request, g) for g in page["items"]], "last_run": group_run_out(request, page["last_run"]) if page["last_run"] else None}
+
+
+@router.get("/schemes/{scheme_id}/unsettled-representatives")
+def list_unsettled_representatives(request: Request, scheme_id: str, verdict: str = "uncertain", limit: int = Query(default=200, ge=1, le=500)):
+    _require_local(request)
+    db = request_db(request)
+    return group_store.unsettled_representatives(db, store.get_scheme(db, scheme_id), verdict=verdict, limit=limit)
 
 
 @router.get("/groups/{group_id}/files")
@@ -306,6 +317,15 @@ def list_group_files(request: Request, group_id: str, skip: int = Query(default=
     _require_local(request)
     page = group_store.list_members(request_db(request), request.app.state.settings, group_id, skip=skip, limit=limit, representative_count=representative_count)
     return {**page, "items": [group_file_out(request, r) for r in page["items"]]}
+
+
+@router.post("/groups/{group_id}/files/{file_id}/inherit-pick")
+def inherit_group_pick(request: Request, group_id: str, file_id: str):
+    _require_local(request)
+    evaluation = group_store.manual_inherit_pick(
+        request_db(request), request.app.state.settings, group_id, file_id,
+    )
+    return evaluation_out(request, evaluation)
 
 
 @router.get("/files/{file_id}/preview")
@@ -361,6 +381,15 @@ def rename_group(request: Request, group_id: str, payload: GroupNamePayload):
     _require_local(request)
     result = group_store.rename_group(request_db(request), request.app.state.settings, group_id, payload.name, version=payload.version)
     return group_out(request, result)
+
+
+@router.post("/schemes/{scheme_id}/auto-pick-passed")
+def auto_pick_passed_groups(request: Request, scheme_id: str):
+    _require_local(request)
+    db = request_db(request)
+    scheme = store.get_scheme(db, scheme_id)
+    group_store.require_sampling_scheme(scheme)
+    return group_store.backfill_picks_for_passed_groups(db, request.app.state.settings, scheme)
 
 
 @router.post("/schemes/{scheme_id}/recognition-runs", status_code=202)

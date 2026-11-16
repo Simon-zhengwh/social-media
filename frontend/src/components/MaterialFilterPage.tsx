@@ -39,10 +39,10 @@ import './MaterialFilterPage.css'
 
 const RESULTS_PAGE_SIZE = 60
 const MAX_VISIBLE_RESULTS = 500
-const TAG_GROUPS = ['食材', '员工', '环境'] as const
 
 const STATUS_TABS: Array<{ key: string; label: string }> = [
   { key: 'all', label: '全部' },
+  { key: 'unprocessed', label: '未筛选' },
   { key: 'pass', label: '通过' },
   { key: 'fail', label: '不通过' },
   { key: 'uncertain', label: '待复核' },
@@ -57,6 +57,7 @@ const SORT_OPTIONS = [
 ] as const
 
 const DECISION_LABEL: Record<string, string> = {
+  unprocessed: '未筛选',
   pass: '通过',
   fail: '不通过',
   uncertain: '待复核',
@@ -134,8 +135,7 @@ export default function MaterialFilterPage() {
   const [searchDraft, setSearchDraft] = useState('')
   const [search, setSearch] = useState('')
   const [busyEvaluation, setBusyEvaluation] = useState<string | null>(null)
-  const [editing, setEditing] = useState<{ id: string; name: string; tags: string; tagGroups?: Partial<Record<typeof TAG_GROUPS[number], string>> } | null>(null)
-  const [browseMode, setBrowseMode] = useState<{ schemeId: string; mode: 'groups' | 'photos' } | null>(null)
+  const [editing, setEditing] = useState<{ id: string; name: string; tags: string } | null>(null)
 
   const [addingFolder, setAddingFolder] = useState(false)
   const [folderInput, setFolderInput] = useState('')
@@ -180,7 +180,8 @@ export default function MaterialFilterPage() {
 
   const activeFolder = folders.find((item) => item.id === activeFolderId) ?? null
   const groupMode = detail?.naming_mode === 'menu_match' && detail.rules.length === 0
-  const showPhotos = !!detail && (browseMode?.schemeId === detail.id ? browseMode.mode === 'photos' : !groupMode)
+  // Menu-naming schemes browse similar groups; hard-filter schemes are judged per photo.
+  const showPhotos = !!detail && !groupMode
   const runActive = run?.status === 'queued' || run?.status === 'running'
   const scannedTotal = run?.counters.scanned ?? 0
   // During a run the live total is freshest; afterwards the stored evaluation
@@ -731,9 +732,7 @@ export default function MaterialFilterPage() {
     try {
       const updated = await updateMaterialFilterMetadata(editing.id, {
         display_name: editing.name.trim(),
-        ...(editing.tagGroups
-          ? { tag_groups: Object.fromEntries(TAG_GROUPS.map(group => [group, splitTags(editing.tagGroups?.[group] ?? '')])) }
-          : { tags: splitTags(editing.tags) }),
+        tags: splitTags(editing.tags),
       })
       setResults((current) => current.map((item) => (item.id === updated.id ? updated : item)))
       setEditing(null)
@@ -745,7 +744,9 @@ export default function MaterialFilterPage() {
   }
 
   const statusCounts = useMemo(
-    () => STATUS_TABS.map((tab) => ({ ...tab, count: counts[tab.key] ?? 0 })),
+    () => STATUS_TABS
+      .filter((tab) => tab.key !== 'unprocessed' || (counts[tab.key] ?? 0) > 0)
+      .map((tab) => ({ ...tab, count: counts[tab.key] ?? 0 })),
     [counts],
   )
 
@@ -1292,16 +1293,8 @@ export default function MaterialFilterPage() {
             </div>
           ) : null}
 
-          {detail && detail.id === activeSchemeId ? (
-            <>
-              <div className="mf-inline-actions" role="tablist" aria-label="照片浏览方式">
-                <button type="button" role="tab" aria-selected={!showPhotos} className={!showPhotos ? 'mp-btn-primary' : 'mp-btn-secondary'} onClick={() => setBrowseMode({ schemeId: detail.id, mode: 'groups' })}>按相似组浏览</button>
-                <button type="button" role="tab" aria-selected={showPhotos} className={showPhotos ? 'mp-btn-primary' : 'mp-btn-secondary'} onClick={() => setBrowseMode({ schemeId: detail.id, mode: 'photos' })}>逐张结果 · 人工入选</button>
-              </div>
-              <div hidden={showPhotos}>
-                <MaterialGroupBrowser key={detail.id} scheme={detail} blockedByFilterRun={runActive} onChanged={() => void loadResults(detail.id, statusRef.current, searchRef.current)} />
-              </div>
-            </>
+          {detail && detail.id === activeSchemeId && groupMode ? (
+            <MaterialGroupBrowser key={detail.id} scheme={detail} blockedByFilterRun={runActive} onChanged={() => void loadResults(detail.id, statusRef.current, searchRef.current)} />
           ) : null}
 
           {detail && showPhotos ? (
@@ -1406,22 +1399,11 @@ export default function MaterialFilterPage() {
                         {evaluation.category || '未分类'}
                         {evaluation.human_decision ? ' · 人工已复核' : ''}
                       </p>
-                      {TAG_GROUPS.some(group => evaluation.tag_groups?.[group]?.length) ? (
-                        <div className="mf-tag-groups">
-                          {TAG_GROUPS.map(group => evaluation.tag_groups?.[group]?.length ? (
-                            <div className="mf-tag-group" key={group}>
-                              <strong>{group}</strong>
-                              <div className="mf-tags">
-                                {evaluation.tag_groups[group]?.map(tag => <span key={tag}>{tag}</span>)}
-                              </div>
-                            </div>
-                          ) : null)}
-                        </div>
-                      ) : <div className="mf-tags">
+                      <div className="mf-tags">
                         {evaluation.tags.map((tag) => (
                           <span key={tag}>{tag}</span>
                         ))}
-                      </div>}
+                      </div>
                       {evaluation.description ? <p className="mf-hint">{evaluation.description}</p> : null}
                       {evaluation.rules.length ? (
                         <ul className="mf-verdicts">
@@ -1449,21 +1431,13 @@ export default function MaterialFilterPage() {
                               onChange={(event) => setEditing({ ...editing, name: event.target.value })}
                             />
                           </label>
-                          {editing.tagGroups ? TAG_GROUPS.map(group => (
-                            <label key={group}>
-                              {group}标签（中文，逗号分隔）
-                              <input
-                                value={editing.tagGroups?.[group] ?? ''}
-                                onChange={event => setEditing({ ...editing, tagGroups: { ...editing.tagGroups, [group]: event.target.value } })}
-                              />
-                            </label>
-                          )) : <label>
+                          <label>
                             标签（逗号分隔）
                             <input
                               value={editing.tags}
                               onChange={(event) => setEditing({ ...editing, tags: event.target.value })}
                             />
-                          </label>}
+                          </label>
                           <div className="mf-inline-actions">
                             <button type="button" className="mp-btn-primary" onClick={() => void saveMetadata()} disabled={busyEvaluation === evaluation.id}>
                               保存
@@ -1509,14 +1483,14 @@ export default function MaterialFilterPage() {
                               下载原图
                             </a>
                           ) : null}
-                          {!groupMode ? <button
+                          <button
                             type="button"
                             className="mf-text-button"
                             onClick={() => void recheck(evaluation)}
                             disabled={busyEvaluation === evaluation.id}
                           >
-                            重新检查
-                          </button> : null}
+                            {evaluation.effective_decision === 'unprocessed' ? '开始筛选' : '重新检查'}
+                          </button>
                           <button
                             type="button"
                             className="mf-text-button"
@@ -1525,9 +1499,6 @@ export default function MaterialFilterPage() {
                                 id: evaluation.id,
                                 name: evaluation.display_name,
                                 tags: evaluation.tags.join('，'),
-                                tagGroups: TAG_GROUPS.some(group => evaluation.tag_groups?.[group]?.length)
-                                  ? Object.fromEntries(TAG_GROUPS.map(group => [group, evaluation.tag_groups?.[group]?.join('，') ?? '']))
-                                  : undefined,
                               })
                             }
                           >

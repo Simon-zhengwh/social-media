@@ -15,7 +15,7 @@ from typing import Any
 
 from app.services import material_filter_files as files
 
-PROMPT_VERSION = "menu-naming-v3-uncertainty"
+PROMPT_VERSION = "menu-naming-v4-flat-tags"
 CATEGORIES = {"食物", "场景", "人物", "其他"}
 STATUSES = {"matched", "ambiguous", "generated"}
 TAG_GROUPS = ("食材", "员工", "环境")
@@ -119,6 +119,21 @@ def validate_tag_groups(value: Any) -> dict[str, list[str]]:
     return result
 
 
+def validate_tags(value: Any) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise MenuNamingError("标签须为普通中文标签列表")
+    tags = []
+    for tag in value:
+        if (not isinstance(tag, str) or not tag.strip() or len(tag) > 20
+                or not re.search(r"[\u3400-\u9fff]", tag) or re.search(r"[A-Za-z]", tag)):
+            raise MenuNamingError("标签只允许中文短标签，不能包含英文或分组")
+        if tag.strip() not in tags:
+            tags.append(tag.strip())
+    if len(tags) > 5:
+        raise MenuNamingError("每张照片最多5个标签")
+    return tags
+
+
 def validate_result(payload: Any, menu: dict[str, Any]) -> MenuNamingResult:
     menu = validate_menu(menu)
     name_format = menu.get("name_format", "zh_en")
@@ -137,10 +152,14 @@ def validate_result(payload: Any, menu: dict[str, Any]) -> MenuNamingResult:
     category = payload.get("category")
     if category not in CATEGORIES:
         raise MenuNamingError("图片分类非法")
-    tag_groups = validate_tag_groups(payload.get("tag_groups"))
-    if not tag_groups:
-        raise MenuNamingError("至少提供一个有内容的中文标签组")
-    tags = list(dict.fromkeys(tag for values in tag_groups.values() for tag in values))
+    tags = validate_tags(payload.get("tags"))
+    if category == "人物":
+        tags = list(dict.fromkeys("员工" if tag == "人物" else tag for tag in tags))
+    if category == "食物":
+        # Incidental props do not help users find food photos.
+        tags = [tag for tag in tags if tag != "环境" and not any(
+            term in tag for term in ("桌", "盘", "碗", "筷", "墙", "格窗", "陶罐", "背景", "特写", "俯拍", "酱色")
+        )] or ["食材"]
     subject = _text(payload.get("visual_subject"), "可见主体", limit=160)
     reason = _text(payload.get("reason"), "命名依据")
     unknown = payload.get("uncertain_attributes", [])
@@ -161,14 +180,7 @@ def validate_result(payload: Any, menu: dict[str, Any]) -> MenuNamingResult:
             unknown = list(dict.fromkeys([*unknown, "口味"]))
             terms = group.get("unconfirmed_terms", [])
             tags = [t for t in tags if not any(term in t for term in terms)]
-            tags = list(dict.fromkeys([*tags, *group.get("safe_tags", [])]))[:6]
-            tag_groups = validate_tag_groups({
-                key: [tag for tag in values if tag in tags] for key, values in tag_groups.items()
-            })
-            for tag in group.get("safe_tags", []):
-                if tag in tags and tag not in tag_groups.get("食材", []):
-                    tag_groups.setdefault("食材", []).append(tag)
-            tag_groups = validate_tag_groups(tag_groups)
+            tags = list(dict.fromkeys([*tags, *group.get("safe_tags", [])]))[:5]
         elif unknown:
             # A claimed match cannot settle the attributes the model itself cannot verify.
             status, selected = "ambiguous", None
@@ -188,19 +200,19 @@ def validate_result(payload: Any, menu: dict[str, Any]) -> MenuNamingResult:
     if final_name and len(final_name) > 190:
         raise MenuNamingError("文件名过长，不能静默截断")
     return MenuNamingResult(status, selected, candidates, zh, en, subject, reason, unknown,
-                            category, tags, menu["menu_version"], name_format=name_format,
-                            tag_groups=tag_groups)
+                            category, tags, menu["menu_version"], name_format=name_format)
 
 
 OUTPUT_RULES = """必须逐图观察，visual_subject、reason、uncertain_attributes均使用中文。category只允许食物/场景/人物/其他。名称不含扩展名和非法路径字符。
 只有菜品关键属性与菜单一致时才能matched。可见数量与菜单份量冲突、包子饺子馅料无法确认、肉类或做法无法区分时必须ambiguous，保留候选，不能强行确定菜名，不能只凭面皮或外观猜馅料。
 uncertain_attributes只填写影响菜名或菜单匹配的关键不确定性；餐具、装饰等无关细节写在reason中。matched时uncertain_attributes必须为空，存在关键不确定性就返回ambiguous。
-tag_groups先分食材、员工、环境，再在组内细分中文短标签。同一照片可以属于多个组，只填画面实际涉及的组；每组最多6个，全图最多12个，禁止英文标签。不为凑数填写标签。
-食材：只标可见食材，如牛肉、鸡肉、面条、辣椒；无法判断肉类时用肉片，不能猜食材、口味或配方。
-员工：标人物服饰与工作动作，如围裙、厨师服、端菜、制作；人像可用人物肖像，不根据外观猜姓名、店主身份或具体职位。
-环境：标门头、座位、吧台、厨房、墙面装饰等空间内容；不把白盘、拍摄角度、数量、无关颜色等当作分类标签。不确定的味型不能作为确定标签。
+tags是普通中文字符串数组，全部平铺并列，不分组、不分层，禁止英文标签，每张照片最多5个，不为凑数填写标签。
+「食材」「员工」「环境」本身也是普通标签，与鱼片、青花椒、围裙、吧台等具体标签并列；根据照片主体选择一个或多个，不能把它们用作分组标题。
+菜品照片示例：["食材","鱼片","青花椒"]；员工端菜示例：["员工","食材","端菜","牛肉"]；餐厅空间示例：["环境","吧台","卡座"]。
+只标有内容检索价值的主体内容。菜品图只标食材及有用的菜品特征；无法判断肉类时用肉片，不能猜食材、口味、配方，不因背景中出现桌子、墙壁或器皿而添加环境、木桌、木质桌面、盘子、碗、筷子、托盘、酱色、俯拍等无意义标签。
+只有餐厅空间、门头、座位、吧台等构成照片主体时才加环境及具体空间标签。员工/人物只标可见服饰和工作动作，不猜姓名、店主身份或具体职位。
 非菜品只用中文描述名；无法确认的菜品保留中文可见主体与待确认状态，不强行匹配菜单。
-仅返回JSON对象：{"naming_status":"matched|ambiguous|generated","selected_menu_id":null,"candidate_menu_ids":[],"name_zh":"","name_en":null,"visual_subject":"可见主体","reason":"视觉依据与不确定性","uncertain_attributes":[],"category":"食物","tag_groups":{"食材":["牛肉","面条"],"员工":[],"环境":[]}}
+仅返回JSON对象：{"naming_status":"matched|ambiguous|generated","selected_menu_id":null,"candidate_menu_ids":[],"name_zh":"","name_en":null,"visual_subject":"可见主体","reason":"视觉依据与不确定性","uncertain_attributes":[],"category":"食物","tags":["食材","牛肉","面条"]}
 """
 
 
@@ -220,7 +232,7 @@ generated：拼盘、多道菜或菜单外等照片，selected_menu_id=null，ca
     prompt += "商户菜单和必须人工确认的歧义组：\n" + json.dumps({"items": menu["items"], "ambiguity_groups": menu.get("ambiguity_groups", [])}, ensure_ascii=False)
     if system_prompt:
         prompt = system_prompt
-        if "tag_groups" not in prompt:
+        if '"tags"' not in prompt or "tag_groups" in prompt:
             prompt += "\n本轮以下规范覆盖旧的标签和自由命名规则：\n" + OUTPUT_RULES
     return [{"role": "system", "content": prompt}, {"role": "user", "content": [
         {"type": "text", "text": json.dumps({"original_name_hint": original_name}, ensure_ascii=False)},
@@ -249,10 +261,18 @@ def as_classification(result: MenuNamingResult):
 
 
 def write_named_copy(root: str | Path, photo_id: str, result: MenuNamingResult, *,
-                     suffix: str, data: bytes, sha256: str) -> Path:
+                     suffix: str, data: bytes, sha256: str, allow_unconfirmed: bool = False) -> Path:
+    """Write the named copy; unconfirmed names only when the operator asked for it.
+
+    待复核 group shortlists are uploaded and corrected later, so their copy may
+    carry the visible 菜名待确认 marker instead of blocking the pick.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", photo_id):
         raise MenuNamingError("照片ID不能包含路径")
-    if result.naming_status == "ambiguous" or not result.name:
+    name = result.name
+    if allow_unconfirmed and result.naming_status == "ambiguous":
+        name = result.name or f"{result.visual_subject}（菜名待确认）"
+    if not name or (result.naming_status == "ambiguous" and not allow_unconfirmed):
         raise MenuNamingError("菜名尚未确认，不能生成正式命名副本")
     if suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".avif", ".tif", ".tiff", ".bmp"}:
         raise MenuNamingError("图片扩展名不支持")
@@ -260,7 +280,7 @@ def write_named_copy(root: str | Path, photo_id: str, result: MenuNamingResult, 
         raise MenuNamingError("原始字节与指定哈希不一致")
     # Menu wording stays verbatim in recognition records; a slash describing
     # choices is a full-width slash only in the filesystem leaf name.
-    filename = _check_name(result.name.replace("/", "／"), "图片名称", limit=190)
+    filename = _check_name(name.replace("/", "／"), "图片名称", limit=190)
     directory = files.ensure_local_directory(Path(root) / photo_id)
     target = directory / (filename + suffix.lower())
     if target.exists():
