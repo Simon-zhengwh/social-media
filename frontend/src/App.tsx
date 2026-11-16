@@ -295,7 +295,7 @@ export default function App() {
 
   // Tag and name edits both answer with the authoritative asset row.
   const handleAssetSaved = (asset: Asset) => {
-    setAssets((previous) => previous.map((item) => (item.id === asset.id ? asset : item)))
+    setAssets((previous) => previous.map((item) => (item.id === asset.id ? { ...item, ...asset } : item)))
   }
 
   const handleDeleteAsset = (assetId: string) => {

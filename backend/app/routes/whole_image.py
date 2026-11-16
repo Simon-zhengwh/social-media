@@ -14,13 +14,14 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from app.api_paths import asset_url, whole_download_url, merchant_base
 from app.request_context import request_db, request_merchant_id, request_store, request_profile
-from app.schemas import (gateway_model_name, WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
+from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
 from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
 from app.services.agent_image import artifacts_out as _artifacts_out
 from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
 from app.time_utils import utc_iso
+from app.services import poster_finalizations
 from app.services.canvas import canvas_size
 
 router = APIRouter(prefix="/whole-image", tags=["whole-image"])
@@ -59,10 +60,7 @@ def _task_input(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def _task_group_key(doc: dict[str, Any]) -> str:
-    input_data = _task_input(doc)
-    workspace_id = str(input_data.get("generation_workspace_id") or "").strip()
-    batch_id = str(input_data.get("candidate_batch_id") or "").strip()
-    return workspace_id or batch_id or str(doc["_id"])
+    return poster_finalizations.group_key(doc)
 
 
 def _task_is_active(doc: dict[str, Any]) -> bool:
@@ -750,6 +748,8 @@ def get_workspace_tasks(workspace_id: str, request: Request) -> list[dict[str, A
 def delete_candidate(task_id: str, request: Request) -> Response:
     db = request_db(request)
     _get_task_or_404(db, task_id)
+    if db.whole_finalizations.find_one({"task_id": task_id}):
+        raise HTTPException(status_code=409, detail="请先撤销或替换这张海报的定稿，再删除候选")
     deleted = db.whole_tasks.find_one_and_update({
         "_id": task_id,
         "status": {"$nin": ["queued", "running"]},
@@ -758,7 +758,37 @@ def delete_candidate(task_id: str, request: Request) -> Response:
     }, {"$set": {"candidate_deleted_at": whole_image.utcnow()}}, return_document=True)
     if deleted is None:
         raise HTTPException(status_code=409, detail="生成或改图中的候选不能删除，请等待完成")
+    if db.whole_finalizations.find_one({"task_id": task_id}):
+        db.whole_tasks.update_one({"_id": task_id, "candidate_deleted_at": deleted["candidate_deleted_at"]},
+                                  {"$unset": {"candidate_deleted_at": ""}})
+        raise HTTPException(status_code=409, detail="这张候选刚被定稿，请先撤销或替换定稿")
     # Keep version assets and references intact; remove only this candidate from the workspace/history.
+    return Response(status_code=204)
+
+
+@router.get("/tasks/{task_id}/finalization")
+def get_finalization(task_id: str, request: Request, version_id: str | None = None,
+                     output_id: str | None = None) -> dict[str, Any]:
+    try:
+        return poster_finalizations.context(request_db(request), task_id, version_id, output_id)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.put("/tasks/{task_id}/finalization")
+def save_finalization(task_id: str, payload: PosterFinalizationRequest, request: Request) -> dict[str, Any]:
+    try:
+        return poster_finalizations.save(request_db(request), task_id, **payload.model_dump())
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
+@router.delete("/tasks/{task_id}/finalization", status_code=204)
+def revoke_finalization(task_id: str, expected_revision: str, request: Request) -> Response:
+    try:
+        poster_finalizations.revoke(request_db(request), task_id, expected_revision)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return Response(status_code=204)
 
 
@@ -1121,7 +1151,7 @@ def download_task(
 _ARTIFACT_PREVIEW_CSP = (
     "sandbox allow-scripts allow-downloads; default-src 'none'; "
     "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-    "img-src data: blob:; connect-src 'none'; base-uri 'none'; "
+    "img-src data: blob:; font-src data:; connect-src 'none'; base-uri 'none'; "
     "form-action 'none'; frame-ancestors 'self'"
 )
 ARTIFACT_PREVIEW_HEADERS = {

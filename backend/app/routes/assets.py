@@ -10,7 +10,7 @@ from app.api_errors import am_http_error
 from app.api_paths import asset_url
 from app.middleware import is_local_bypass
 from app.request_context import request_db, request_merchant_id, request_store
-from app.services import am_assets, asset_deletion, asset_records
+from app.services import am_assets, asset_deletion, asset_records, poster_finalizations
 from app.services.am_client import AMClientError
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -57,7 +57,12 @@ def list_assets(request: Request) -> list[dict[str, Any]]:
         .sort("created_at", -1)
         .limit(200)
     )
-    return [asset_out(doc) for doc in docs]
+    return poster_finalizations.enrich_assets(request_db(request), [asset_out(doc) for doc in docs])
+
+
+@router.get("/{asset_id}/usages")
+def asset_usages(asset_id: str, request: Request) -> list[dict[str, Any]]:
+    return poster_finalizations.usages(request_db(request), asset_id)
 
 
 @router.post("", status_code=201)
@@ -80,10 +85,10 @@ def upload_asset(
     am = getattr(request.app.state, "am", None)
     if is_local_bypass(request) or am is None:
         # Local dev (and unit-test doubles) keep uploads local; no AM write is attempted.
-        return asset_out(document)
+        return poster_finalizations.enrich_assets(request_db(request), [asset_out(document)])[0]
     if document.get("am_media_library_id"):
         # Same bytes uploaded before: it already owns a media-library record.
-        return asset_out(document)
+        return poster_finalizations.enrich_assets(request_db(request), [asset_out(document)])[0]
 
     try:
         document = am_assets.register_in_library(
@@ -100,7 +105,7 @@ def upload_asset(
         if created:
             _discard_upload(request, document, store)
         raise am_http_error(exc) from exc
-    return asset_out(document)
+    return poster_finalizations.enrich_assets(request_db(request), [asset_out(document)])[0]
 
 
 def _discard_upload(request: Request, document: dict[str, Any], store: Any) -> None:

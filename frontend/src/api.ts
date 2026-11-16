@@ -1,5 +1,7 @@
 import type {
   Asset,
+  PosterFinalization,
+  PosterFinalizationContext,
   EditablePosterProject,
   OriginalReplacementItem,
   OriginalReplacementTask,
@@ -140,6 +142,27 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 export type AssetPage = { items: Asset[]; total: number; skip: number; limit: number }
+
+export async function getPosterFinalization(taskId: string, versionId: string, outputId: string): Promise<PosterFinalizationContext> {
+  const query = new URLSearchParams({ version_id: versionId, output_id: outputId })
+  return parseResponse(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/finalization?${query}`))
+}
+
+export async function savePosterFinalization(taskId: string, versionId: string, outputId: string, expectedRevision: string | null): Promise<PosterFinalization> {
+  return parseResponse(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/finalization`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ version_id: versionId, output_id: outputId, expected_revision: expectedRevision }),
+  }))
+}
+
+export async function revokePosterFinalization(taskId: string, expectedRevision: string): Promise<void> {
+  const query = new URLSearchParams({ expected_revision: expectedRevision })
+  await parseResponse(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/finalization?${query}`, { method: 'DELETE' }))
+}
+
+export async function listAssetUsages(assetId: string): Promise<PosterFinalization[]> {
+  return parseResponse(await apiFetch(`/api/assets/${encodeURIComponent(assetId)}/usages`))
+}
 
 export async function listAssetPage(
   keyword = '',

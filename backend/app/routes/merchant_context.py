@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.api_errors import am_http_error
 from app.middleware import is_local_bypass as _local_bypass
 from app.request_context import request_db
-from app.services import am_assets, merchant_profile
+from app.services import am_assets, merchant_profile, poster_finalizations
 from app.services.am_client import AMClientError
 
 router = APIRouter(tags=["merchant-context"])
@@ -87,7 +87,7 @@ def list_am_assets(
 ) -> dict[str, Any]:
     if _local_bypass(request):
         # The AM media library needs a console session; local dev only has uploads.
-        return am_assets.list_local(
+        page = am_assets.list_local(
             request_db(request),
             merchant_id,
             keyword=keyword,
@@ -95,8 +95,10 @@ def list_am_assets(
             skip=skip,
             limit=limit,
         )
+        page['items'] = poster_finalizations.enrich_assets(request_db(request), page['items'])
+        return page
     try:
-        return am_assets.list_for_merchant(
+        page = am_assets.list_for_merchant(
             request_db(request),
             request.app.state.am,
             request.state.am_cookie,
@@ -106,6 +108,7 @@ def list_am_assets(
             skip=skip,
             limit=limit,
         )
+        page['items'] = poster_finalizations.enrich_assets(request_db(request), page['items'])
+        return page
     except AMClientError as exc:
         raise am_http_error(exc) from exc
-

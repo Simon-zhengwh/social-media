@@ -1,6 +1,7 @@
 import {
   useState,
   type ClipboardEvent,
+  type ReactNode,
 } from 'react'
 import type { Asset, ImageModel, WholeImageEditState } from '../types'
 import { DEFAULT_IMAGE_MODEL, IMAGE_MODEL_OPTIONS } from '../imageModels'
@@ -15,6 +16,7 @@ type Props = {
   onUpload: (files: File[]) => Promise<Asset[]>
   onSend: (instruction: string, attachments: Asset[], imageModel: ImageModel) => Promise<boolean>
   downloadHref: string | null
+  finalizationActions?: ReactNode
   currentImage: PromptImage | null
   assets: Asset[]
   assetsLoading: boolean
@@ -35,6 +37,7 @@ export default function WholeChatPanel({
   onUpload,
   onSend,
   downloadHref,
+  finalizationActions,
   currentImage,
   assets,
   assetsLoading,
@@ -157,6 +160,7 @@ export default function WholeChatPanel({
                   下载 PNG
                 </a>
               ) : null}
+              {finalizationActions}
               <select className="chat-model-select" aria-label="改图模型" title="改图模型"
                 value={imageModel} disabled={disabled || running || uploading}
                 onChange={event => setImageModel(event.target.value as ImageModel)}>

@@ -231,6 +231,12 @@ class WholeImageOriginalReplacementApplyRequest(BaseModel):
     expected_current_output_id: str = Field(min_length=1, max_length=128)
 
 
+class PosterFinalizationRequest(BaseModel):
+    version_id: str = Field(min_length=1, max_length=200)
+    output_id: str = Field(min_length=1, max_length=200)
+    expected_revision: str | None = Field(default=None, max_length=100)
+
+
 class WholeImageEditRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=1000)
     image_model: ImageModel | None = None

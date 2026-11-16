@@ -14,6 +14,28 @@ import {
   listMerchants,
 } from '../src/api.ts'
 import type { WholeImageTask } from '../src/types.ts'
+import * as finalizationApi from '../src/api.ts'
+
+test('finalization APIs retain frozen source, revision, merchant scope and write protection', async () => {
+  assert.equal(typeof finalizationApi.getPosterFinalization, 'function')
+  const requests = mockBrowser()
+  await finalizationApi.getPosterFinalization('poster/a', 'version/a', 'output/a')
+  await finalizationApi.savePosterFinalization('poster/a', 'version/a', 'output/a', 'revision')
+  await finalizationApi.revokePosterFinalization('poster/a', 'revision/a')
+  await finalizationApi.listAssetUsages('am:photo/a')
+  assert.deepEqual(requests.map(request => request.path), [
+    '/api/merchants/merchant%2Fa/whole-image/tasks/poster%2Fa/finalization?version_id=version%2Fa&output_id=output%2Fa',
+    '/api/merchants/merchant%2Fa/whole-image/tasks/poster%2Fa/finalization',
+    '/api/merchants/merchant%2Fa/whole-image/tasks/poster%2Fa/finalization?expected_revision=revision%2Fa',
+    '/api/merchants/merchant%2Fa/assets/am%3Aphoto%2Fa/usages',
+  ])
+  assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
+    version_id: 'version/a', output_id: 'output/a', expected_revision: 'revision',
+  })
+  assert.equal(requests[1].init?.method, 'PUT')
+  assert.equal(requests[2].init?.method, 'DELETE')
+  for (const index of [1, 2]) assert.equal(new Headers(requests[index].init?.headers).get('X-Media-Request'), '1')
+})
 
 function mockBrowser(search = '?merchant_id=merchant%2Fa') {
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { location: { search } } })

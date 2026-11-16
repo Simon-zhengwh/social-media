@@ -7,6 +7,7 @@ import WholeImageForm from './WholeImageForm'
 import ImageModelSelector from './ImageModelSelector'
 import WholeModelInputPanel from './WholeModelInputPanel'
 import WholeImageResultPanel from './WholeImageResultPanel'
+import PosterFinalizationControl from './PosterFinalizationControl'
 import OriginalReplacementPanel from './OriginalReplacementPanel'
 import type { StoreSelection } from './StoreInfoSelector'
 import {
@@ -1002,6 +1003,9 @@ export default function WholeImageStudio({
             disabled={!canEdit || busy}
             onUpload={handleUploadChatImages}
             downloadHref={downloadHref}
+            finalizationActions={task?.current_version_id && task.current_output_id ? (
+              <PosterFinalizationControl key={`${task.id}:${task.current_version_id}:${task.current_output_id}`} task={task} disabled={busy} />
+            ) : null}
             currentImage={currentPromptImage}
             assets={assets}
             assetsLoading={assetsLoading}

@@ -134,6 +134,26 @@ export type Asset = {
   read_only?: boolean
   /** AM media library tags; older assets may not carry the field yet. */
   tags?: string[]
+  usage_count?: number
+}
+
+export type PosterFinalization = {
+  id: string
+  group_key: string
+  task_id: string
+  version_id: string
+  output_id: string
+  version: number
+  asset_ids: string[]
+  revision: string
+  finalized_at: string
+  preview_url: string
+  task_url: string
+}
+
+export type PosterFinalizationContext = {
+  finalization: PosterFinalization | null
+  assets: Asset[]
 }
 
 // ---------- Whole-image flow ----------

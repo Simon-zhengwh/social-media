@@ -4,6 +4,7 @@ import { MAX_ASSET_TAGS, normalizeTags } from '../assetTags'
 import { assetDisplayName, assetRenameFileName } from '../assetNames'
 import type { Asset } from '../types'
 import { ZoomableImage } from './ImageLightbox'
+import AssetUsageDialog from './AssetUsageDialog'
 
 type Props = {
   assets: Asset[]
@@ -59,6 +60,7 @@ export default function AssetLibrary({
   const [nameEditor, setNameEditor] = useState<{ asset: Asset; draft: string } | null>(null)
   const [nameSaving, setNameSaving] = useState(false)
   const [nameError, setNameError] = useState<string | null>(null)
+  const [usageAsset, setUsageAsset] = useState<Asset | null>(null)
 
   const keyword = draft ?? query
   // One box matches a name or a tag; typing searches after a short pause instead of a button.
@@ -339,6 +341,11 @@ export default function AssetLibrary({
                     {deletingIds?.includes(asset.id) ? '…' : '×'}
                   </button>
                 </div>
+                <div className="asset-card-head">
+                  <button type="button" className="asset-usage-count" onClick={() => setUsageAsset(asset)}>
+                    引用 {asset.usage_count ?? 0} 次
+                  </button>
+                </div>
                 {/* The rename affordance sits next to the name it edits. */}
                 <div className="asset-name-row">
                   <strong className="asset-name" title={assetDisplayName(asset.original_name)}>
@@ -390,6 +397,8 @@ export default function AssetLibrary({
           ) : null}
         </>
       )}
+
+      {usageAsset ? <AssetUsageDialog key={usageAsset.id} asset={usageAsset} onClose={() => setUsageAsset(null)} /> : null}
 
       {pendingDelete ? (
       <div
