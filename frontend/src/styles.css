@@ -1567,22 +1567,12 @@ label.product-add.is-disabled {
   gap: 8px;
 }
 
-.asset-date {
-  font-size: 9.5px;
-  color: var(--color-neutral-400);
-}
-
 .asset-name {
   overflow: hidden;
   font-size: 12px;
   color: var(--color-primary-900);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.asset-dims {
-  font-size: 10px;
-  color: var(--color-neutral-400);
 }
 
 .asset-actions {

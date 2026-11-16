@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listAssetPage, type AssetPage } from '../api'
 import type { Asset } from '../types'
+import { assetDisplayName } from '../assetNames'
 
 /** Rows that fill a wide dialog without making the first paint slow. */
 const PAGE_SIZE = 36
@@ -271,10 +272,10 @@ export default function AssetPicker({
                     }
                   }}
                 >
-                  <img src={asset.url} alt={asset.original_name} loading="lazy" />
+                  <img src={asset.url} alt={assetDisplayName(asset.original_name)} loading="lazy" />
                   {checked ? <span className="picker-check">✓</span> : null}
-                  <span className="picker-name" title={asset.original_name}>
-                    {asset.original_name}
+                  <span className="picker-name" title={assetDisplayName(asset.original_name)}>
+                    {assetDisplayName(asset.original_name)}
                   </span>
                   {(asset.tags ?? []).length > 0 ? (
                     <span className="picker-tags">

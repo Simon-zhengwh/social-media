@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, deleteAssets, renameAsset, updateAssetTags } from '../api'
 import { MAX_ASSET_TAGS, normalizeTags } from '../assetTags'
+import { assetDisplayName, assetRenameFileName } from '../assetNames'
 import type { Asset } from '../types'
 import { ZoomableImage } from './ImageLightbox'
 
@@ -25,12 +26,6 @@ type Props = {
   onTagsSaved: (asset: Asset) => void
   /** A renamed asset replaces the card in place; the server response is authoritative. */
   onNameSaved: (asset: Asset) => void
-}
-
-function formatDate(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
 export default function AssetLibrary({
@@ -215,7 +210,7 @@ export default function AssetLibrary({
     setNameSaving(true)
     setNameError(null)
     try {
-      const saved = await renameAsset(nameEditor.asset.id, name)
+      const saved = await renameAsset(nameEditor.asset.id, assetRenameFileName(name, nameEditor.asset.original_name))
       onNameSaved(saved)
       setNameEditor(null)
     } catch (reason: unknown) {
@@ -320,7 +315,7 @@ export default function AssetLibrary({
                     type="button"
                     className={`asset-select${selectedIds.includes(asset.id) ? ' is-on' : ''}`}
                     aria-pressed={selectedIds.includes(asset.id)}
-                    aria-label={`${selectedIds.includes(asset.id) ? '取消选择' : '选择'} ${asset.original_name}`}
+                    aria-label={`${selectedIds.includes(asset.id) ? '取消选择' : '选择'} ${assetDisplayName(asset.original_name)}`}
                     title="选择后可批量删除"
                     disabled={deleting}
                     onClick={() => toggleSelected(asset.id)}
@@ -330,44 +325,38 @@ export default function AssetLibrary({
                   <ZoomableImage
                     className="asset-thumb-preview"
                     src={asset.url}
-                    alt={asset.original_name}
-                    title={asset.original_name}
+                    alt={assetDisplayName(asset.original_name)}
+                    title={assetDisplayName(asset.original_name)}
                   />
                   <button
                     type="button"
                     className="asset-delete-fab"
                     title={asset.source === 'am' ? '删除这张素材（含 AM 素材库记录）' : '删除这张素材'}
-                    aria-label={`删除 ${asset.original_name}`}
+                    aria-label={`删除 ${assetDisplayName(asset.original_name)}`}
                     disabled={deleting}
                     onClick={() => setPendingDelete({ assets: [asset], force: false })}
                   >
                     {deletingIds?.includes(asset.id) ? '…' : '×'}
                   </button>
                 </div>
-                <div className="asset-card-head">
-                  <span className="asset-date">{formatDate(asset.created_at)}</span>
-                </div>
                 {/* The rename affordance sits next to the name it edits. */}
                 <div className="asset-name-row">
-                  <strong className="asset-name" title={asset.original_name}>
-                    {asset.original_name}
+                  <strong className="asset-name" title={assetDisplayName(asset.original_name)}>
+                    {assetDisplayName(asset.original_name)}
                   </strong>
                   <button
                     type="button"
                     className="asset-rename-btn"
                     title="重命名这张素材"
-                    aria-label={`重命名 ${asset.original_name}`}
+                    aria-label={`重命名 ${assetDisplayName(asset.original_name)}`}
                     onClick={() => {
-                      setNameEditor({ asset, draft: asset.original_name })
+                      setNameEditor({ asset, draft: assetDisplayName(asset.original_name) })
                       setNameError(null)
                     }}
                   >
                     ✎
                   </button>
                 </div>
-                <span className="asset-dims tnum">
-                  {asset.width > 0 && asset.height > 0 ? `${asset.width} × ${asset.height}` : '尺寸由 AM/模型读取'}
-                </span>
                 {/* Tags double as shortcuts: clicking one filters the list by it. */}
                 <div className="asset-tags">
                   {(asset.tags ?? []).map((tag) => (
@@ -384,7 +373,7 @@ export default function AssetLibrary({
                   <button
                     type="button"
                     className="asset-tag-edit"
-                    aria-label={`编辑 ${asset.original_name} 的 Tag`}
+                    aria-label={`编辑 ${assetDisplayName(asset.original_name)} 的 Tag`}
                     onClick={() => openTagEditor(asset)}
                   >
                     {(asset.tags ?? []).length > 0 ? '✎' : '＋ Tag'}
@@ -417,8 +406,8 @@ export default function AssetLibrary({
             {pendingDelete.force
               ? '它被品牌配置、任务或历史版本引用。强制删除会让这些引用失效，已生成的海报不受影响。'
               : pendingDelete.assets.length > 1
-                ? `${pendingDelete.assets.slice(0, 3).map((asset) => asset.original_name).join('、')}${pendingDelete.assets.length > 3 ? ` 等 ${pendingDelete.assets.length} 张` : ''}删除后无法恢复。`
-                : `${pendingDelete.assets[0].original_name}删除后无法恢复。`}
+                ? `${pendingDelete.assets.slice(0, 3).map((asset) => assetDisplayName(asset.original_name)).join('、')}${pendingDelete.assets.length > 3 ? ` 等 ${pendingDelete.assets.length} 张` : ''}删除后无法恢复。`
+                : `${assetDisplayName(pendingDelete.assets[0].original_name)}删除后无法恢复。`}
           </p>
           <div className="brand-delete-modal-actions">
             <button type="button" onClick={() => setPendingDelete(null)} autoFocus>取消</button>
@@ -442,7 +431,7 @@ export default function AssetLibrary({
         >
           <div className="brand-delete-modal asset-tag-dialog" role="dialog" aria-modal="true" aria-labelledby="asset-tag-title">
             <strong id="asset-tag-title">编辑 Tag</strong>
-            <p>{tagEditor.asset.original_name} · 最多 {MAX_ASSET_TAGS} 个</p>
+            <p>{assetDisplayName(tagEditor.asset.original_name)} · 最多 {MAX_ASSET_TAGS} 个</p>
             <div className="asset-tag-editor">
               {tagEditor.tags.map((tag) => (
                 <span className="asset-tag-chip" key={tag}>

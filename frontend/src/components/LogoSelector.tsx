@@ -1,4 +1,5 @@
 import type { BrandLogoImage } from '../types'
+import { assetDisplayName } from '../assetNames'
 import { ZoomableImage } from './ImageLightbox'
 
 type Props = {
@@ -46,7 +47,7 @@ export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo
           {logos.map((logo) => {
             const active = logo.asset_id === selectedLogoId
             const highlighted = active && selectable
-            const name = logo.original_name || '品牌 Logo'
+            const name = assetDisplayName(logo.original_name) || '品牌 Logo'
             return (
               <div
                 key={logo.asset_id}

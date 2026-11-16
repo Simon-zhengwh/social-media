@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { assetDisplayName } from '../assetNames'
 import { hydrateImagePrompt, imageMention, imagePromptIssue, parseImagePrompt, serializeImagePrompt, type PromptImage } from '../imageMentions'
 import { ZoomableImage } from './ImageLightbox'
 
@@ -24,7 +25,7 @@ function updateChip(node: HTMLElement, images: PromptImage[]) {
   const index = images.findIndex(image => image.assetId === node.dataset.imageMention)
   const image = images[index]
   node.className = `image-mention-chip${image ? '' : ' is-invalid'}`
-  node.setAttribute('aria-label', image ? `图片${index + 1}：${image.name}` : '引用的图片已移除')
+  node.setAttribute('aria-label', image ? `图片${index + 1}：${assetDisplayName(image.name)}` : '引用的图片已移除')
   node.title = image?.name ?? '请删除该引用，或重新添加原图片'
   const thumbnail = document.createElement('img')
   thumbnail.alt = ''
@@ -278,7 +279,7 @@ export function ImageMentionEditor({ value, images, label, placeholder, disabled
             <div key={image.assetId} id={`${menuId}-${index}`} role="option" aria-selected={index === activeIndex}
               className={index === activeIndex ? 'is-active' : ''} onMouseDown={event => event.preventDefault()}
               onMouseMove={() => setQuery(previous => previous ? { ...previous, index } : null)} onClick={() => insert(image.assetId)}>
-              <img src={image.url} alt="" /><span><strong>图片{image.number}</strong><small>{image.name}</small></span>
+              <img src={image.url} alt="" /><span><strong>图片{image.number}</strong><small>{assetDisplayName(image.name)}</small></span>
             </div>
           )) : <p>没有匹配的图片，请先添加参考图。</p>}
         </div>, query.root,
@@ -318,7 +319,7 @@ export default function ImagePromptComposer({ images, maxImages = null, addedCou
       <div className="image-reference-strip">
         {images.map((image, index) => (
           <div className={`image-reference-tile${image.removable === false ? ' is-source' : ''}`} key={image.assetId}>
-            <ZoomableImage className="image-reference-preview" src={image.url} alt={`图片${index + 1}：${image.name}`} title={image.name} />
+            <ZoomableImage className="image-reference-preview" src={image.url} alt={`图片${index + 1}：${assetDisplayName(image.name)}`} title={assetDisplayName(image.name)} />
             <span className="image-reference-label">图片{index + 1}{image.removable === false ? ' · 当前图' : ''}</span>
             {onRemoveImage && image.removable !== false ? <button type="button" className="image-reference-remove" aria-label={`移除参考图片${index + 1}`}
               disabled={editorProps.disabled || uploading} onClick={() => onRemoveImage(image.assetId)}>×</button> : null}

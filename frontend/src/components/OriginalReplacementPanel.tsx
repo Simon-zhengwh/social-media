@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, applyOriginalReplacement, createOriginalReplacement, listOriginalReplacements, merchantPath, refreshOriginalReplacement, uploadAsset } from '../api'
 import type { Asset, OriginalReplacementTask, WholeImageTask } from '../types'
 import { parseServerDate } from '../time'
+import { assetDisplayName } from '../assetNames'
 import AssetPicker from './AssetPicker'
 import { ZoomableImage } from './ImageLightbox'
 
@@ -211,7 +212,7 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
               return <div key={item.id} className={`replacement-row original-replacement-row${item.target.trim() ? ' is-checked' : ''}`}>
                 <div className="original-replacement-choice">
                   <img src={asset.url} alt="" />
-                  <span className="original-replacement-name">{asset.original_name}</span>
+                  <span className="original-replacement-name">{assetDisplayName(asset.original_name)}</span>
                   <button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation)} onClick={() => setRows((previous) => previous.filter((candidate) => candidate.id !== item.id))}>移除</button>
                 </div>
                 <label htmlFor={`original-target-${item.id}`}>替换位置</label>

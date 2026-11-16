@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, createPosterEditBatch, getPosterEdit, getPosterEditBatch, uploadAsset } from '../api'
 import type { Asset, PosterEditOutput, PosterEditTask, WholeImageArtifact } from '../types'
 import { parseServerDate } from '../time'
+import { assetDisplayName } from '../assetNames'
 import AssetPicker from './AssetPicker'
 import CandidateCountSelector from './CandidateCountSelector'
 import { ZoomableImage } from './ImageLightbox'
@@ -100,8 +101,8 @@ export default function PosterEditStudio({ assets, assetsLoading, onLoadAssets, 
           <div className="poster-edit-reference-grid">
             {references.map((asset, index) => (
               <figure key={asset.id} className="poster-edit-reference">
-                <ZoomableImage src={asset.url} alt={asset.original_name} title={asset.original_name} />
-                <figcaption><strong>图 {index + 1}</strong><span>{asset.original_name}</span></figcaption>
+                <ZoomableImage src={asset.url} alt={assetDisplayName(asset.original_name)} title={assetDisplayName(asset.original_name)} />
+                <figcaption><strong>图 {index + 1}</strong><span>{assetDisplayName(asset.original_name)}</span></figcaption>
                 <button type="button" className="poster-edit-reference-remove" onClick={() => setReferences((items) => items.filter((item) => item.id !== asset.id))} disabled={busy} aria-label={`移除 ${asset.original_name}`}>×</button>
               </figure>
             ))}

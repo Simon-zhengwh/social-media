@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { assetDisplayName } from '../assetNames'
 import {
   ApiError,
   createBrand,
@@ -696,7 +697,7 @@ export default function BrandStudio({
                       alt={reference.original_name}
                       title={reference.original_name}
                     />
-                    <div className="brand-reference-meta"><strong>{reference.original_name}</strong><span>{reference.width} × {reference.height}</span></div>
+                    <div className="brand-reference-meta"><strong>{assetDisplayName(reference.original_name)}</strong><span>{reference.width} × {reference.height}</span></div>
                     <div className="brand-reference-actions">
                       {reference.is_cover ? <span className="brand-cover-badge">当前封面</span> : <button type="button" className="mp-btn-ghost mp-btn-small" onClick={() => void setCover(reference.asset_id)} disabled={coverBusyId !== null}>{coverBusyId === reference.asset_id ? '设置中…' : '设为封面'}</button>}
                       <button type="button" className="brand-reference-delete" onClick={() => setConfirmDelete({ target: 'reference', id: reference.asset_id })} disabled={deletingId === reference.asset_id}>删除</button>
