@@ -345,6 +345,12 @@ export default function App() {
   }
 
   const newDesignHref = newPosterDesignUrl(window.location.href)
+  // The sidebar entry is the only place brand styles are created, so the empty state links there.
+  const brandStudioHref = (() => {
+    const url = new URL(newDesignHref)
+    url.searchParams.set('view', 'brands')
+    return url.toString()
+  })()
 
   /*
     Agent benchmarks are a local QA tool: the deployed site hides the page even when a saved
@@ -396,6 +402,7 @@ export default function App() {
             userId={context.merchant.user_id}
             active={visibleView === 'whole'}
             newDesignHref={newDesignHref}
+            brandStudioHref={brandStudioHref}
             merchantProfile={(context.profile as MerchantProfile | null) ?? null}
             brands={brands}
             merchantLogos={merchantLogos}

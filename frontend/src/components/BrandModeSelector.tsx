@@ -9,6 +9,9 @@ type Props = {
   brandsError: string | null
   platformRequired: boolean
   mode: BrandMode
+  /** True when the platform/placement has no brand style, so the preset switch cannot be turned on. */
+  presetUnavailable?: boolean
+  brandStudioHref?: string
   references: Asset[]
   referencesUploading: boolean
   busy: boolean
@@ -31,6 +34,8 @@ export default function BrandModeSelector({
   brandsError,
   platformRequired,
   mode,
+  presetUnavailable = false,
+  brandStudioHref,
   references,
   referencesUploading,
   busy,
@@ -40,6 +45,8 @@ export default function BrandModeSelector({
   onRemoveReference,
   allowReferenceMode = true,
 }: Props) {
+  // An empty preset list still renders the block: silently dropping the style would hide the cause.
+  const showPreset = mode === 'preset' || presetUnavailable
   return (
     <div className="brand-field">
       <div className="brand-field-head">
@@ -50,8 +57,8 @@ export default function BrandModeSelector({
               type="checkbox"
               role="switch"
               aria-label="使用品牌风格"
-              checked={mode === 'preset'}
-              disabled={busy}
+              checked={mode === 'preset' && !presetUnavailable}
+              disabled={busy || presetUnavailable}
               onChange={(event) => onModeChange(event.target.checked ? 'preset' : 'none')}
             />
             <span aria-hidden="true" />
@@ -76,7 +83,7 @@ export default function BrandModeSelector({
         ))}
       </div> : null}
 
-      {mode === 'preset' ? (
+      {showPreset ? (
         brandsError ? (
           <div className="brand-empty brand-error" role="alert">
             <strong>品牌风格加载失败</strong>
@@ -89,8 +96,8 @@ export default function BrandModeSelector({
           </div>
         ) : brands.length === 0 ? (
           <div className="brand-empty">
-            <strong>{platformRequired ? '先选择发布平台和用途' : '当前平台和用途暂无匹配风格'}</strong>
-            <span>选择发布条件后会自动带出对应品牌风格。</span>
+            <strong>{platformRequired ? '先选择发布平台和用途' : '当前平台和用途暂无品牌风格'}</strong>
+            {brandStudioHref && !platformRequired ? <a href={brandStudioHref}>去创建品牌风格</a> : null}
           </div>
         ) : (
           <div className="brand-options" role="radiogroup" aria-label="预设品牌风格">

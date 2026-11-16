@@ -20,6 +20,8 @@ type Props = {
   brandsLoading: boolean
   brandsError: string | null
   brandMode: BrandMode
+  brandPresetUnavailable: boolean
+  brandStudioHref: string
   styleReferences: Asset[]
   styleReferencesUploading: boolean
   logoOptions: BrandLogoImage[]
@@ -60,6 +62,8 @@ export default function WholeImageForm({
   brandsLoading,
   brandsError,
   brandMode,
+  brandPresetUnavailable,
+  brandStudioHref,
   styleReferences,
   styleReferencesUploading,
   logoOptions,
@@ -135,6 +139,8 @@ export default function WholeImageForm({
         brandsError={brandsError}
         platformRequired={!selectedPlatformId}
         mode={brandMode}
+        presetUnavailable={brandPresetUnavailable}
+        brandStudioHref={brandStudioHref}
         references={styleReferences}
         referencesUploading={styleReferencesUploading}
         busy={busy}

@@ -43,13 +43,15 @@ import { DEFAULT_IMAGE_MODEL, IMAGE_MODEL_OPTIONS, normalizeImageModel } from '.
 import { defaultModelCounts, restoreModelCounts, mergeCandidates, modelGenerationState,
   submitModelRound, type ModelSubmission } from '../modelGeneration'
 import { candidateForModel } from '../modelGeneration'
-import { hydrateImagePrompt, imagePromptIssue, serializeImagePrompt, type PromptImage } from '../imageMentions'
+import { hydrateImagePrompt, serializeImagePrompt, type PromptImage } from '../imageMentions'
+import { generationBlockers, presetStyleUnavailable } from '../generationBlockers'
 import { readPosterSession, savePosterSession, type PosterDraftForm, type PosterSession } from '../posterSession'
 
 type Props = {
   userId: string
   active: boolean
   newDesignHref: string
+  brandStudioHref: string
   merchantProfile: MerchantProfile | null
   brands: BrandStyle[]
   // Merchant-level logos: shared by every platform style, and the poster form's default.
@@ -134,6 +136,7 @@ export default function WholeImageStudio({
   userId,
   active: visible,
   newDesignHref,
+  brandStudioHref,
   merchantProfile,
   brands,
   merchantLogos,
@@ -266,6 +269,13 @@ export default function WholeImageStudio({
     selectedBrandId && brandsForPlatform.some((brand) => brand.id === selectedBrandId)
       ? selectedBrandId
       : brandsForPlatform[0]?.id ?? ''
+  // Empty brand data must not lock the studio: the preset style degrades to "off" until one exists.
+  const brandPresetUnavailable = presetStyleUnavailable(brandMode, {
+    loading: brandsLoading,
+    error: brandsError,
+    matches: brandsForPlatform.length,
+  })
+  const effectiveBrandMode: BrandMode = brandPresetUnavailable ? 'none' : brandMode
   // Brand mode does not change the logo source: only the merchant's configured logos are offered.
   const baseLogoOptions: BrandLogoImage[] = merchantLogos
   // The first configured logo is the default in every brand mode; an explicit choice sticks.
@@ -310,7 +320,7 @@ export default function WholeImageStudio({
     if (acceptedRef.current || creating) return
     const form: PosterDraftForm = {
       products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId, selectedRatio,
-      selectedBrandId, brandMode, selectedLogoId, logoChoiceTouched, styleReferences,
+      selectedBrandId, brandMode: effectiveBrandMode, selectedLogoId, logoChoiceTouched, styleReferences,
       storeSelection, selectedModel, modelCounts,
     }
     const signature = JSON.stringify(form)
@@ -319,7 +329,7 @@ export default function WholeImageStudio({
     draftStartedRef.current = true
     setSessionSaveFailed(!savePosterSession(userId, merchantId, { kind: 'draft', workspaceId: workspaceRef.current, form }))
   }, [userId, merchantId, creating, products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId,
-    selectedRatio, selectedBrandId, brandMode, selectedLogoId, logoChoiceTouched, styleReferences,
+    selectedRatio, selectedBrandId, effectiveBrandMode, selectedLogoId, logoChoiceTouched, styleReferences,
     storeSelection, selectedModel, modelCounts])
 
   useEffect(() => {
@@ -342,11 +352,11 @@ export default function WholeImageStudio({
       platform_id: platformResolved,
       placement_id: effectivePlacementId,
       ratio: selectedRatio,
-      brand_mode: brandMode,
-      brand_id: brandMode === 'preset' ? effectiveBrandId : '',
+      brand_mode: effectiveBrandMode,
+      brand_id: effectiveBrandMode === 'preset' ? effectiveBrandId : '',
     })
   }, [
-    brandMode,
+    effectiveBrandMode,
     brandsLoading,
     effectiveBrandId,
     effectivePlacementId,
@@ -527,9 +537,19 @@ export default function WholeImageStudio({
   const busy = creating || active || editRunning || productsUploading || selectingOutput
   const formBusy = creating || productsUploading || styleReferencesUploading
   const promptImages: PromptImage[] = products.map(asset => ({ assetId: asset.id, name: asset.original_name, url: asset.url }))
-  const generationDisabled = formBusy || !prompt.trim() || products.length === 0 || Boolean(imagePromptIssue(prompt, promptImages)) ||
-    (brandMode === 'preset' && (brandsLoading || Boolean(brandsError) || !brandsForPlatform.some(brand => brand.id === effectiveBrandId))) ||
-    (Boolean(platformResolved) && (!selectedPlatform || !selectedPlacement))
+  // Every unmet condition is listed once, so the disabled button can explain itself instead of
+  // failing silently.
+  const blockers = generationBlockers({
+    promptImages,
+    prompt,
+    brandMode: effectiveBrandMode,
+    brandsLoading,
+    brandsError,
+    platformResolved,
+    platformReady: Boolean(selectedPlatform && selectedPlacement),
+    uploading: formBusy,
+  })
+  const generationDisabled = blockers.length > 0
   const canEdit = Boolean(task?.status === 'succeeded' && task.current_version_id && task.current_output_id)
   const currentOutput = task?.outputs.find(output => output.id === task.current_output_id) ?? task?.outputs[0]
   const currentPreview = currentOutput?.preview_url ?? task?.preview_url
@@ -563,7 +583,8 @@ export default function WholeImageStudio({
       setError('请先添加参考图')
       return
     }
-    if (brandMode === 'preset' && !brandsForPlatform.some((brand) => brand.id === effectiveBrandId)) {
+    if (brandMode === 'preset' && !brandPresetUnavailable &&
+      !brandsForPlatform.some((brand) => brand.id === effectiveBrandId)) {
       setError('请选择一个预设品牌风格')
       return
     }
@@ -580,8 +601,8 @@ export default function WholeImageStudio({
     const payload = {
             prompt: submittedPrompt,
             prompt_optimized: promptOptimized,
-            brand_id: brandMode === 'preset' ? effectiveBrandId : null,
-            brand_mode: brandMode,
+            brand_id: effectiveBrandMode === 'preset' ? effectiveBrandId : null,
+            brand_mode: effectiveBrandMode,
             logo_asset_id: effectiveLogoId || null,
             reference_asset_ids: products.map(asset => asset.id),
             style_reference_asset_ids: [],
@@ -889,7 +910,9 @@ export default function WholeImageStudio({
         selectedBrandId={effectiveBrandId}
         brandsLoading={brandsLoading}
         brandsError={brandsError}
-        brandMode={brandMode}
+        brandMode={effectiveBrandMode}
+        brandPresetUnavailable={brandPresetUnavailable}
+        brandStudioHref={brandStudioHref}
         styleReferences={styleReferences}
         styleReferencesUploading={styleReferencesUploading}
         logoOptions={logoOptions}
@@ -952,6 +975,7 @@ export default function WholeImageStudio({
           tasks={visibleCandidates}
           submissions={modelSubmissions}
           disabled={generationDisabled}
+          disabledReasons={blockers}
           onChange={(model, count) => setModelCounts(previous => ({ ...previous, [model]: count }))}
           onGenerate={(model) => void handleGenerate(model)}
           selectedModel={selectedModel}

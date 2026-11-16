@@ -1061,6 +1061,19 @@ label.product-add.is-disabled {
   font-size: 11px;
 }
 
+.brand-empty a {
+  margin-left: auto;
+  color: var(--color-secondary-600);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.brand-empty a:hover {
+  text-decoration: underline;
+}
+
 .brand-error {
   border-color: rgba(219, 55, 31, 0.28);
   background: rgba(219, 55, 31, 0.04);
@@ -4891,17 +4904,20 @@ label.product-add.is-disabled {
 .model-generate-button:hover:not(:disabled) { background: var(--color-secondary-700); }
 .model-generate-button:disabled { opacity: .45; cursor: not-allowed; }
 .model-generation-error { grid-column: 1 / -1; margin: 0; padding: 6px 0; font-size: 11px; color: #b42318; overflow-wrap: anywhere; }
+.model-generation-hint { grid-column: 1 / -1; margin: 0; padding: 6px 0; font-size: 11px; color: var(--color-neutral-500); overflow-wrap: anywhere; }
 .model-toolbar > .model-generation-error { padding: 0 14px 10px; }
+.model-toolbar > .model-generation-hint { padding: 0 14px 10px; }
 .poster-editor > .studio-preview { grid-column: 1; grid-row: 2; align-self: stretch; padding: 14px; border: 0; border-radius: 0 0 18px 18px; background: #f6f7fa; box-shadow: none; }
 .poster-editor.has-utility-panel > .studio-preview { border-bottom-right-radius: 0; }
 .poster-editor .preview-workspace { --poster-preview-height: clamp(280px, calc(100dvh - 280px), 940px); display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; min-width: 0; }
-.poster-editor .preview-workspace.has-candidates { grid-template-columns: 88px minmax(0, 1fr); }
+/* 候选列跟随右侧（预览 + 底部对话）整列高度，把预览下方的空白也利用起来。 */
+.poster-editor .preview-workspace.has-candidates { grid-template-columns: 88px minmax(0, 1fr); align-items: stretch; }
 .poster-editor .preview-main { min-width: 0; }
 .poster-editor .preview-frame { display: flex; align-items: center; justify-content: center; height: var(--poster-preview-height); border: 0; border-radius: 10px; background: transparent; }
 .poster-editor .poster-image-button { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
 .poster-editor .poster-image { display: block; min-width: 0; min-height: 0; max-width: 100%; max-height: 100%; object-fit: contain; }
-.poster-editor .candidate-carousel { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; height: var(--poster-preview-height); margin: 0; padding: 12px 8px; overflow: hidden; border: 0; border-right: 1px solid rgba(148, 163, 184, .18); border-radius: 0; background: transparent; }
-.poster-editor .candidate-carousel .candidate-model-groups { min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-width: thin; }
+.poster-editor .candidate-carousel { display: flex; flex: 1; flex-direction: column; align-items: stretch; align-self: stretch; gap: 8px; min-width: 0; min-height: 0; height: auto; max-height: clamp(320px, calc(100dvh - 140px), 1000px); margin: 0; padding: 12px 8px; overflow: hidden; border: 0; border-right: 1px solid rgba(148, 163, 184, .18); border-radius: 0; background: transparent; }
+.poster-editor .candidate-carousel .candidate-model-groups { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-width: thin; }
 .poster-editor .candidate-carousel .candidate-thumbnails { flex-direction: column; flex-wrap: nowrap; align-items: center; gap: 12px; padding: 6px 5px; }
 .poster-editor .candidate-carousel .candidate-thumbnail { width: 58px; height: 76px; }
 .poster-editor .preview-footer { width: min(100%, 680px); min-width: 0; margin: 10px auto 0; }

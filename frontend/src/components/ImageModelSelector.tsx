@@ -7,6 +7,8 @@ type Props = {
   tasks: WholeImageTask[]
   submissions: Partial<Record<ImageModel, ModelSubmission>>
   disabled: boolean
+  /** Unmet generation conditions, in the order the operator has to solve them. */
+  disabledReasons: string[]
   onChange: (model: ImageModel, count: number) => void
   onGenerate: (model: ImageModel) => void
   selectedModel: ImageModel
@@ -14,7 +16,7 @@ type Props = {
   onSelectModel: (model: ImageModel) => void
 }
 
-export default function ImageModelSelector({ counts, tasks, submissions, disabled, onChange, onGenerate,
+export default function ImageModelSelector({ counts, tasks, submissions, disabled, disabledReasons, onChange, onGenerate,
   selectedModel, selectionDisabled, onSelectModel }: Props) {
   const historicalModels = [...new Set(tasks.flatMap(task => {
     const model = normalizeImageModel(task.input.image_model)
@@ -38,6 +40,9 @@ export default function ImageModelSelector({ counts, tasks, submissions, disable
     const submission = submissions[model]
     const running = Boolean(submission && !submission.error) || state.running
     const count = counts[model] ?? 0
+    // A zero count disables the button as well, so it has to say why on its own.
+    const reasons = !count ? [...disabledReasons, '请选择生成张数'] : disabledReasons
+    const blocked = disabled || !count || !available
     // The count sits in the pill row right after the button, so the button only carries the verb.
     const action = state.hasHistory ? '再生成' : '生成'
     const total = submission?.count ?? state.total
@@ -47,11 +52,15 @@ export default function ImageModelSelector({ counts, tasks, submissions, disable
     return (
       <button type="button" className="model-generate-button" disabled={disabled || running || !count || !available}
         aria-label={`${imageModelLabel(model)} ${running ? '生成中' : action}`}
+        title={blocked && !running && reasons.length ? reasons.join('\n') : undefined}
         onClick={() => onGenerate(model)}>
         {running ? `${submission && !submission.error ? '提交中' : '生成中'} ${completed}/${total}` : action}
       </button>
     )
   }
+  const blockedReasons = !available
+    ? ['当前模型不可用，请切换其他模型']
+    : !(counts[selectedModel] ?? 0) ? [...disabledReasons, '请选择生成张数'] : disabledReasons
   return (
     <div className="model-toolbar" aria-label="图片模型与生成">
       <strong className="model-toolbar-label">图片模型</strong>
@@ -70,6 +79,7 @@ export default function ImageModelSelector({ counts, tasks, submissions, disable
         <div className="model-toolbar-count">{countOptions(selectedModel)}<span className="model-count-unit">张</span></div>
       </div>
       {submissions[selectedModel]?.error ? <p className="model-generation-error" role="alert">{submissions[selectedModel]?.error}</p> : null}
+      {!submissions[selectedModel]?.error && blockedReasons.length ? <p className="model-generation-hint" role="status">{blockedReasons[0]}</p> : null}
     </div>
   )
 }
