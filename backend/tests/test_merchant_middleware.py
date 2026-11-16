@@ -23,9 +23,14 @@ class FakeAM:
         return {"merchant_id": merchant_id, "brand": {"canonical_name": "Merchant"}, "locations": []}
 
 
-def _app():
+def _app(imported_merchant_ids=("m1",)):
     app = FastAPI()
     raw = mongomock.MongoClient().db
+    if imported_merchant_ids:
+        raw.merchants.insert_many(
+            {"_id": merchant_id, "name": f"Imported {merchant_id}"}
+            for merchant_id in imported_merchant_ids
+        )
     maintenance.initialize(raw)
     app.state.raw_db = raw
     app.state.settings = Settings(social_media_origin="https://social-media.connexup-uat.net")
@@ -34,7 +39,11 @@ def _app():
 
     @app.get("/api/merchants/{merchant_id}/probe")
     def probe(merchant_id: str, request: Request):
-        return {"merchant_id": request.state.merchant_id, "db_merchant": request.state.db.merchant_id}
+        return {
+            "merchant_id": request.state.merchant_id,
+            "db_merchant": request.state.db.merchant_id,
+            "merchant_name": request.state.merchant_context["merchant_name"],
+        }
 
     @app.post("/api/merchants/{merchant_id}/probe")
     def write_probe(merchant_id: str, request: Request):
@@ -67,6 +76,58 @@ def test_middleware_requires_am_session_and_csrf_for_writes():
         },
     ).status_code == 200
     assert raw.assets.find_one({"_id": "a"})["merchant_id"] == "m1"
+
+
+def test_uat_merchant_name_comes_from_the_imported_catalog():
+    app, _ = _app()
+
+    response = TestClient(app).get(
+        "/api/merchants/m1/probe",
+        headers={"Cookie": "AMSessionId=good"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["merchant_name"] == "Imported m1"
+
+
+def test_profileless_merchant_can_reach_asset_routes_without_loading_a_brand_profile():
+    app, _ = _app()
+
+    class ProfilelessAM(FakeAM):
+        def profile(self, cookie, merchant_id):
+            raise AssertionError("asset requests must not require a brand profile")
+
+    app.state.am = ProfilelessAM()
+
+    @app.post("/api/merchants/m1/assets")
+    def asset_probe(request: Request):
+        return {"profile": request.state.merchant_profile}
+
+    response = TestClient(app).post(
+        "/api/merchants/m1/assets",
+        headers={
+            "Cookie": "AMSessionId=good",
+            "Origin": "https://social-media.connexup-uat.net",
+            "X-Media-Request": "1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"profile": None}
+
+
+def test_unimported_am_merchant_cannot_be_opened_directly():
+    app, raw = _app(imported_merchant_ids=())
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/merchants/m1/probe",
+        headers={"Cookie": "AMSessionId=good"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "merchant_not_imported"
+    assert raw.merchants.count_documents({"_id": "m1"}) == 0
 
 
 def test_middleware_returns_503_when_maintenance_enabled():
@@ -125,6 +186,7 @@ def _bypass_app(origin: str = "http://127.0.0.1:5173", bypass: bool = True, merc
             },
         }
     )
+    raw.merchants.insert_one({"_id": merchant, "name": "SEE JOY喜聚"})
     app.state.raw_db = raw
     app.state.settings = Settings(
         social_media_origin=origin,
@@ -168,17 +230,29 @@ def test_local_bypass_serves_context_and_local_store_without_a_cookie():
     }
 
 
-def test_local_bypass_names_each_configured_merchant():
-    app, _ = _bypass_app()
-    app.state.settings.am_bypass_merchants = (
-        "keke=Keke Food可可小卤; szechuan=Szechuan Gourmet"
+def test_local_bypass_uses_the_imported_merchant_name():
+    app, raw = _bypass_app()
+    raw.merchants.update_one(
+        {"_id": "local-merchant"}, {"$set": {"name": "Imported local name"}}
     )
+
+    response = TestClient(app).get("/api/merchants/local-merchant/probe")
+
+    assert response.status_code == 200
+    assert response.json()["merchant_name"] == "Imported local name"
+
+
+def test_local_bypass_uses_only_imported_merchants_and_rejects_unknown_ids():
+    app, raw = _bypass_app()
+    raw.merchants.insert_many([
+        {"_id": "keke", "name": "Keke Food可可小卤"},
+        {"_id": "szechuan", "name": "Szechuan Gourmet"},
+    ])
     client = TestClient(app)
     assert client.get("/api/merchants/local-merchant/probe").json()["merchant_name"] == "SEE JOY喜聚"
     assert client.get("/api/merchants/keke/probe").json()["merchant_name"] == "Keke Food可可小卤"
     assert client.get("/api/merchants/szechuan/probe").json()["merchant_name"] == "Szechuan Gourmet"
-    # Unknown ids keep the configured default instead of an empty label.
-    assert client.get("/api/merchants/unknown/probe").json()["merchant_name"] == "SEE JOY喜聚"
+    assert client.get("/api/merchants/unknown/probe").status_code == 404
 
 
 def test_local_bypass_reads_the_stored_profile_for_generation_requests():

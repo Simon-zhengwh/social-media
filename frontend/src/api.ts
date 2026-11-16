@@ -76,7 +76,7 @@ export function merchantPath(path: string): string {
   if (
     path === '/api/platforms' ||
     path === '/api/health' ||
-    // The merchant list has no merchant yet: it is what picks one.
+    // Merchant selection requires an existing AM context, validated by the server.
     path === '/api/merchants' ||
     path.startsWith('/api/merchants/') ||
     path.startsWith('/api/merchants?')
@@ -174,14 +174,20 @@ export type MerchantContext = {
 
 export type MerchantOption = { id: string; name: string }
 
+function requireMerchantContext(): string {
+  const merchantId = merchantIdFromLocation()
+  if (!merchantId) throw new ApiError('缺少商家上下文，请从 AM Console 重新进入', 'merchant_context_missing')
+  return merchantId
+}
+
 /**
- * The merchants the operator may switch to.
- *
- * Unscoped on purpose: this is the call that picks a merchant, so it cannot carry one.
+ * The imported social-media merchant catalog.
+ * The current merchant is sent only as an AM session context for authorization.
  */
 export async function listMerchants(keyword = ''): Promise<MerchantOption[]> {
-  const query = keyword.trim() ? `?keyword=${encodeURIComponent(keyword.trim())}` : ''
-  const page = await apiFetch(`/api/merchants${query}`)
+  const params = new URLSearchParams({ context_merchant_id: requireMerchantContext() })
+  if (keyword.trim()) params.set('keyword', keyword.trim())
+  const page = await apiFetch(`/api/merchants?${params.toString()}`)
   const result = await parseResponse<{ total: number; merchants: MerchantOption[] }>(page)
   return result.merchants ?? []
 }

@@ -7,7 +7,6 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from app.config import local_bypass_enabled
-from app.local_merchants import local_merchant_name
 from app.services import maintenance, merchant_profile
 from app.services.am_client import AMClientError
 from app.services.media_object_store import create_merchant_store
@@ -18,7 +17,7 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 LOCAL_ORIGINS = frozenset({"http://127.0.0.1:5173", "http://localhost:5173"})
 
 
-def _local_bypass_context(request: Request, merchant_id: str) -> dict[str, object] | None:
+def _local_bypass_context(request: Request, merchant_name: str) -> dict[str, object] | None:
     """Return a stand-in merchant context when AM Console is bypassed locally.
 
     Enabled only through AM_BYPASS_LOCAL and only when this process serves a loopback
@@ -31,7 +30,7 @@ def _local_bypass_context(request: Request, merchant_id: str) -> dict[str, objec
     return {
         "user_id": "local-dev",
         "user_name": "本地开发",
-        "merchant_name": local_merchant_name(settings, merchant_id),
+        "merchant_name": merchant_name,
     }
 
 
@@ -47,7 +46,11 @@ async def merchant_context_middleware(request: Request, call_next):
 
     merchant_id = unquote(match.group(1))
     cookie = request.headers.get("cookie", "").strip()
-    bypass = _local_bypass_context(request, merchant_id)
+    merchant = request.app.state.raw_db.merchants.find_one({"_id": merchant_id})
+    if merchant is None:
+        return _error(404, "merchant_not_imported", "商户未导入 social-media")
+    merchant_name = str(merchant.get("name") or merchant_id)
+    bypass = _local_bypass_context(request, merchant_name)
     try:
         if bypass is not None:
             access = {"merchant_id": merchant_id, **bypass}
@@ -62,7 +65,7 @@ async def merchant_context_middleware(request: Request, call_next):
         "user_id": access.get("user_id"),
         "user_name": access.get("user_name"),
         "merchant_id": access.get("merchant_id") or merchant_id,
-        "merchant_name": access.get("merchant_name"),
+        "merchant_name": merchant_name,
     }
     needs_generation_profile = request.method.upper() == "POST" and request.url.path.endswith(
         ("/prompts/optimize", "/whole-image/tasks")

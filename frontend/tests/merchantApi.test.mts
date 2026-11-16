@@ -11,6 +11,7 @@ import {
   createWholeImageEdit,
   merchantPath,
   refreshOriginalReplacement,
+  listMerchants,
 } from '../src/api.ts'
 import type { WholeImageTask } from '../src/types.ts'
 
@@ -23,6 +24,21 @@ function mockBrowser(search = '?merchant_id=merchant%2Fa') {
   }
   return requests
 }
+
+test('merchant picker reads the imported catalog with the active AM context', async () => {
+  const requests = mockBrowser('?merchant_id=context%2Fa')
+  await listMerchants('  饮品  ')
+
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].path, '/api/merchants?context_merchant_id=context%2Fa&keyword=%E9%A5%AE%E5%93%81')
+  assert.equal(requests[0].init?.credentials, 'same-origin')
+})
+
+test('merchant list requests require an active merchant context', async () => {
+  const requests = mockBrowser('')
+  await assert.rejects(listMerchants('merchant'), /缺少商家上下文/)
+  assert.equal(requests.length, 0)
+})
 
 test('original replacement requests retain merchant scope and write protection', async () => {
   const requests = mockBrowser()

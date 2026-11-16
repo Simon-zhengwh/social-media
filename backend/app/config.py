@@ -68,10 +68,6 @@ class Settings(BaseSettings):
     # production; merchant scoping still applies to every query.
     am_bypass_local: bool = False
     am_bypass_merchant_id: str = ""
-    # Display name for the primary local merchant.
-    am_bypass_merchant_name: str = "SEE JOY喜聚"
-    # Extra merchants offered under the local bypass: "<merchant_id>=<name>;...".
-    am_bypass_merchants: str = ""
     social_media_origin: str = "https://social-media.connexup-uat.net"
     social_media_url: str = "https://social-media.connexup-uat.net"
 

@@ -109,6 +109,7 @@ def demo_data(tmp_path):
     (tmp_path / "objects/prepared").mkdir(parents=True)
     (tmp_path / "objects/prepared/present.png").write_bytes(b"test")
     db = mongomock.MongoClient().db
+    db.merchants.insert_one({"_id": "demo", "name": "Imported Demo"})
     db.assets.insert_many([
         {"_id": "present", "merchant_id": "demo", "path": "prepared/present.png"},
         {"_id": "missing", "merchant_id": "demo", "path": "prepared/missing.png"},
@@ -117,6 +118,16 @@ def demo_data(tmp_path):
     db.brands.insert_one({"_id": "brand", "merchant_id": "demo"})
     db.whole_tasks.insert_one({"_id": "task", "merchant_id": "demo", "status": "succeeded"})
     return settings, db
+
+
+def test_local_preflight_requires_the_default_merchant_to_be_imported(demo_data):
+    from scripts.local_dev import LocalDevError, check_local_data
+
+    settings, db = demo_data
+    db.merchants.delete_one({"_id": "demo"})
+
+    with pytest.raises(LocalDevError, match="merchants 集合"):
+        check_local_data(settings, db)
 
 
 def test_local_preflight_reports_missing_files_without_changing_data(demo_data):
@@ -170,7 +181,7 @@ def test_local_preflight_requires_existing_merchant_and_media_directory(demo_dat
 
     settings, db = demo_data
     settings.am_bypass_merchant_id = "nonexistent"
-    with pytest.raises(LocalDevError, match="商户"):
+    with pytest.raises(LocalDevError, match="AM_BYPASS_MERCHANT_ID"):
         check_local_data(settings, db)
     settings.am_bypass_merchant_id = "demo"
     settings.storage_dir = str(settings.storage_path / "nonexistent")

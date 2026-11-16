@@ -51,6 +51,7 @@ def _initialize_indexes(db) -> None:
     db.material_filter_attempts.create_index([("merchant_id", 1), ("scheme_id", 1)])
     db.material_filter_attempts.create_index([("merchant_id", 1), ("scheme_id", 1), ("file_id", 1), ("source_sha256", 1), ("created_at", -1)])
     db.assets.create_index([("merchant_id", 1), ("sha256", 1)])
+    db.merchants.create_index([("name", 1)])
     db.assets.create_index([("merchant_id", 1), ("created_at", -1)])
     db.brands.create_index([("merchant_id", 1), ("created_at", 1)])
     db.brands.create_index([("merchant_id", 1), ("reference_asset_ids", 1)])

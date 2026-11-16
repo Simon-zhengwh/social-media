@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.api_errors import am_http_error
 from app.middleware import is_local_bypass as _local_bypass
-from app.local_merchants import local_merchant_catalog
 from app.request_context import request_db
 from app.services import am_assets, merchant_profile
 from app.services.am_client import AMClientError
@@ -17,28 +16,38 @@ router = APIRouter(tags=["merchant-context"])
 merchant_list_router = APIRouter(prefix="/api/merchants", tags=["merchants"])
 
 
-@merchant_list_router.get("")
-def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
-    """The merchants the operator may switch to.
-
-    Same list the AM Console launcher shows, read with the caller's own session. It is
-    deliberately not scoped to one merchant: it exists to choose one.
-    """
+def _validate_list_context(request: Request) -> None:
     if _local_bypass(request):
-        # No console session locally: configuration decides which merchants exist.
-        merchants = local_merchant_catalog(request.app.state.settings)
-        return {"total": len(merchants), "merchants": merchants}
-    am = request.app.state.am
+        return
+    context_merchant_id = str(request.query_params.get("context_merchant_id") or "").strip()
+    if not context_merchant_id:
+        raise HTTPException(status_code=400, detail="缺少 AM 商户上下文")
+    if request.app.state.raw_db.merchants.find_one({"_id": context_merchant_id}, {"_id": 1}) is None:
+        raise HTTPException(status_code=404, detail="当前商户未导入 social-media")
     try:
-        payload = am.search_merchants(request.headers.get("cookie", ""), keyword=keyword)
+        request.app.state.am.access(
+            request.headers.get("cookie", ""), context_merchant_id
+        )
     except AMClientError as exc:
         raise am_http_error(exc) from exc
+
+
+def _merchant_catalog(raw_db: Any, keyword: str) -> list[dict[str, str]]:
+    needle = keyword.strip().casefold()
     merchants = [
-        {"id": str(item.get("merchant_id") or ""), "name": str(item.get("name") or "")}
-        for item in payload.get("merchants") or []
-        if item.get("merchant_id")
+        {"id": str(record["_id"]), "name": str(record.get("name") or record["_id"])}
+        for record in raw_db.merchants.find({}, {"_id": 1, "name": 1})
+        if not needle or needle in str(record.get("name") or record["_id"]).casefold()
     ]
-    return {"total": int(payload.get("total") or len(merchants)), "merchants": merchants}
+    return sorted(merchants, key=lambda item: (item["name"].casefold(), item["id"]))
+
+
+@merchant_list_router.get("")
+def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
+    """List every manually imported merchant; AM validates only the current session context."""
+    _validate_list_context(request)
+    merchants = _merchant_catalog(request.app.state.raw_db, keyword)
+    return {"total": len(merchants), "merchants": merchants}
 
 
 @router.get("/context")

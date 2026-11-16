@@ -39,10 +39,12 @@ def validate_local_settings(settings: Settings) -> None:
 
 def check_local_data(settings: Settings, db: Any, *, recover_interrupted: bool = False) -> dict[str, Any]:
     validate_local_settings(settings)
+    merchant_id = settings.am_bypass_merchant_id.strip()
+    if db.merchants.find_one({"_id": merchant_id}, {"_id": 1}) is None:
+        raise LocalDevError("AM_BYPASS_MERCHANT_ID 尚未导入 MongoDB merchants 集合。")
     objects = (settings.storage_path / "objects").resolve()
     if not objects.is_dir():
         raise LocalDevError("STORAGE_DIR 下没有 objects 目录，请指向现有 demo 的 local_media 目录。")
-    merchant_id = settings.am_bypass_merchant_id.strip()
     query = {"merchant_id": merchant_id}
     counts = {name: db[name].count_documents(query) for name in ("assets", "brands", "whole_tasks")}
     if not any(counts.values()) and db.merchant_profiles.find_one({"_id": merchant_id}) is None:
