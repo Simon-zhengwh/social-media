@@ -5,28 +5,21 @@ from datetime import datetime, timezone
 from io import BytesIO
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from PIL import Image, ImageOps
 
 from app.api_paths import asset_url, brand_cover_url
-from app.request_context import request_db, request_merchant_id, request_profile, request_store
+from app.request_context import request_db, request_merchant_id, request_store
 from app.schemas import BrandUpdate, DuplicateBrandRequest
 from app.services import (
     asset_records,
     brand_rules,
-    brand_seed,
     brand_style,
     merchant_logos,
-    merchant_profile,
     platform_presets,
 )
 
 router = APIRouter(prefix="/brands", tags=["brands"])
-
-AM_HTTP = httpx.Client(timeout=30, follow_redirects=True)
-MAX_SEED_LOGO_BYTES = 20_000_000
-
 
 def _brand_document(db: Any, brand_id: str) -> dict[str, Any]:
     document = db.brands.find_one({"_id": brand_id})
@@ -68,7 +61,7 @@ def _brand_detail(request: Request, db: Any, document: dict[str, Any]) -> dict[s
     logo_images = merchant_logos.images(db, merchant_id)
     return {
         "id": brand.id,
-        "merchant_profile": (request_profile(request) if getattr(getattr(request, "state", None), "merchant_id", None) else merchant_profile.get_profile(db, brand.merchant_id)),
+        "merchant_profile": None,
         "name": brand.name,
         "short_name": brand.short_name,
         "summary": brand.summary,
@@ -91,36 +84,6 @@ def _brand_detail(request: Request, db: Any, document: dict[str, Any]) -> dict[s
         "logo_images": logo_images,
         "reference_images": references,
     }
-
-
-def _seed_profile(profile: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Reduce the projected AM profile to the shape brand_seed reads."""
-    if not profile:
-        return None
-    brand = profile.get("raw_brand")
-    return {
-        "merchant_id": profile.get("source_record_id") or profile.get("id") or "",
-        "merchant_name": profile.get("name") or "",
-        "brand": brand if isinstance(brand, dict) else {},
-    }
-
-
-def _fetch_remote_image(url: str) -> bytes:
-    """Download a merchant logo for seeding; bounded so a bad URL cannot fill memory.
-
-    Failures are raised, not swallowed here: the seed keeps the style and only drops the logo,
-    so a broken link never costs the operator the derived fields.
-    """
-    try:
-        response = AM_HTTP.get(url, follow_redirects=True)
-    except httpx.RequestError as exc:
-        raise ValueError(f"下载商户 Logo 失败：{exc}") from exc
-    if response.status_code != 200:
-        raise ValueError(f"下载商户 Logo 失败（HTTP {response.status_code}）")
-    data = response.content
-    if len(data) > MAX_SEED_LOGO_BYTES:
-        raise ValueError("商户 Logo 超过允许导入的大小")
-    return data
 
 
 @router.get("")
@@ -169,29 +132,6 @@ def create_brand(payload: BrandUpdate, request: Request) -> dict[str, Any]:
     except Exception:
         db.brands.delete_one({"_id": brand_id})
         raise
-
-
-@router.post("/initialize-from-profile", status_code=201)
-def initialize_from_profile(request: Request) -> dict[str, Any]:
-    """Create the merchant's first style from its AM brand profile.
-
-    The profile is already loaded by the merchant middleware for this request; when it is
-    missing the merchant has no AM brand record and there is nothing to derive a style from.
-    """
-    db = request_db(request)
-    merchant_id = request_merchant_id(request)
-    try:
-        document, created = brand_seed.initialize(
-            db,
-            _seed_profile(request_profile(request)),
-            settings=request.app.state.settings,
-            store=request_store(request),
-            merchant_id=merchant_id,
-            fetch_image=_fetch_remote_image,
-        )
-    except brand_seed.SeedError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    return {**_brand_detail(request, db, document), "created": created}
 
 
 @router.get("/{brand_id}")

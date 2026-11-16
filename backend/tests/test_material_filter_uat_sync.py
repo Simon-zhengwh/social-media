@@ -312,6 +312,37 @@ def _reset_error() -> httpx.ReadError:
     return httpx.ReadError("[Errno 10054] 远程主机强迫关闭了一个现有的连接。")
 
 
+def test_access_probe_does_not_treat_404_as_a_valid_session():
+    transport = httpx.MockTransport(lambda _: httpx.Response(
+        404, json={"error": {"code": "MERCHANT_NOT_FOUND", "message": "merchant not found"}},
+    ))
+    with httpx.Client(base_url="https://uat.test", transport=transport) as client:
+        with pytest.raises(sync_service.SyncError, match="404"):
+            sync_service._probe_access(client, "missing")
+
+
+def test_sync_stops_before_upload_when_merchant_access_is_rejected(db, settings):
+    scheme = _scheme(db, settings)
+    _picked(db, settings, scheme, data=_jpeg(), name="a.jpg")
+    _picked(db, settings, scheme, data=_jpeg(), name="b.jpg")
+    uploads = []
+
+    def handler(request):
+        if request.method == "POST":
+            uploads.append(request)
+        return httpx.Response(404, json={"error": {"message": "merchant not found"}})
+
+    sync = sync_service.start_sync(
+        db, settings, scheme, cookie="AMSessionId=ok", transport=httpx.MockTransport(handler),
+    )
+    finished = _wait(db, sync["_id"])
+    assert finished["status"] == "failed"
+    assert "404" in finished["error"]
+    assert "merchant not found" in finished["error"]
+    assert finished["counters"]["failed"] == 1
+    assert uploads == []
+
+
 def test_reset_during_upload_surfaces_the_hidden_401(db, settings):
     scheme = _scheme(db, settings)
     _picked(db, settings, scheme, data=_jpeg(), name="a.jpg")

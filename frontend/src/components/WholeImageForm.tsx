@@ -3,13 +3,11 @@ import PlatformSelector from './PlatformSelector'
 import BrandModeSelector from './BrandModeSelector'
 import PromptField from './PromptField'
 import LogoSelector from './LogoSelector'
-import StoreInfoSelector, { type StoreSelection } from './StoreInfoSelector'
 import type {
   Asset,
   BrandMode,
   BrandStyle,
   BrandLogoImage,
-  MerchantStore,
   PlatformPreset,
   Ratio,
 } from '../types'
@@ -26,9 +24,6 @@ type Props = {
   styleReferencesUploading: boolean
   logoOptions: BrandLogoImage[]
   selectedLogoId: string
-  stores: MerchantStore[]
-  storeSelection: StoreSelection
-  onStoreSelectionChange: (next: StoreSelection) => void
   platforms: PlatformPreset[]
   platformsLoading: boolean
   platformsError: string | null
@@ -68,9 +63,6 @@ export default function WholeImageForm({
   styleReferencesUploading,
   logoOptions,
   selectedLogoId,
-  stores,
-  storeSelection,
-  onStoreSelectionChange,
   platforms,
   platformsLoading,
   platformsError,
@@ -158,13 +150,6 @@ export default function WholeImageForm({
         onToggleLogo={onToggleLogo}
       />
 
-      <StoreInfoSelector
-        stores={stores}
-        value={storeSelection}
-        disabled={busy}
-        onChange={onStoreSelectionChange}
-      />
-
       <PromptField
         label="设计需求"
         required
@@ -188,9 +173,6 @@ export default function WholeImageForm({
           product_asset_ids: [],
           platform_id: selectedPlatform?.id ?? selectedPlatformId ?? null,
           placement_id: selectedPlacementId || null,
-          include_store_address: storeSelection.enabled && storeSelection.address,
-          include_store_phone: storeSelection.enabled && storeSelection.phone,
-          store_place_id: storeSelection.enabled ? (storeSelection.placeId || stores[0]?.place_id || null) : null,
         }}
         onPromptChange={onPromptChange}
       />

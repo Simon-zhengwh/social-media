@@ -32,7 +32,8 @@ SYNC_COLLECTION = "material_filter_syncs"
 MAX_ASSET_TAGS = 5
 COOKIE_INVALID_CODE = "uat_cookie_invalid"
 WRITE_REJECTED_CODE = "uat_write_rejected"
-FATAL_CODES = frozenset({COOKIE_INVALID_CODE, WRITE_REJECTED_CODE})
+ACCESS_REJECTED_CODE = "uat_access_rejected"
+FATAL_CODES = frozenset({COOKIE_INVALID_CODE, WRITE_REJECTED_CODE, ACCESS_REJECTED_CODE})
 # What UAT rejects with before it has read the upload body: it answers and closes, so the
 # client sees WinError 10054 instead of the status code the operator needs.
 EARLY_REJECT_STATUSES = {401, 403}
@@ -355,6 +356,17 @@ def _probe_access(client: httpx.Client, merchant_id: str) -> None:
     except CONNECTION_ERRORS as exc:
         raise SyncError("uat_unavailable", f"无法连接 UAT：{exc}", 502) from exc
     _reject_if_unauthenticated(response)
+    if response.status_code != 200:
+        try:
+            error = response.json().get("error") or {}
+            detail = str(error.get("message") or error.get("code") or "")[:160]
+        except (ValueError, AttributeError):
+            detail = ""
+        raise SyncError(
+            ACCESS_REJECTED_CODE,
+            f"UAT 商户访问检查失败（HTTP {response.status_code}）" + (f"：{detail}" if detail else ""),
+            response.status_code,
+        )
 
 
 def collect_names(client: httpx.Client, merchant_id: str, path: str) -> set[str]:
@@ -506,6 +518,8 @@ def run_sync(
             label = row["original_name"]
             db[SYNC_COLLECTION].update_one({"_id": sync_id}, {"$set": {"current": label}})
             try:
+                if counters["done"] == 0:
+                    _probe_access(client, merchant_id)
                 path = store.scheme_directory(settings, scheme) / str(row["output_path"])
                 if not path.is_file():
                     raise SyncError("output_missing", f"本机副本不存在：{path.name}", 404)

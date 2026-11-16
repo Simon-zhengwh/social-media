@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from app.api_errors import am_http_error
 from app.middleware import is_local_bypass as _local_bypass
 from app.request_context import request_db
-from app.services import am_assets, merchant_profile, poster_finalizations
+from app.services import am_assets, poster_finalizations
 from app.services.am_client import AMClientError
 
 router = APIRouter(tags=["merchant-context"])
@@ -53,18 +53,9 @@ def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
 @router.get("/context")
 def get_merchant_context(merchant_id: str, request: Request) -> dict[str, Any]:
     bypass = _local_bypass(request)
-    if bypass:
-        projected = merchant_profile.stored_profile(request.app.state.raw_db, merchant_id)
-    else:
-        try:
-            profile = merchant_profile.load_profile(request.app.state.am, request.state.am_cookie, merchant_id)
-        except AMClientError as exc:
-            raise am_http_error(exc) from exc
-        projected = merchant_profile.project_profile(profile)
-        request.state.merchant_profile = projected
     return {
         "merchant": request.state.merchant_context,
-        "profile": projected,
+        "profile": None,
         "features": {
             "am_media_library": not bypass,
             "maintenance_cli": True,

@@ -24,7 +24,7 @@ import {
   readStoredMerchantId,
   storeMerchantId,
 } from './preferences'
-import type { Asset, BrandLogoImage, BrandStyle, MerchantProfile, PlatformPreset } from './types'
+import type { Asset, BrandLogoImage, BrandStyle, PlatformPreset } from './types'
 import { newPosterDesignUrl } from './posterSession'
 
 function readView(): AppView {
@@ -403,7 +403,6 @@ export default function App() {
             active={visibleView === 'whole'}
             newDesignHref={newDesignHref}
             brandStudioHref={brandStudioHref}
-            merchantProfile={(context.profile as MerchantProfile | null) ?? null}
             brands={brands}
             merchantLogos={merchantLogos}
             brandsLoading={brandsLoading}
@@ -438,7 +437,6 @@ export default function App() {
           null
         ) : visibleView === 'brands' ? (
           <BrandStudio
-            merchantProfile={(context?.profile as MerchantProfile | null) ?? null}
             brands={brands}
             merchantLogos={merchantLogos}
             platforms={platforms}

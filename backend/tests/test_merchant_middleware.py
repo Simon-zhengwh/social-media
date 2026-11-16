@@ -130,6 +130,25 @@ def test_unimported_am_merchant_cannot_be_opened_directly():
     assert raw.merchants.count_documents({"_id": "m1"}) == 0
 
 
+def test_context_does_not_request_a_restaurant_profile():
+    from app.routes.merchant_context import router
+
+    app, _ = _app()
+
+    class ProfilelessAM(FakeAM):
+        def profile(self, cookie, merchant_id):
+            raise AssertionError("context must not request restaurant profiles")
+
+    app.state.am = ProfilelessAM()
+    app.include_router(router, prefix="/api/merchants/{merchant_id}")
+    response = TestClient(app).get(
+        "/api/merchants/m1/context", headers={"Cookie": "AMSessionId=good"},
+    )
+    assert response.status_code == 200
+    assert response.json()["profile"] is None
+    assert response.json()["merchant"]["merchant_name"] == "Imported m1"
+
+
 def test_middleware_returns_503_when_maintenance_enabled():
     app, raw = _app()
     maintenance.enable(raw)
@@ -145,17 +164,18 @@ def test_middleware_returns_503_when_maintenance_enabled():
     assert raw.assets.count_documents({}) == 0
 
 
-@pytest.mark.parametrize(("method", "path", "expects_profile"), [
-    ("POST", "/api/merchants/m1/prompts/optimize", True),
-    ("POST", "/api/merchants/m1/whole-image/tasks", True),
-    ("GET", "/api/merchants/m1/whole-image/tasks", False),
+@pytest.mark.parametrize(("method", "path"), [
+    ("POST", "/api/merchants/m1/prompts/optimize"),
+    ("POST", "/api/merchants/m1/whole-image/tasks"),
+    ("GET", "/api/merchants/m1/whole-image/tasks"),
+    ("GET", "/api/merchants/m1/brands"),
 ])
-def test_generation_and_optimizer_requests_load_am_profile(method, path, expects_profile):
+def test_merchant_requests_do_not_load_restaurant_profiles(method, path):
     app, _ = _app()
 
     class ProfileAM(FakeAM):
         def profile(self, cookie, merchant_id):
-            return {"merchant_id": merchant_id, "brand": {"positioning": "AM_BACKGROUND"}}
+            raise AssertionError("restaurant profiles are unrelated to social-media")
 
     app.state.am = ProfileAM()
 
@@ -167,11 +187,7 @@ def test_generation_and_optimizer_requests_load_am_profile(method, path, expects
         "Cookie": "AMSessionId=good", "Origin": "https://social-media.connexup-uat.net", "X-Media-Request": "1",
     })
     assert response.status_code == 200
-    profile = response.json()["profile"]
-    if expects_profile:
-        assert profile["prompt_sections"] == [{"title": "商户定位", "text": "AM_BACKGROUND"}]
-    else:
-        assert profile is None
+    assert response.json()["profile"] is None
 
 def _bypass_app(origin: str = "http://127.0.0.1:5173", bypass: bool = True, merchant: str = "local-merchant"):
     app = FastAPI()
@@ -255,11 +271,10 @@ def test_local_bypass_uses_only_imported_merchants_and_rejects_unknown_ids():
     assert client.get("/api/merchants/unknown/probe").status_code == 404
 
 
-def test_local_bypass_reads_the_stored_profile_for_generation_requests():
+def test_local_bypass_does_not_read_stored_restaurant_profiles():
     app, _ = _bypass_app()
     body = TestClient(app).get("/api/merchants/local-merchant/brands").json()["profile"]
-    assert body["id"] == "local-merchant"
-    assert body["prompt_sections"][0] == {"title": "商户定位", "text": "LOCAL_BACKGROUND"}
+    assert body is None
 
 
 def test_local_bypass_allows_the_vite_origin_for_writes():

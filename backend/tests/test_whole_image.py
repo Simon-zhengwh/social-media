@@ -172,7 +172,7 @@ def test_generation_uses_note_snapshot_and_excludes_hidden_fields(settings, stor
 
 
 @pytest.mark.parametrize("optimized", [False, True])
-def test_merchant_context_reaches_generation_and_edit_prompts(settings, store, product_png, optimized):
+def test_restaurant_profiles_do_not_reach_generation_or_edit_prompts(settings, store, product_png, optimized):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     product = _seed_product(db, settings, store, product_png, "dish.png")
@@ -196,12 +196,12 @@ def test_merchant_context_reaches_generation_and_edit_prompts(settings, store, p
         request, BackgroundTasks(),
     )
 
-    assert "MERCHANT_NAME" in db.whole_tasks.find_one({"_id": created["id"]})["brand"]["merchant_context"]
+    assert db.whole_tasks.find_one({"_id": created["id"]})["brand"]["merchant_context"] == ""
     whole_service.run_generation(db, settings, store, fake, created["id"])
 
     generation_prompt = fake.edit_calls[0]["prompt"]
     for visible in ("商户背景参考：MERCHANT_NAME", "POSITIONING", "CORE_HIGHLIGHTS", "TARGET_CUSTOMERS", "VOICE_DESCRIPTION"):
-        assert visible in generation_prompt
+        assert visible not in generation_prompt
     assert "HIDDEN_SOURCE_LABEL" not in generation_prompt
     assert "HIDDEN_ADDRESS" not in generation_prompt
 
@@ -216,8 +216,8 @@ def test_merchant_context_reaches_generation_and_edit_prompts(settings, store, p
     whole_service.run_edit(db, settings, store, fake, created["id"], instruction, version["_id"])
 
     edit_prompt = fake.edit_calls[0]["prompt"]
-    assert "商户背景参考：MERCHANT_NAME" in edit_prompt
-    assert "POSITIONING" in edit_prompt
+    assert "商户背景参考：MERCHANT_NAME" not in edit_prompt
+    assert "POSITIONING" not in edit_prompt
     assert "HIDDEN_ADDRESS" not in edit_prompt
 
 

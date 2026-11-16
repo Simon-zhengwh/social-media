@@ -27,18 +27,15 @@ def _am_profile():
     })
 
 
-def test_brand_snapshot_uses_authenticated_am_background(settings, store):
+def test_brand_snapshot_ignores_restaurant_profiles(settings, store):
     db = _context_db()
     brand = brand_style.get_brand(db, "style")
     snapshot = brand_style.snapshot_brand(brand, db, store, settings, profile=_am_profile())
-    assert "AM_POSITIONING" in snapshot["merchant_context"]
-    assert "AM_HIGHLIGHT" in snapshot["merchant_context"]
-    assert "LOCAL_" not in snapshot["merchant_context"]
-    assert "PRIVATE_ADDRESS" not in snapshot["merchant_context"]
+    assert snapshot["merchant_context"] == ""
     assert brand_style.snapshot_brand(brand, db, store, settings)["merchant_context"] == ""
 
 
-def test_optimizer_uses_authenticated_am_background(settings, store):
+def test_optimizer_does_not_inject_restaurant_profiles(settings, store):
     db = _context_db()
 
     class Client:
@@ -52,6 +49,7 @@ def test_optimizer_uses_authenticated_am_background(settings, store):
         request=PromptOptimizeRequest(brand_mode="preset", brand_id="style", product_asset_ids=["product"]),
         profile=_am_profile(),
     )
-    assert "AM_POSITIONING" in client.input_text
+    assert "AM_POSITIONING" not in client.input_text
+    assert "AM_HIGHLIGHT" not in client.input_text
     assert "LOCAL_" not in client.input_text
     assert "PRIVATE_ADDRESS" not in client.input_text

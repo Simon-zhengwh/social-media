@@ -9,7 +9,6 @@ import WholeModelInputPanel from './WholeModelInputPanel'
 import WholeImageResultPanel from './WholeImageResultPanel'
 import PosterFinalizationControl from './PosterFinalizationControl'
 import OriginalReplacementPanel from './OriginalReplacementPanel'
-import type { StoreSelection } from './StoreInfoSelector'
 import {
   ApiError,
   createWholeImageEdit,
@@ -33,7 +32,6 @@ import type {
   BrandMode,
   BrandStyle,
   ImageModel,
-  MerchantProfile,
   PlatformPreset,
   Ratio,
   WholeImageTask,
@@ -52,7 +50,6 @@ type Props = {
   active: boolean
   newDesignHref: string
   brandStudioHref: string
-  merchantProfile: MerchantProfile | null
   brands: BrandStyle[]
   // Merchant-level logos: shared by every platform style, and the poster form's default.
   merchantLogos: BrandLogoImage[]
@@ -137,7 +134,6 @@ export default function WholeImageStudio({
   active: visible,
   newDesignHref,
   brandStudioHref,
-  merchantProfile,
   brands,
   merchantLogos,
   brandsLoading,
@@ -183,15 +179,6 @@ export default function WholeImageStudio({
   const [selectedPlatformId, setSelectedPlatformId] = useState(() => draft?.selectedPlatformId ?? preference?.platform_id ?? '')
   const [selectedPlacementId, setSelectedPlacementId] = useState(() => draft?.selectedPlacementId ?? preference?.placement_id ?? '')
   const [selectedRatio, setSelectedRatio] = useState<Ratio>(() => draft?.selectedRatio ?? preference?.ratio ?? '9:16')
-  // Store facts stay off until the operator asks for them: printing an address is a per-poster
-  // decision, so the default must not put one on a poster nobody vetted.
-  const [storeSelection, setStoreSelection] = useState<StoreSelection>(() => draft?.storeSelection ?? ({
-    enabled: false,
-    placeId: '',
-    address: true,
-    phone: true,
-  }))
-  const stores = merchantProfile?.brand_info?.stores ?? []
   const [prompt, setPrompt] = useState(() => draft?.prompt ?? '')
   const [promptOptimized, setPromptOptimized] = useState(() => draft?.promptOptimized ?? false)
   const [modelCounts, setModelCounts] = useState(() => draft?.modelCounts ?? defaultModelCounts())
@@ -304,10 +291,6 @@ export default function WholeImageStudio({
           height: taskRestoredAsset.height,
         }
       : null
-  // The submit and the form both read these, so they are derived once, after all state.
-  const selectedStoreId = storeSelection.placeId || stores[0]?.place_id || ''
-  const storeEnabled = storeSelection.enabled && Boolean(selectedStoreId)
-
   const logoOptions: BrandLogoImage[] = restoredLogo
     ? [...baseLogoOptions, restoredLogo]
     : baseLogoOptions
@@ -321,7 +304,7 @@ export default function WholeImageStudio({
     const form: PosterDraftForm = {
       products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId, selectedRatio,
       selectedBrandId, brandMode: effectiveBrandMode, selectedLogoId, logoChoiceTouched, styleReferences,
-      storeSelection, selectedModel, modelCounts,
+      selectedModel, modelCounts,
     }
     const signature = JSON.stringify(form)
     if (initialFormRef.current === null) initialFormRef.current = signature
@@ -330,7 +313,7 @@ export default function WholeImageStudio({
     setSessionSaveFailed(!savePosterSession(userId, merchantId, { kind: 'draft', workspaceId: workspaceRef.current, form }))
   }, [userId, merchantId, creating, products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId,
     selectedRatio, selectedBrandId, effectiveBrandMode, selectedLogoId, logoChoiceTouched, styleReferences,
-    storeSelection, selectedModel, modelCounts])
+    selectedModel, modelCounts])
 
   useEffect(() => {
     if (!acceptedRef.current || creating || !sessionRestored) return
@@ -607,9 +590,6 @@ export default function WholeImageStudio({
             reference_asset_ids: products.map(asset => asset.id),
             style_reference_asset_ids: [],
             product_asset_ids: [],
-            include_store_address: storeEnabled && storeSelection.address,
-            include_store_phone: storeEnabled && storeSelection.phone,
-            store_place_id: storeEnabled ? selectedStoreId : null,
             ratio: selectedPlatform ? undefined : selectedRatio,
             platform_id: selectedPlatform?.id ?? null,
             placement_id: selectedPlacement?.id ?? null,
@@ -917,9 +897,6 @@ export default function WholeImageStudio({
         styleReferencesUploading={styleReferencesUploading}
         logoOptions={logoOptions}
         selectedLogoId={effectiveLogoId}
-        stores={stores}
-        storeSelection={storeSelection}
-        onStoreSelectionChange={(next) => setStoreSelection(next)}
         platforms={platforms}
         platformsLoading={platformsLoading}
         platformsError={platformsError}

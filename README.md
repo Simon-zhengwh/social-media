@@ -154,7 +154,7 @@ Set-Location backend
 
 ### UAT 集成
 
-UAT 使用 `/api/merchants/{merchant_id}/...`。商户目录唯一来源是 social-media MongoDB `merchants` 集合，所有登录用户都能看到全部已导入商户；每条记录以 AM 真实商户 ID 作为 `_id`，另含显示用 `name`。用户需先导入记录，页面不会从 AM 搜索或创建名单；访问商户和上传到 AM 媒体库时仍由 AM 校验授权。品牌档案为选填，缺少档案时仍可访问素材库并上传资源。原照替换、Agent 测试和 HTML/ZIP 产物接口继续受商户授权、CSRF 与维护模式保护；若存在 AM 商户资料，四项中文摘要仍用于界面、提示词优化和任务快照。
+UAT 使用 `/api/merchants/{merchant_id}/...`。商户目录唯一来源是 social-media MongoDB `merchants` 集合，所有登录用户都能看到全部已导入商户；每条记录以 AM 真实商户 ID 作为 `_id`，另含显示用 `name`。用户需先导入记录，页面不会从 AM 搜索或创建名单；访问商户和上传到 AM 媒体库时仍由 AM 根据商户记录、登录用户及负责人/管理员权限校验授权。social-media 不请求或使用 `restaurant_brand_profiles`：进入工作区、上传素材、配置风格、优化提示词和生成海报均不依赖餐厅品牌档案。原照替换、Agent 测试和 HTML/ZIP 产物接口继续受商户授权、CSRF 与维护模式保护。
 
 直接导入或更新名称：
 
@@ -298,7 +298,7 @@ COS_REGION=
 COS_PREFIX=social-media
 ```
 
-不经过 AM Console 直接开发时，把 `SOCIAL_MEDIA_ORIGIN` 设为 `http://127.0.0.1:5173`，并设置 `AM_BYPASS_LOCAL=1` 与 `AM_BYPASS_MERCHANT_ID=<已导入的 AM 商户 ID>`。本地模式和 UAT 都从 MongoDB `merchants` 集合读取完整名单及显示名称；默认商户 ID 必须已存在于该集合。此时跳过 AM 会话校验：素材库只显示本地上传，媒体存储落到本地磁盘，商户资料读取 MongoDB `merchant_profiles` 中该商户已导入的记录。打开 <http://127.0.0.1:5173> 会自动进入默认商户工作区。该开关只在本机来源下生效，部署环境即使误设也不会启用。
+不经过 AM Console 直接开发时，把 `SOCIAL_MEDIA_ORIGIN` 设为 `http://127.0.0.1:5173`，并设置 `AM_BYPASS_LOCAL=1` 与 `AM_BYPASS_MERCHANT_ID=<已导入的 AM 商户 ID>`。本地模式和 UAT 都从 MongoDB `merchants` 集合读取完整名单及显示名称；默认商户 ID 必须已存在于该集合。此时跳过 AM 会话校验：素材库只显示本地上传，媒体存储落到本地磁盘。打开 <http://127.0.0.1:5173> 会自动进入默认商户工作区。该开关只在本机来源下生效，部署环境即使误设也不会启用。
 
 当前默认使用本地对象存储。提示词优化需要配置自建图床；图片仅在第一次需要外部模型读取时上传，返回 URL 会缓存在素材记录中。COS 配置留空即可，仅保留兼容入口。
 
@@ -306,17 +306,7 @@ COS_PREFIX=social-media
 
 ## 品牌与素材
 
-品牌风格详情的「商户特点」只展示实际传给模型背景的四项中文摘要：商户定位、核心卖点、目标客群、表达语气。品牌详情、提示词优化 Agent、生图和整图改图复用同一份后端筛选结果，并随任务品牌快照保存；本次要求和备注优先，平台限制继续生效，摘要作为背景参考，不默认全部写入海报。原始资料和未选入摘要的字段不传入模型。商户资料独立保存在 MongoDB `merchant_profiles`，通过品牌文档的 `merchant_id` 显式关联；复制平台风格时保留关联。未关联、资料缺失或摘要为空时隐藏商户面板，不根据名称推测资料。品牌列表和风格选择卡片使用备注，不再显示停用的旧风格摘要。
-
-喜聚资料种子位于 `backend/data/merchant_profiles/seejoy.json`，保留用户提供的原始 JSON、中文整理、来源字段及原文，未独立核验。原始资料、来源、其他未选入摘要的字段继续保存在数据库，不在页面展示或传入模型；品牌详情接口保留旧字段以兼容现有客户端，并增加 `prompt_sections` 供页面展示、提示词优化以及生图/改图共同使用。
-
-导入前预览，确认显式关联的风格 ID 后加 `--apply`（不会覆盖不同的已有商户资料）：
-
-```powershell
-Set-Location backend
-.\.venv\Scripts\python.exe scripts/import_merchant_profile.py data/merchant_profiles/seejoy.json --brand-id seejoy
-.\.venv\Scripts\python.exe scripts/import_merchant_profile.py data/merchant_profiles/seejoy.json --brand-id seejoy --apply
-```
+风格、Logo、参考图片和提示词由用户直接配置。界面不显示餐厅品牌档案，不提供从档案初始化风格或选择档案门店信息的入口；提示词优化和新任务快照不自动注入档案摘要、地址或电话。旧资料及历史任务保留，兼容响应中的 `profile`、`merchant_profile` 返回 `null`。
 
 品牌运行时配置保存在 MongoDB 的 `brands` 集合，商户级 Logo 保存在 `merchant_logos`。资产库中的图片不预设用途；生成页的手动图片统一作为参考图，由文字和 `@图片N` 指定用途，Logo 与预设品牌参考仍由独立配置决定。任务创建时会把平台、用途、主色调、Logo 和参考图 asset id 写入 `whole_tasks.brand` 快照，后续品牌修改不会影响旧任务。生成页默认引用商户 Logo 的第一张，也可为本次海报换用其他 Logo 或选择不使用。参考图可从资产库多选、直接上传或粘贴，上传图片同样进入资产库。历史任务的素材和风格参考会合并恢复到输入区；超过 6 张时要求移除多余图片后再生成，不会静默丢弃。
 

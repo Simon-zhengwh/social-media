@@ -7,7 +7,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from app.config import local_bypass_enabled
-from app.services import maintenance, merchant_profile
+from app.services import maintenance
 from app.services.am_client import AMClientError
 from app.services.media_object_store import create_merchant_store
 from app.services.scoped_db import ScopedDatabase
@@ -67,26 +67,7 @@ async def merchant_context_middleware(request: Request, call_next):
         "merchant_id": access.get("merchant_id") or merchant_id,
         "merchant_name": merchant_name,
     }
-    needs_generation_profile = request.method.upper() == "POST" and request.url.path.endswith(
-        ("/prompts/optimize", "/whole-image/tasks")
-    )
-    wants_profile = "/brands" in request.url.path or needs_generation_profile
-    if bypass is not None:
-        # No AM session locally: use the profile the import script already stored.
-        request.state.merchant_profile = (
-            merchant_profile.stored_profile(request.app.state.raw_db, merchant_id)
-            if wants_profile else None
-        )
-    elif wants_profile:
-        try:
-            request.state.merchant_profile = merchant_profile.project_profile(
-                merchant_profile.load_profile(request.app.state.am, cookie, merchant_id)
-            )
-        except AMClientError as exc:
-            status = exc.status_code if exc.status_code in {401, 403, 404} else 502
-            return _error(status, exc.code, exc.message)
-    else:
-        request.state.merchant_profile = None
+    request.state.merchant_profile = None
     request.state.db = ScopedDatabase(request.app.state.raw_db, merchant_id)
     if bypass is not None:
         # Local dev keeps files on disk; UAT routes them through AM media storage.

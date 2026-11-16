@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.services import asset_records, brand_rules, merchant_logos, merchant_profile, platform_presets, storage
+from app.services import asset_records, brand_rules, merchant_logos, platform_presets, storage
 from app.services.image_ref import ImageRef, image_ref_from_asset
 
 logger = logging.getLogger(__name__)
@@ -573,10 +573,7 @@ def snapshot_brand(
     snapshot["cover_asset_id"] = cover_asset_id
     snapshot["reference_asset_ids"] = [item["asset_id"] for item in references]
     snapshot["logo_asset_ids"] = logo_asset_ids
-    snapshot["merchant_context"] = merchant_profile.prompt_context(
-        profile if profile is not None else merchant_profile.get_profile(db, brand.merchant_id),
-        store_facts,
-    )
+    snapshot["merchant_context"] = ""
     return snapshot
 
 

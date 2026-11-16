@@ -5,7 +5,7 @@ from typing import Any
 
 from app.config import Settings
 from app.schemas import MAX_REFERENCE_ASSETS, PromptOptimizeRequest
-from app.services import brand_rules, brand_style, image_host, merchant_profile, platform_presets
+from app.services import brand_rules, brand_style, image_host, platform_presets
 from app.services.core_ai import CoreAIError
 from app.services.object_store import CosObjectStore
 
@@ -179,16 +179,6 @@ def optimize_prompt(
         brand_text = (
             f"{brand_rules.brand_context(brand.snapshot())}\n"
             f"品牌用途：{brand.purpose or '未指定'}\n"
-        )
-        store_facts = merchant_profile.store_facts(
-            profile,
-            request.store_place_id or "",
-            include_address=request.include_store_address,
-            include_phone=request.include_store_phone,
-        )
-        merchant_text = merchant_profile.prompt_context(
-            profile if profile is not None else merchant_profile.get_profile(db, brand.merchant_id),
-            store_facts,
         )
 
     current_prompt = request.prompt.strip()
