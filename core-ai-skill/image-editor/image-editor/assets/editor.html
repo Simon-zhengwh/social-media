@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'">
+<title>海报原照编辑器</title>
+<style>
+:root{font:14px/1.6 system-ui,"Microsoft YaHei",sans-serif;color:#213d2d;background:#f1f4ee;color-scheme:light}*{box-sizing:border-box}body{margin:0}button,input,select{font:inherit}button{cursor:pointer}button:disabled,input:disabled{opacity:.4;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #c7a643;outline-offset:3px}
+header{max-width:1320px;margin:auto;padding:25px 24px 18px;display:flex;align-items:center;justify-content:space-between;gap:16px}h1{font-size:23px;margin:0}header p{margin:5px 0 0;color:#758171}.badge{border:1px solid #d4dfcb;padding:5px 12px;border-radius:30px;white-space:nowrap;font-size:12px;background:white}
+main{max-width:1320px;margin:0 auto 32px;padding:0 24px;display:grid;grid-template-columns:minmax(0,1fr) 326px;gap:20px;align-items:start}.preview,.controls{background:#fff;border:1px solid #dce4d6;border-radius:13px;overflow:hidden}.preview-head{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #e6ebdf}.preview-head span{font-size:12px;color:#7a8474}.workspace{display:flex;justify-content:center;padding:20px;background:#e6ece1}.checker,#stage{background-color:white;background-image:linear-gradient(45deg,#dfe4dc 25%,transparent 25%),linear-gradient(-45deg,#dfe4dc 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#dfe4dc 75%),linear-gradient(-45deg,transparent 75%,#dfe4dc 75%);background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
+#stage{display:block;width:min(100%,540px);height:auto;touch-action:none;cursor:grab;box-shadow:0 6px 22px #14301e30;user-select:none}#stage.dragging{cursor:grabbing}.controls{padding:19px}.mode{display:flex;gap:6px;padding:4px;background:#edf2e7;border-radius:9px}.mode button{flex:1;border:0;background:transparent;border-radius:6px;padding:8px;color:#6f7e65}.mode button.active{background:#284e31;color:white}.intro,.hint{font-size:12px;color:#7a8573}.intro{margin:12px 0}.field{display:block;margin:14px 0 6px;font-weight:600;font-size:12px}select{width:100%;padding:8px;border:1px solid #d7dfcf;border-radius:7px;background:white;color:inherit}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:12px 0}.card{min-width:0;padding:5px;border:1px solid #dbe3d3;border-radius:7px;background:#fff;color:#68785f}.card.active{border-color:#355936;box-shadow:0 0 0 1px #355936}.card img{width:100%;height:46px;object-fit:contain;border-radius:3px;display:block}.card span{display:block;margin-top:3px;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.card.is-hidden{opacity:.45}.row{display:flex;align-items:center;gap:10px}.zoom-title{display:flex;justify-content:space-between;margin:14px 0 6px}.step,.secondary,.directions button{border:1px solid #d5dfcc;border-radius:7px;background:white;color:inherit}.step{width:30px;height:30px;flex-shrink:0}.row input[type=range]{width:100%;min-width:0;accent-color:#385f32}.secondary{padding:8px 10px;width:100%;margin-top:10px}.check{display:flex;align-items:center;gap:7px;font-size:12px;margin:12px 0}input[type=checkbox]{accent-color:#385f32}.directions{display:flex;gap:6px;margin-top:10px}.directions button{flex:1;padding:5px}.primary{border:0;border-radius:8px;padding:12px;background:#294e32;color:white;width:100%;font-weight:600;margin-top:12px}.file-button{display:block;position:relative;cursor:pointer}.file-button input{position:absolute;width:1px;height:1px;opacity:0}.file-name{font-size:11px;color:#7d8a74;overflow-wrap:anywhere}.divider{border:0;border-top:1px solid #e7ecdf;margin:17px 0}.small-buttons{display:flex;gap:8px}.small-buttons button{flex:1}#status{font-size:12px;color:#496c3d}#status.error{color:#b33a28}.hint{margin:9px 0 0}.view-field{margin-top:0}[hidden]{display:none!important}
+@media(max-width:780px){header{padding:18px 14px}.badge{display:none}main{padding:0 12px;grid-template-columns:1fr;gap:12px}.controls{padding:16px}.workspace{padding:10px}.cards{grid-template-columns:repeat(6,minmax(0,1fr))}.card img{height:35px}h1{font-size:20px}}
+</style>
+</head>
+<body>
+<header><div><h1 id="title">海报原照编辑器</h1><p id="summary"></p></div><span class="badge">本地离线 · PNG导出</span></header>
+<main>
+<section class="preview" aria-label="海报预览"><div class="preview-head"><strong id="preview-label">拖动艺术字，试试新的排版</strong><span id="dimensions"></span></div><div class="workspace"><canvas id="stage" tabindex="0" aria-label="海报编辑画布，拖动所选图层，滚轮缩放，方向键微调。" aria-busy="true"></canvas></div></section>
+<aside class="controls">
+<div class="mode"><button id="mode-art" class="active" disabled>调元素</button><button id="mode-photo" disabled>调照片</button></div>
+<p id="intro" class="intro">点选贴纸后拖动、缩放或旋转。切换「调底图」可移动被文字遮住的原照。</p>
+<div id="art-cards" class="cards" aria-label="独立艺术字"></div>
+<label class="field" for="layer-select">当前图层</label><select id="layer-select" disabled></select>
+<p id="layer-text" class="hint"></p>
+<label class="check"><input id="visible" type="checkbox" checked disabled>显示这个图层</label>
+<div class="zoom-title"><label for="zoom">大小</label><output id="zoom-value">100%</output></div>
+<div class="row"><button id="zoom-out" class="step" aria-label="缩小" disabled>−</button><input id="zoom" type="range" min="20" max="300" step="1" value="100" disabled><button id="zoom-in" class="step" aria-label="放大" disabled>＋</button></div>
+<div id="rotation-field"><div class="zoom-title"><label for="rotation">旋转</label><output id="rotation-value">0°</output></div><div class="row"><input id="rotation" type="range" min="-45" max="45" step="1" value="0" disabled></div></div>
+<div class="directions"><button data-dx="-4" data-dy="0" aria-label="左移" disabled>←</button><button data-dx="0" data-dy="-4" aria-label="上移" disabled>↑</button><button data-dx="0" data-dy="4" aria-label="下移" disabled>↓</button><button data-dx="4" data-dy="0" aria-label="右移" disabled>→</button></div>
+<div class="small-buttons"><button id="reset" class="secondary" disabled>重置这一层</button><button id="download-element" class="secondary" disabled>下载贴纸 PNG</button></div>
+<div id="photo-upload" hidden><label class="secondary file-button">更换这张原照<input id="upload" type="file" accept="image/*" disabled></label><p id="file-name" class="file-name"></p></div>
+<hr class="divider">
+<label for="view" class="field view-field">预览方式</label><select id="view" disabled><option value="all">完整海报</option><option value="no-photos">只看设计层（隐藏照片）</option><option value="fixed">只看固定背景</option></select>
+<label class="check"><input id="hide-art" type="checkbox" disabled>隐藏全部可调元素</label>
+<button id="reset-all" class="secondary" disabled>重置所有图层的位置</button>
+<button id="download" class="primary" disabled>下载当前画面的 PNG</button>
+<p class="hint"><span id="background-hint"></span><br><span id="art-note">元素是透明图片，文字需重新生成才能改写。</span><br>方向键微调，Shift 加大步幅。刷新会重置。</p>
+<p id="status" role="status" aria-live="polite">正在载入图层…</p>
+</aside></main>
+<script id="editor-data" type="application/json">__EDITOR_DATA__</script>
+<script>
+(()=>{
+'use strict';
+const config=JSON.parse(document.getElementById('editor-data').textContent),W=config.width,H=config.height;
+const $=id=>document.getElementById(id),stage=$('stage'),select=$('layer-select'),zoom=$('zoom'),rotation=$('rotation'),visible=$('visible'),view=$('view'),hideArt=$('hide-art');
+stage.width=W;stage.height=H;
+document.title=config.title;$('title').textContent=config.title;$('dimensions').textContent=`${W} × ${H}`;
+$('summary').textContent=config.mode==='elements'?'设计元素与原照分别调整。':config.mode==='background'?'完整背景原照自由取景，透明设计前景保持固定。':'完整原照分别调整，文字、贴纸与设计保持固定。';
+$('background-hint').textContent=config.background?'完整不透明底图已铺满画布。':'照片未覆盖的窗口导出后透明。';
+const firstArt=config.layers.findIndex(l=>l.kind==='art'),hasArt=firstArt>=0,firstPhoto=config.layers.findIndex(l=>l.kind==='photo'),hasPhotos=firstPhoto>=0;
+$('intro').textContent=hasArt?(hasPhotos?'点选元素后拖动、缩放或旋转。切换调照片可移动被元素遮住的原照。':'点选元素后拖动、缩放、旋转或隐藏，各组独立调整。'):'直接拖动照片，或选择要调整的原照；滚轮与滑块缩放，各窗口互不影响。';
+$('art-note').hidden=!hasArt;$('download-element').hidden=!hasArt;
+const state={ready:false,selected:hasArt?firstArt:firstPhoto,mode:hasArt?'art':'photo',lastArt:firstArt,lastPhoto:firstPhoto},background=new Image(),fixed=new Image(),scratch=document.createElement('canvas');scratch.width=W;scratch.height=H;
+const layers=config.layers.map(item=>({...item,...item.initial,image:new Image(),gate:item.kind==='photo'?new Image():null,alpha:null,blob:null,sequence:0}));
+const selected=()=>layers[state.selected];
+const message=(text,error=false)=>{$('status').textContent=text;$('status').classList.toggle('error',error);};
+for(const kind of ['art','photo']){
+ const group=document.createElement('optgroup');group.label=kind==='art'?'可调设计元素':'底图照片';
+ layers.forEach((l,i)=>{if(l.kind!==kind)return;const option=document.createElement('option');option.value=l.id;option.textContent=l.label;group.append(option);
+  if(kind==='art'){const button=document.createElement('button');button.className='card';button.disabled=true;button.dataset.layer=l.id;button.title=l.label;
+   const img=document.createElement('img');img.src=l.source;img.alt='';img.className='checker';const text=document.createElement('span');text.textContent=l.label;button.append(img,text);button.addEventListener('click',()=>choose(i));$('art-cards').append(button);}
+ });select.append(group);
+}
+function choose(index){if(index<0||index>=layers.length)return;state.selected=index;state.mode=selected().kind;state[state.mode==='art'?'lastArt':'lastPhoto']=index;render();}
+function drawable(ctx,l){ctx.save();ctx.translate(l.x,l.y);ctx.rotate(l.rotation*Math.PI/180);ctx.drawImage(l.image,-l.image.naturalWidth*l.scale/2,-l.image.naturalHeight*l.scale/2,l.image.naturalWidth*l.scale,l.image.naturalHeight*l.scale);ctx.restore();}
+function paint(canvas,options={}){
+ const ctx=canvas.getContext('2d');ctx.clearRect(0,0,W,H);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+ // A full opaque image sits below every movable layer, including inspection views.
+ if(config.background){const baseScale=Math.max(W/background.naturalWidth,H/background.naturalHeight),baseWidth=background.naturalWidth*baseScale,baseHeight=background.naturalHeight*baseScale;
+ ctx.drawImage(background,(W-baseWidth)/2,(H-baseHeight)/2,baseWidth,baseHeight);}
+ const currentView=options.view??view.value,showArt=options.art??!hideArt.checked;
+ if(currentView==='all')for(const l of layers){if(l.kind!=='photo'||!l.visible)continue;const sc=scratch.getContext('2d');sc.clearRect(0,0,W,H);sc.imageSmoothingEnabled=true;sc.imageSmoothingQuality='high';drawable(sc,l);sc.globalCompositeOperation='destination-in';sc.drawImage(l.gate,0,0);sc.globalCompositeOperation='source-over';ctx.drawImage(scratch,0,0);}
+ ctx.drawImage(fixed,0,0,W,H);
+ if(currentView!=='fixed'&&showArt)for(const l of layers){if(l.kind==='art'&&l.visible)drawable(ctx,l);}
+}
+function makeCanvas(options={}){if(!state.ready)throw new Error('图层尚未载入。');const c=document.createElement('canvas');c.width=W;c.height=H;paint(c,options);return c;}
+function render(){
+ if(!state.ready)return;const l=selected(),art=l.kind==='art';select.value=l.id;
+ zoom.value=String(Math.round(l.scale/l.baseScale*100));$('zoom-value').textContent=`${Math.round(l.scale/l.baseScale*100)}%`;rotation.value=String(l.rotation);$('rotation-value').textContent=`${l.rotation}°`;visible.checked=l.visible;
+ $('rotation-field').hidden=!art;$('photo-upload').hidden=art;$('download-element').disabled=!art;$('upload').disabled=art;$('file-name').textContent=l.fileName;
+ $('layer-text').textContent=art?l.text:'只调整这张完整原照，显示范围固定在对应窗口。';
+ $('mode-art').classList.toggle('active',state.mode==='art');$('mode-photo').classList.toggle('active',state.mode==='photo');
+ $('art-cards').hidden=state.mode!=='art';$('preview-label').textContent=state.mode==='art'?'拖动艺术字，试试新的排版':'拖动底图，文字和装饰保持当前位置';
+ document.querySelectorAll('[data-layer]').forEach(button=>{const item=layers.find(v=>v.id===button.dataset.layer);button.classList.toggle('active',item===l);button.classList.toggle('is-hidden',!item.visible);});
+ paint(stage);
+ // Selection marks are preview-only and never enter the export canvas.
+ if(art&&l.visible&&!hideArt.checked&&view.value!=='fixed'){
+  const ctx=stage.getContext('2d');ctx.save();ctx.translate(l.x,l.y);ctx.rotate(l.rotation*Math.PI/180);ctx.strokeStyle='#86a944';ctx.lineWidth=2;ctx.setLineDash([8,7]);ctx.strokeRect(-l.image.naturalWidth*l.scale/2,-l.image.naturalHeight*l.scale/2,l.image.naturalWidth*l.scale,l.image.naturalHeight*l.scale);ctx.restore();
+ }
+}
+function move(dx,dy){if(!state.ready)return;selected().x+=dx;selected().y+=dy;render();}
+function scaleAt(next,ax,ay){if(!state.ready)return;const l=selected();next=Math.max(l.baseScale*.2,Math.min(l.baseScale*3,next));if(ax!==undefined){const ratio=next/l.scale;l.x=ax-(ax-l.x)*ratio;l.y=ay-(ay-l.y)*ratio;}l.scale=next;render();}
+function reset(){Object.assign(selected(),selected().initial);render();}
+function point(event){const r=stage.getBoundingClientRect();return {x:(event.clientX-r.left)*W/r.width,y:(event.clientY-r.top)*H/r.height};}
+function contains(polygon,x,y){let inside=false;for(let a=0,b=polygon.length-1;a<polygon.length;b=a++){const [ax,ay]=polygon[a],[bx,by]=polygon[b];if((ay>y)!==(by>y)&&x<(bx-ax)*(y-ay)/(by-ay)+ax)inside=!inside;}return inside;}
+function hit(x,y){
+ if(view.value==='fixed')return -1;
+ for(let i=layers.length-1;i>=0;i--){const l=layers[i];if(!l.visible||l.kind!==state.mode)continue;
+  if(l.kind==='photo'){if(view.value==='all'&&(l.polygon?contains(l.polygon,x,y):x>=0&&y>=0&&x<W&&y<H&&l.gatePixels[(Math.floor(y)*W+Math.floor(x))*4+3]>0))return i;continue;}
+  if(hideArt.checked)continue;const theta=-l.rotation*Math.PI/180,dx=x-l.x,dy=y-l.y;
+  const px=Math.floor((dx*Math.cos(theta)-dy*Math.sin(theta))/l.scale+l.image.naturalWidth/2),py=Math.floor((dx*Math.sin(theta)+dy*Math.cos(theta))/l.scale+l.image.naturalHeight/2);
+  if(px>=0&&py>=0&&px<l.image.naturalWidth&&py<l.image.naturalHeight&&l.alpha[(py*l.image.naturalWidth+px)*4+3]>20)return i;
+ }return -1;
+}
+let pointer=null;
+stage.addEventListener('pointerdown',e=>{if(!state.ready||e.button!==0||!e.isPrimary)return;const p=point(e),index=hit(p.x,p.y);if(index<0)return;choose(index);e.preventDefault();stage.focus({preventScroll:true});stage.setPointerCapture(e.pointerId);pointer={id:e.pointerId,...p};stage.classList.add('dragging');});
+stage.addEventListener('pointermove',e=>{if(!pointer||pointer.id!==e.pointerId)return;const p=point(e);move(p.x-pointer.x,p.y-pointer.y);pointer={id:e.pointerId,...p};});
+for(const name of ['pointerup','pointercancel','lostpointercapture'])stage.addEventListener(name,e=>{if(pointer?.id===e.pointerId){pointer=null;stage.classList.remove('dragging');}});
+stage.addEventListener('wheel',e=>{if(!state.ready)return;const p=point(e),index=hit(p.x,p.y);if(index<0)return;e.preventDefault();choose(index);const unit=e.deltaMode===1?16:e.deltaMode===2?stage.clientHeight:1;scaleAt(selected().scale*Math.exp(-e.deltaY*unit*.0015),p.x,p.y);},{passive:false});
+stage.addEventListener('keydown',e=>{const step=e.shiftKey?20:2,dirs={ArrowLeft:[-step,0],ArrowRight:[step,0],ArrowUp:[0,-step],ArrowDown:[0,step]};if(dirs[e.key]){e.preventDefault();move(...dirs[e.key]);}});
+select.addEventListener('change',()=>choose(layers.findIndex(l=>l.id===select.value)));
+$('mode-art').addEventListener('click',()=>choose(state.lastArt));$('mode-photo').addEventListener('click',()=>choose(state.lastPhoto));
+zoom.addEventListener('input',()=>scaleAt(selected().baseScale*Number(zoom.value)/100));$('zoom-in').addEventListener('click',()=>scaleAt(selected().scale*1.1));$('zoom-out').addEventListener('click',()=>scaleAt(selected().scale/1.1));
+rotation.addEventListener('input',()=>{selected().rotation=Number(rotation.value);render();});visible.addEventListener('change',()=>{selected().visible=visible.checked;render();});
+$('reset').addEventListener('click',reset);$('reset-all').addEventListener('click',()=>{layers.forEach(l=>Object.assign(l,l.initial));render();message('所有图层已回到初始位置。');});
+document.querySelectorAll('[data-dx]').forEach(b=>b.addEventListener('click',()=>move(Number(b.dataset.dx),Number(b.dataset.dy))));
+view.addEventListener('change',render);hideArt.addEventListener('change',render);
+$('upload').addEventListener('change',async()=>{
+ const file=$('upload').files?.[0],l=selected();if(!file||l.kind!=='photo')return;const sequence=++l.sequence,url=URL.createObjectURL(file);
+ try{const candidate=new Image();candidate.src=url;await candidate.decode();if(sequence!==l.sequence){URL.revokeObjectURL(url);return;}const previous=l.blob;l.image=candidate;l.blob=url;l.fileName=file.name;
+  const b=l.bounds,s=Math.max((b[2]-b[0])/candidate.naturalWidth,(b[3]-b[1])/candidate.naturalHeight);l.initial={x:(b[0]+b[2])/2,y:(b[1]+b[3])/2,scale:s,baseScale:s,rotation:0,visible:true};Object.assign(l,l.initial);if(previous)URL.revokeObjectURL(previous);render();message('原照已更换，其他图层保持不动。');
+ }catch{URL.revokeObjectURL(url);if(sequence===l.sequence)message('图片无法读取，已保留之前的有效原照。',true);}finally{$('upload').value='';}
+});
+async function save(canvas,name){const blob=await new Promise((resolve,reject)=>canvas.toBlob(v=>v?resolve(v):reject(new Error('PNG 导出失败。')),'image/png'));const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
+$('download').addEventListener('click',async()=>{const button=$('download');button.disabled=true;try{await save(makeCanvas(),'poster.png');message(`已导出当前画面，${W} × ${H}。`);}catch(e){message(e.message,true);}finally{button.disabled=false;}});
+$('download-element').addEventListener('click',async()=>{const l=selected();if(l.kind!=='art')return;try{const c=document.createElement('canvas');c.width=l.image.naturalWidth;c.height=l.image.naturalHeight;c.getContext('2d').drawImage(l.image,0,0);await save(c,`${l.id}.png`);message('已导出这组艺术字的原始透明 PNG。');}catch(e){message(e.message,true);}});
+fixed.src=config.fixed;if(config.background)background.src=config.background;
+Promise.all([...(config.background?[background.decode()]:[]),fixed.decode(),...layers.flatMap(l=>{l.image.src=l.source;const imageReady=l.image.decode().then(()=>{if(l.kind==='art'){const c=document.createElement('canvas');c.width=l.image.naturalWidth;c.height=l.image.naturalHeight;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(l.image,0,0);l.alpha=ctx.getImageData(0,0,c.width,c.height).data;}});if(l.gate){l.gate.src=l.window;const gateReady=l.gate.decode().then(()=>{const c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(l.gate,0,0);l.gatePixels=ctx.getImageData(0,0,W,H).data;});return [imageReady,gateReady];}return [imageReady];})]).then(()=>{
+ state.ready=true;document.querySelectorAll('button,input,select').forEach(c=>c.disabled=false);stage.setAttribute('aria-busy','false');$('mode-art').parentElement.hidden=!(hasArt&&hasPhotos);$('hide-art').closest('label').hidden=!hasArt;$('mode-art').disabled=!hasArt;$('mode-photo').disabled=!hasPhotos;render();message(hasArt?'图层已就绪，可分别调整。':'原照已就绪，设计元素保持固定。');
+}).catch(()=>message('图层载入失败，请重新打开完整 HTML 文件。',true));
+if(new URLSearchParams(location.search).has('selftest'))window.editorTest={state,layers,move,scaleAt,makeCanvas,hit};
+})();
+</script></body></html>
