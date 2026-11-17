@@ -9,9 +9,14 @@ import PosterEditStudio from './components/PosterEditStudio'
 import MaterialFilterPage from './components/MaterialFilterPage'
 import {
   ApiError,
+  createAssetIndexRun,
+  createAssetSearch,
+  getAssetIndex,
   getBrandLogos,
   getMerchantContext,
   probeLocalDevMerchant,
+  type AssetIndexSummary,
+  type AssetSearch,
   type MerchantContext,
   listAssetPage,
   listBrands,
@@ -151,6 +156,10 @@ export default function App() {
   const [assetTotal, setAssetTotal] = useState(0)
   const [assetQuery, setAssetQuery] = useState('')
   const [assetTagQuery, setAssetTagQuery] = useState('')
+  // The submitted search owns the vocabulary, so later pages never re-ask the model.
+  const [assetSearch, setAssetSearch] = useState<AssetSearch | null>(null)
+  const [assetIndex, setAssetIndex] = useState<AssetIndexSummary | null>(null)
+  const [assetIndexBusy, setAssetIndexBusy] = useState(false)
   // Bumped per asset request so a slow response for an old filter cannot land on new results.
   const assetRequestRef = useRef(0)
   const [loadingMoreAssets, setLoadingMoreAssets] = useState(false)
@@ -190,6 +199,7 @@ export default function App() {
     skip = 0,
     showLoading = true,
     tag = '',
+    searchId = '',
   ) => {
     const requestId = assetRequestRef.current + 1
     assetRequestRef.current = requestId
@@ -199,7 +209,7 @@ export default function App() {
       setAssetsLoading(true)
     }
     try {
-      const page = await listAssetPage(keyword, skip, 24, tag)
+      const page = await listAssetPage(keyword, skip, 24, tag, searchId)
       if (requestId !== assetRequestRef.current) return
       setAssets((previous) => append ? [...previous, ...page.items] : page.items)
       setAssetTotal(page.total)
@@ -214,6 +224,31 @@ export default function App() {
       }
     }
   }, [])
+
+  const refreshAssetIndex = useCallback(async () => {
+    try {
+      setAssetIndex(await getAssetIndex())
+    } catch {
+      // The index panel is optional: a failure must not hide the library itself.
+    }
+  }, [])
+
+  // While a pass runs the page shows real progress; when it ends the cards are reloaded so
+  // the new names, tags and descriptions are visible without a manual refresh.
+  const runningIndexId = assetIndex?.active_run?.id ?? ''
+  const finishedIndexRef = useRef('')
+  useEffect(() => {
+    if (!runningIndexId) {
+      if (finishedIndexRef.current) {
+        finishedIndexRef.current = ''
+        void loadAssets(assetQuery, false, 0, false, assetTagQuery, assetSearch?.id ?? '')
+      }
+      return
+    }
+    finishedIndexRef.current = runningIndexId
+    const timer = window.setInterval(() => { void refreshAssetIndex() }, 2000)
+    return () => window.clearInterval(timer)
+  }, [runningIndexId, refreshAssetIndex, loadAssets, assetQuery, assetTagQuery, assetSearch?.id])
 
   useEffect(() => {
     const url = new URL(window.location.href)
@@ -260,6 +295,7 @@ export default function App() {
           .catch((reason: unknown) => setPlatformsError(errorMessage(reason)))
           .finally(() => setPlatformsLoading(false))
         void loadAssets('', false, 0, true)
+        void refreshAssetIndex()
       })
       .catch((reason: unknown) => {
         setContextError(errorMessage(reason))
@@ -267,7 +303,7 @@ export default function App() {
         if (merchantRejected(reason)) clearStoredMerchantId(merchantId)
       })
       .finally(() => setContextLoading(false))
-  }, [initialMerchantId, loadAssets, loadBrands, startupView])
+  }, [initialMerchantId, loadAssets, loadBrands, refreshAssetIndex, startupView])
 
   const handleViewChange = (next: AppView) => {
     if (next === 'agent-tests' && !agentTestsAllowed) return
@@ -276,21 +312,46 @@ export default function App() {
     setView(next)
     updateUrl(next)
     if (next === 'assets') {
-      void loadAssets(assetQuery, false, 0, true, assetTagQuery)
+      void loadAssets(assetQuery, false, 0, true, assetTagQuery, assetSearch?.id ?? '')
+      void refreshAssetIndex()
     }
     if (next === 'brands') {
       void loadBrands()
     }
   }
 
-  const handleSearchAssets = (keyword: string, tag: string) => {
+  const handleSearchAssets = (keyword: string, semantic: boolean) => {
+    if (assetsLoading) return
+    setAssetsLoading(true)
+    setAssetsError(null)
     setAssetQuery(keyword)
-    setAssetTagQuery(tag)
-    void loadAssets(keyword, false, 0, true, tag)
+    setAssetTagQuery('')
+    void (async () => {
+      try {
+        const search = await createAssetSearch(keyword, semantic)
+        setAssetSearch(search)
+        await loadAssets(keyword, false, 0, true, '', search.id)
+      } catch (reason: unknown) {
+        setAssetsError(errorMessage(reason))
+        setAssetsLoading(false)
+      }
+    })()
   }
 
   const handleLoadMoreAssets = () => {
-    void loadAssets(assetQuery, true, assets.length, false, assetTagQuery)
+    void loadAssets(assetQuery, true, assets.length, false, assetTagQuery, assetSearch?.id ?? '')
+  }
+
+  const handleReindexAssets = async (mode: 'reindex' | 'retry') => {
+    setAssetIndexBusy(true)
+    try {
+      await createAssetIndexRun(mode, mode === 'reindex' ? `ui-${Date.now()}` : '')
+      await refreshAssetIndex()
+    } catch (reason: unknown) {
+      setAssetsError(errorMessage(reason))
+    } finally {
+      setAssetIndexBusy(false)
+    }
   }
 
   // Tag and name edits both answer with the authoritative asset row.
@@ -310,7 +371,7 @@ export default function App() {
       const uploaded = await uploadAsset(file)
       if (assetQuery || assetTagQuery) {
         // Filters are active: the new image may not match them, so show the filtered truth.
-        void loadAssets(assetQuery, false, 0, false, assetTagQuery)
+        void loadAssets(assetQuery, false, 0, false, assetTagQuery, assetSearch?.id ?? '')
         return true
       }
       setAssets((previous) => [uploaded, ...previous.filter((item) => item.id !== uploaded.id)])
@@ -455,7 +516,11 @@ export default function App() {
             query={assetQuery}
             tagQuery={assetTagQuery}
             amMediaLibrary={context?.features?.am_media_library === true}
+            search={assetSearch}
+            index={assetIndex}
+            indexBusy={assetIndexBusy}
             onSearch={handleSearchAssets}
+            onReindex={(mode) => void handleReindexAssets(mode)}
             onLoadMore={handleLoadMoreAssets}
             loadingMore={loadingMoreAssets}
             uploading={uploadingAsset}

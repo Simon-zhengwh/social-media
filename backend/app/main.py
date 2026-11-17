@@ -14,6 +14,7 @@ from app.middleware import local_bypass_enabled, merchant_context_middleware
 from app.routes import (
     assets,
     agent_tests,
+    asset_index,
     brand_logos,
     brand_rules,
     brands,
@@ -30,7 +31,12 @@ from app.services import storage
 from app.services.object_store import create_object_store
 from app.services import original_replacement_runner
 from app.services import agent_tests as agent_test_service
-from app.services import maintenance, storage, whole_image as whole_image_service
+from app.services import (
+    asset_index as asset_index_store,
+    maintenance,
+    storage,
+    whole_image as whole_image_service,
+)
 from app.services import material_filter_files, material_filter_uat_sync
 from app.services import material_filters as material_filter_store
 from app.services.am_client import AMClient
@@ -118,6 +124,13 @@ def _initialize_indexes(db) -> None:
         [("merchant_id", 1), ("scheme_id", 1), ("created_at", -1)]
     )
     db.material_filter_syncs.create_index([("status", 1), ("merchant_id", 1)])
+    db[asset_index_store.RECORD_COLLECTION].create_index([("merchant_id", 1), ("description_status", 1)])
+    db[asset_index_store.RECORD_COLLECTION].create_index([("merchant_id", 1), ("created_at", -1)])
+    db[asset_index_store.RUN_COLLECTION].create_index([("merchant_id", 1), ("created_at", -1)])
+    db[asset_index_store.RUN_COLLECTION].create_index([("merchant_id", 1), ("request_id", 1)], unique=True)
+    db[asset_index_store.RUN_COLLECTION].create_index([("status", 1), ("merchant_id", 1)])
+    db[asset_index_store.QUERY_COLLECTION].create_index([("merchant_id", 1), ("created_at", -1)])
+    db[asset_index_store.QUERY_COLLECTION].create_index([("merchant_id", 1), ("expires_at", 1)])
 
 
 def _scoped_store(app: FastAPI, merchant_id: str, db):
@@ -173,6 +186,16 @@ def _mark_material_filter_runs_interrupted(app: FastAPI) -> None:
         material_filter_uat_sync.mark_interrupted(db)
 
 
+def _interrupt_asset_index_runs(app: FastAPI) -> None:
+    """A restarted process cannot finish its claims; the operator starts a new pass."""
+    raw = app.state.raw_db
+    merchant_ids = raw[asset_index_store.RUN_COLLECTION].distinct(
+        "merchant_id", {"status": {"$in": list(asset_index_store.ACTIVE_RUN_STATUSES)}}
+    )
+    for merchant_id in sorted(str(value) for value in merchant_ids if value):
+        asset_index_store.interrupt_active_runs(ScopedDatabase(raw, merchant_id))
+
+
 def _resume_agent_tests(app: FastAPI) -> None:
     raw = app.state.raw_db
     merchant_ids = raw.agent_test_runs.distinct(
@@ -210,6 +233,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _resume_poster_edits(app)
         _resume_agent_tests(app)
         _mark_material_filter_runs_interrupted(app)
+        _interrupt_asset_index_runs(app)
         app.state.ready = True
         logger.info("social media initialization complete; database=%s", settings.mongodb_database)
     except Exception as exc: # noqa: BLE001 - readiness reports initialization failure
@@ -238,12 +262,21 @@ merchant_router.include_router(task_center.router)
 merchant_router.include_router(whole_image.router)
 merchant_router.include_router(poster_edit.router)
 merchant_router.include_router(material_filters.router)
+merchant_router.include_router(asset_index.router)
 app.include_router(merchant_router)
 app.include_router(platforms.router)
 
 
 @app.exception_handler(material_filter_store.MaterialFilterError)
 async def material_filter_error_handler(_: Request, exc) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@app.exception_handler(asset_index_store.AssetIndexError)
+async def asset_index_error_handler(_: Request, exc) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message}},

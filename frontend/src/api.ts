@@ -168,10 +168,76 @@ export async function listAssetPage(
   skip = 0,
   limit = 24,
   tag = '',
+  searchId = '',
 ): Promise<AssetPage> {
   const params = new URLSearchParams({ keyword, skip: String(skip), limit: String(limit), tag })
+  if (searchId) params.set('search_id', searchId)
   const response = await apiFetch(`/api/am-assets?${params.toString()}`)
   return parseResponse<AssetPage>(response)
+}
+
+export type AssetSearchGroup = {
+  input: string
+  equivalents: { simplified: string; traditional: string; english: string }
+  expansions: string[]
+}
+
+/** A submitted search: the vocabulary is fixed here, so paging never calls the model again. */
+export type AssetSearch = {
+  id: string
+  query: string
+  mode: 'literal' | 'semantic'
+  degraded: boolean
+  degraded_reason: string | null
+  groups: AssetSearchGroup[]
+  model: string
+  total: number
+  expires_at: string
+}
+
+export async function createAssetSearch(query: string, semantic: boolean): Promise<AssetSearch> {
+  return parseResponse(await apiFetch('/api/asset-searches', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, semantic }),
+  }))
+}
+
+export type AssetIndexRun = {
+  id: string
+  mode: 'initialize' | 'reindex' | 'describe'
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'interrupted'
+  counters: { total?: number; succeeded?: number; failed?: number; skipped?: number; remaining?: number }
+  errors: { asset_id: string; message: string; at: string }[]
+  error: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export type AssetIndexSummary = {
+  total: number
+  described: number
+  failed: number
+  running: number
+  pending: number
+  active_run: AssetIndexRun | null
+  last_run: AssetIndexRun | null
+}
+
+export async function getAssetIndex(): Promise<AssetIndexSummary> {
+  return parseResponse(await apiFetch('/api/asset-index'))
+}
+
+export async function createAssetIndexRun(
+  mode: 'reindex' | 'retry',
+  requestId = '',
+): Promise<AssetIndexRun> {
+  return parseResponse(await apiFetch('/api/asset-index-runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, request_id: requestId }),
+  }))
 }
 
 export async function listAssets(): Promise<Asset[]> {

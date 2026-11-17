@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     core_ai_image_timeout_seconds: int = 300
     llm_timeout_seconds: int = 120
 
+    # Asset library metadata: names/tags are recognised once, descriptions back the search index.
+    # Both calls go through chat_json (chat.completions with image_url), which the default
+    # design model does not serve: gpt-6.1-sol only registers the responses endpoint.
+    asset_index_model: str = "gpt-6-luna"
+    asset_index_timeout_seconds: int = 120
+    asset_index_concurrency: int = 2
+    asset_index_image_max_side: int = 1024
+    asset_search_model: str = "gpt-6-luna"
+    asset_search_timeout_seconds: int = 30
+    # Uploads and metadata edits queue a description refresh; tests switch this off.
+    asset_index_auto_describe: bool = True
+
     # Local SMB material filtering: its own model and limits, so poster models stay untouched.
     material_filter_model: str = "deepseek-v4-flash"
     material_filter_timeout_seconds: int = 120
@@ -99,6 +111,14 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def asset_index_model_name(self) -> str:
+        return self.asset_index_model.strip() or self.core_ai_design_model
+
+    @property
+    def asset_search_model_name(self) -> str:
+        return self.asset_search_model.strip() or self.core_ai_design_model
 
     @property
     def storage_path(self) -> Path:

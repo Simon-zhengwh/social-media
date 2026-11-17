@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { listAssetPage, type AssetPage } from '../api'
+import { createAssetSearch, listAssetPage, type AssetPage, type AssetSearch } from '../api'
 import type { Asset } from '../types'
 import { assetDisplayName } from '../assetNames'
+import AssetSearchVocabulary from './AssetSearchVocabulary'
 
 /** Rows that fill a wide dialog without making the first paint slow. */
 const PAGE_SIZE = 36
 /** Start the next page before the operator reaches the very last row. */
 const LOAD_MORE_THRESHOLD = 200
 
-type AssetQuery = string
 /** `loading` is the first page of a filter, `more` an appended page, `idle` nothing in flight. */
 type Phase = 'idle' | 'loading' | 'more'
 
@@ -49,7 +49,10 @@ export default function AssetPicker({
   const [selected, setSelected] = useState<string[]>(() => selectedIds)
   // The draft only becomes the query on submit, so typing does not refetch per keystroke.
   const [draft, setDraft] = useState('')
-  const [query, setQuery] = useState<AssetQuery>('')
+  const [query, setQuery] = useState('')
+  // The submitted search owns the vocabulary; a page never asks the model for it again.
+  const [search, setSearch] = useState<AssetSearch | null>(null)
+  const [semantic, setSemantic] = useState(false)
   const [items, setItems] = useState<Asset[]>([])
   // `loaded` counts rows the server returned, which is also the next skip.
   const [loaded, setLoaded] = useState(0)
@@ -96,10 +99,10 @@ export default function AssetPicker({
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [open, onClose])
 
-  const loadPage = useCallback((nextQuery: AssetQuery, skip: number) => {
+  const loadPage = useCallback((nextQuery: string, searchId: string, skip: number) => {
     const requestId = requestRef.current + 1
     requestRef.current = requestId
-    void listAssetPage(nextQuery, skip, PAGE_SIZE)
+    void listAssetPage(nextQuery, skip, PAGE_SIZE, '', searchId)
       .then((page) => {
         if (requestId !== requestRef.current) return
         applyPage(page, skip)
@@ -113,8 +116,8 @@ export default function AssetPicker({
 
   useEffect(() => {
     if (!open) return
-    loadPage(query, 0)
-  }, [open, query, reloadToken, loadPage])
+    loadPage(query, search?.id ?? '', 0)
+  }, [open, query, search?.id, reloadToken, loadPage])
 
   if (!open) {
     return null
@@ -127,20 +130,28 @@ export default function AssetPicker({
   const listLoading = phase === 'loading'
   const loadingMore = phase === 'more'
 
-  /** Reset the list for a new filter: the first page replaces whatever was on screen. */
-  const startQuery = (next: AssetQuery) => {
-    setItems([])
-    setLoaded(0)
-    setTotal(0)
+  /** Submit one search: this is the only moment the vocabulary may call a model.
+   *  The grid keeps its current rows until the answer lands, so a failed submit leaves the
+   *  previous list readable instead of an empty dialog. */
+  const startQuery = (next: string, useSemantic: boolean) => {
+    if (listLoading) return
     setListError(null)
     setPhase('loading')
-    setQuery(next)
+    void createAssetSearch(next, useSemantic)
+      .then((submitted) => {
+        setSearch(submitted)
+        setQuery(next)
+      })
+      .catch((reason: unknown) => {
+        setListError(reason instanceof Error ? reason.message : '搜索失败，请稍后重试')
+        setPhase('idle')
+      })
   }
 
   const loadMore = () => {
     if (phase !== 'idle' || !hasMore) return
     setPhase('more')
-    loadPage(query, loaded)
+    loadPage(query, search?.id ?? '', loaded)
   }
 
   const toggle = (assetId: string) => {
@@ -171,17 +182,11 @@ export default function AssetPicker({
         aria-label={title}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="modal-head">
-          <button type="button" className="modal-close" onClick={onClose}>
-            关闭
-          </button>
-        </div>
-
         <form
           className="picker-search"
           onSubmit={(event) => {
             event.preventDefault()
-            startQuery(draft.trim())
+            startQuery(draft.trim(), semantic)
           }}
         >
           <div className="asset-search-group">
@@ -189,20 +194,30 @@ export default function AssetPicker({
               className="mp-input asset-search-input"
               type="search"
               value={draft}
-              aria-label="搜索素材名称或 Tag"
-              placeholder="搜索名称或 Tag"
+              aria-label="搜索素材名称、Tag 或描述"
+              placeholder="搜索名称、Tag 或描述"
               onChange={(event) => setDraft(event.target.value)}
             />
-            <button type="submit" className="mp-btn-secondary mp-btn-small">
+            <button type="submit" className="mp-btn-secondary mp-btn-small" disabled={listLoading} aria-busy={listLoading}>
+              {listLoading ? <span className="spinner spinner-dark" aria-hidden="true" /> : null}
               搜索
             </button>
+            <label className="asset-semantic-toggle">
+              <input
+                type="checkbox"
+                checked={semantic}
+                onChange={(event) => setSemantic(event.target.checked)}
+              />
+              <span>语义搜索</span>
+            </label>
             {searching ? (
               <button
                 type="button"
                 className="mp-btn-ghost mp-btn-small"
+                disabled={listLoading}
                 onClick={() => {
                   setDraft('')
-                  startQuery('')
+                  startQuery('', false)
                 }}
               >
                 清空
@@ -213,6 +228,12 @@ export default function AssetPicker({
             {phase === 'idle' ? `共 ${total} 张` : '加载中…'}
           </span>
         </form>
+
+        <AssetSearchVocabulary search={search} className="picker-terms" />
+
+        {search?.degraded ? (
+          <div className="asset-notice">搜索词生成失败，已按原词搜索。</div>
+        ) : null}
 
         {listError ? (
           <div className="picker-notice" role="alert">
@@ -304,11 +325,18 @@ export default function AssetPicker({
           </div>
         )}
 
-        {multi ? (
-          <div className="picker-footer">
-            <span>
-              已选 {selected.length}{max === null ? ' 张' : ` / ${max}`}
-            </span>
+        <div className="picker-footer">
+          <div className="picker-footer-left">
+            <button type="button" className="mp-btn-ghost mp-btn-small" onClick={onClose}>
+              关闭
+            </button>
+            {multi ? (
+              <span>
+                已选 {selected.length}{max === null ? ' 张' : ` / ${max}`}
+              </span>
+            ) : null}
+          </div>
+          {multi ? (
             <div className="picker-footer-actions">
               <button
                 type="button"
@@ -326,8 +354,8 @@ export default function AssetPicker({
                 确定
               </button>
             </div>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </div>
     </div>
   )

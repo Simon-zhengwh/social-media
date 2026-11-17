@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, deleteAssets, renameAsset, updateAssetTags } from '../api'
+import { ApiError, deleteAssets, renameAsset, updateAssetTags, type AssetIndexSummary, type AssetSearch } from '../api'
 import { MAX_ASSET_TAGS, normalizeTags } from '../assetTags'
 import { assetDisplayName, assetRenameFileName } from '../assetNames'
 import type { Asset } from '../types'
 import { ZoomableImage } from './ImageLightbox'
 import AssetUsageDialog from './AssetUsageDialog'
+import AssetSearchVocabulary from './AssetSearchVocabulary'
 
 type Props = {
   assets: Asset[]
@@ -16,7 +17,12 @@ type Props = {
   tagQuery: string
   /** Deployed sites show AM media; local mode labels the same rows as local assets. */
   amMediaLibrary: boolean
-  onSearch: (keyword: string, tag: string) => void
+  /** The submitted search: its vocabulary is reused by every page, never rebuilt. */
+  search: AssetSearch | null
+  index: AssetIndexSummary | null
+  indexBusy: boolean
+  onSearch: (keyword: string, semantic: boolean) => void
+  onReindex: (mode: 'reindex' | 'retry') => void
   onLoadMore: () => void
   loadingMore: boolean
   uploading: boolean
@@ -37,7 +43,11 @@ export default function AssetLibrary({
   query,
   tagQuery,
   amMediaLibrary,
+  search,
+  index,
+  indexBusy,
   onSearch,
+  onReindex,
   onLoadMore,
   loadingMore,
   uploading,
@@ -63,19 +73,13 @@ export default function AssetLibrary({
   const [usageAsset, setUsageAsset] = useState<Asset | null>(null)
 
   const keyword = draft ?? query
-  // One box matches a name or a tag; typing searches after a short pause instead of a button.
-  const search = useRef(onSearch)
-  useEffect(() => { search.current = onSearch }, [onSearch])
-  useEffect(() => {
-    const value = draft?.trim() ?? null
-    if (value === null || value === query.trim()) return
-    const timer = window.setTimeout(() => search.current(value, ''), 300)
-    return () => window.clearTimeout(timer)
-  }, [draft, query])
+  // Nothing searches while typing: a query runs on 搜索 or Enter, and that is also the only
+  // moment a semantic search may call the query agent.
+  const [semantic, setSemantic] = useState(false)
 
   const submitSearch = (nextTag: string) => {
     setDraft(nextTag)
-    onSearch(nextTag.trim(), '')
+    onSearch(nextTag.trim(), false)
   }
 
   // The grid pages itself: the sentinel at the end of the list asks for the next page while it
@@ -229,7 +233,7 @@ export default function AssetLibrary({
         className="asset-toolbar"
         onSubmit={(event) => {
           event.preventDefault()
-          onSearch(keyword.trim(), '')
+          onSearch(keyword.trim(), semantic)
         }}
       >
         <div className="asset-search-group">
@@ -237,12 +241,47 @@ export default function AssetLibrary({
             className="mp-input asset-search-input"
             type="search"
             value={keyword}
-            aria-label="搜索素材名称或 Tag"
-            placeholder="搜索名称或 Tag"
+            aria-label="搜索素材名称、Tag 或描述"
+            placeholder="搜索名称、Tag 或描述"
             onChange={(event) => setDraft(event.target.value)}
           />
+          <button type="submit" className="mp-btn-secondary mp-btn-small" disabled={loading} aria-busy={loading}>
+            {loading ? <span className="spinner spinner-dark" aria-hidden="true" /> : null}
+            搜索
+          </button>
+          <label className="asset-semantic-toggle">
+            <input
+              type="checkbox"
+              checked={semantic}
+              onChange={(event) => setSemantic(event.target.checked)}
+            />
+            <span>语义搜索</span>
+          </label>
         </div>
         <div className="asset-toolbar-actions">
+          {index ? (
+            <button
+              type="button"
+              className="mp-btn-secondary mp-btn-small"
+              disabled={indexBusy || Boolean(index.active_run)}
+              onClick={() => onReindex('reindex')}
+              title="重新同步素材清单并为全部素材生成描述"
+            >
+              {index.active_run
+                ? `索引中 ${(index.active_run.counters.total ?? index.total) - (index.active_run.counters.remaining ?? 0)}/${index.active_run.counters.total ?? index.total}`
+                : '重新索引'}
+            </button>
+          ) : null}
+          {!index?.active_run && (index?.failed ?? 0) > 0 ? (
+            <button
+              type="button"
+              className="mp-btn-ghost mp-btn-small"
+              disabled={indexBusy}
+              onClick={() => onReindex('retry')}
+            >
+              重试失败 {index?.failed}
+            </button>
+          ) : null}
           {assets.length > 0 ? (
             <button
               type="button"
@@ -283,6 +322,10 @@ export default function AssetLibrary({
       </form>
 
       {error ? <div className="asset-notice asset-notice-error">{error}</div> : null}
+      {search?.degraded ? (
+        <div className="asset-notice">搜索词生成失败，已按原词搜索。</div>
+      ) : null}
+      <AssetSearchVocabulary search={search} />
       {deleteError ? <div className="asset-notice asset-notice-error">{deleteError}</div> : null}
 
       {loading ? (

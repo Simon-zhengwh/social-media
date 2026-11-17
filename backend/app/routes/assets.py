@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
@@ -10,10 +11,17 @@ from app.api_errors import am_http_error
 from app.api_paths import asset_url
 from app.middleware import is_local_bypass
 from app.request_context import request_db, request_merchant_id, request_store
-from app.services import am_assets, asset_deletion, asset_records, poster_finalizations
+from app.services import (
+    am_assets,
+    asset_deletion,
+    asset_index_runner,
+    asset_records,
+    poster_finalizations,
+)
 from app.services.am_client import AMClientError
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+logger = logging.getLogger(__name__)
 
 
 class AssetTagsUpdate(BaseModel):
@@ -31,6 +39,35 @@ class AssetDeletePayload(BaseModel):
 
     ids: list[str] = Field(min_length=1, max_length=200)
     force: bool = False
+
+
+def _queue_description(request: Request, asset_id: str) -> None:
+    """Refresh one asset's search description after an upload or a metadata change.
+
+    Failure here never fails the write: the stored name or tags are already saved, and
+    the next successful pass replaces the description.
+    """
+    state = getattr(request, "app", None)
+    state = getattr(state, "state", None)
+    client = getattr(state, "core_ai", None)
+    settings = getattr(state, "settings", None)
+    if client is None or settings is None:
+        return
+    if not getattr(settings, "asset_index_auto_describe", False):
+        return
+    try:
+        asset_index_runner.describe_asset(
+            request_db(request),
+            settings,
+            client,
+            request_store(request),
+            merchant_id=request_merchant_id(request),
+            asset_id=asset_id,
+            am=None if is_local_bypass(request) else getattr(state, "am", None),
+            cookie=str(getattr(getattr(request, "state", None), "am_cookie", "") or ""),
+        )
+    except Exception:  # noqa: BLE001 - the asset write already succeeded
+        logger.exception("could not queue description for %s", asset_id)
 
 
 def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
@@ -85,6 +122,7 @@ def upload_asset(
     am = getattr(request.app.state, "am", None)
     if is_local_bypass(request) or am is None:
         # Local dev (and unit-test doubles) keep uploads local; no AM write is attempted.
+        _queue_description(request, str(document["_id"]))
         return poster_finalizations.enrich_assets(request_db(request), [asset_out(document)])[0]
     if document.get("am_media_library_id"):
         # Same bytes uploaded before: it already owns a media-library record.
@@ -106,6 +144,7 @@ def upload_asset(
         if created:
             _discard_upload(request, document, store)
         raise am_http_error(exc) from exc
+    _queue_description(request, str(document["_id"]))
     return poster_finalizations.enrich_assets(request_db(request), [asset_out(document)])[0]
 
 
@@ -127,8 +166,9 @@ def update_asset_tags(
     request: Request,
 ) -> dict[str, Any]:
     bypass = is_local_bypass(request)
+    before = request_db(request).assets.find_one({"_id": asset_id}, {"tags": 1}) or {}
     try:
-        return am_assets.update_tags(
+        saved = am_assets.update_tags(
             request_db(request),
             None if bypass else getattr(request.app.state, "am", None),
             request.state.am_cookie,
@@ -142,6 +182,10 @@ def update_asset_tags(
         raise HTTPException(status_code=404, detail="素材不存在") from exc
     except AMClientError as exc:
         raise am_http_error(exc) from exc
+    if list(before.get("tags") or []) != list(saved.get("tags") or []):
+        # Tags describe the picture, so a changed set changes what the descriptions may say.
+        _queue_description(request, asset_id)
+    return saved
 
 
 @router.put("/{asset_id}/name")
@@ -151,8 +195,9 @@ def update_asset_name(
     request: Request,
 ) -> dict[str, Any]:
     bypass = is_local_bypass(request)
+    before = request_db(request).assets.find_one({"_id": asset_id}, {"original_name": 1}) or {}
     try:
-        return am_assets.rename_asset(
+        saved = am_assets.rename_asset(
             request_db(request),
             None if bypass else getattr(request.app.state, "am", None),
             request.state.am_cookie,
@@ -166,6 +211,9 @@ def update_asset_name(
         raise HTTPException(status_code=404, detail="素材不存在") from exc
     except AMClientError as exc:
         raise am_http_error(exc) from exc
+    if str(before.get("original_name") or "") != str(saved.get("original_name") or ""):
+        _queue_description(request, asset_id)
+    return saved
 
 
 @router.get("/{asset_id}/file")

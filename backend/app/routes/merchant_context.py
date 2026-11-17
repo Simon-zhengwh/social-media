@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, Request
 from app.api_errors import am_http_error
 from app.middleware import is_local_bypass as _local_bypass
 from app.request_context import request_db, request_profile
-from app.services import am_assets, poster_finalizations
+from app.services import am_assets, asset_search, poster_finalizations
 from app.services.am_client import AMClientError
 
 router = APIRouter(tags=["merchant-context"])
@@ -56,9 +56,18 @@ def list_am_assets(
     request: Request,
     keyword: str = "",
     tag: str = "",
+    search_id: str = "",
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
+    if search_id:
+        # A submitted search answers from the index, so descriptions can match and the
+        # vocabulary (not the model) decides which pages are shown.
+        page = asset_search.search_page(
+            request_db(request), search_id, skip=skip, limit=limit, merchant_id=merchant_id
+        )
+        page['items'] = poster_finalizations.enrich_assets(request_db(request), page['items'])
+        return page
     if _local_bypass(request):
         # The AM media library needs a console session; local dev only has uploads.
         page = am_assets.list_local(

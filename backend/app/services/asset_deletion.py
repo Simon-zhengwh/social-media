@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from app.services import asset_records
+from app.services import asset_index, asset_records
 from app.services.am_assets import AM_ASSET_PREFIX
 from app.services.am_client import AMClient
 from app.services.object_store import ObjectStore
@@ -81,6 +81,10 @@ def delete_assets(
             if key:
                 store.delete(key)
         db.assets.delete_one({"_id": asset_id})
+
+    # A deleted asset must leave the search index too, otherwise a stale card answers
+    # later searches and a queued description would recreate the record.
+    asset_index.deleted_record_ids(db, documents)
 
     return {
         "deleted": wanted,

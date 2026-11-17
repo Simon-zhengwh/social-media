@@ -1797,9 +1797,6 @@ label.product-add.is-disabled {
   width: min(1440px, 96vw);
   max-height: 92vh;
 }
-/* The picker header carries no copy: the dialog name lives in aria-label, so only 关闭 remains. */
-.modal.modal-picker .modal-head { justify-content: flex-end; }
-
 .modal.modal-picker .picker-grid {
   /* Eight cards per row on a wide screen; chips wrap rather than shrink, so tags stay legible. */
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -1984,10 +1981,18 @@ label.product-add.is-disabled {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  /* 关闭 lives here, not in a header row: the grid gets the full dialog height. */
+  flex: 0 0 auto;
   padding-top: 14px;
   border-top: 1px solid var(--color-neutral-200);
   font-size: 11px;
   color: var(--color-neutral-500);
+}
+
+.picker-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .picker-footer-actions {
@@ -6821,13 +6826,18 @@ label.product-add.is-disabled {
   min-height: 38px;
   min-width: 260px;
   flex: 1;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--color-neutral-300);
   border-radius: 8px;
   padding: 8px 12px;
-  background: var(--surface-card);
-  color: var(--text-primary);
+  background: #fff;
+  color: var(--color-primary-900);
 }
 
+.mp-input:focus {
+  border-color: var(--color-secondary-600);
+  outline: none;
+  box-shadow: var(--ring-focus);
+}
 
 .merchant-info-stores {
  margin-top: 14px;
@@ -7558,6 +7568,23 @@ label.product-add.is-disabled {
   min-width: 0;
 }
 
+/* Semantic search is one toggle next to the box: only a submit asks the model. */
+.asset-semantic-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--color-secondary-700);
+  cursor: pointer;
+}
+
+.asset-semantic-toggle input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-primary-600);
+}
+
 .asset-toolbar-actions {
   display: flex;
   align-items: center;
@@ -7579,11 +7606,57 @@ label.product-add.is-disabled {
 @media (max-width: 760px) {
   .asset-search-group {
     max-width: none;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .asset-search-group .asset-search-input {
+    flex-basis: 160px;
   }
 
   .asset-toolbar-actions {
     margin-left: 0;
   }
+}
+
+/* The vocabulary of the submitted search: the same chips as card tags, with expansions
+   marked by a dashed outline because they only rank below an original hit. */
+.asset-terms {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.asset-term-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.asset-term {
+  cursor: default;
+}
+
+.asset-term.is-expansion {
+  border-style: dashed;
+  border-color: var(--color-neutral-300);
+  background: #fff;
+  color: var(--color-neutral-500);
+}
+
+.asset-term-divider {
+  width: 1px;
+  height: 12px;
+  margin: 0 4px;
+  background: var(--color-neutral-200);
+}
+
+/* Inside the picker the chips sit under the search row, above the grid. */
+.asset-terms.picker-terms {
+  margin: 12px 0 4px;
 }
 
 /* FB-011: tags stay short per card and double as filter shortcuts. */
