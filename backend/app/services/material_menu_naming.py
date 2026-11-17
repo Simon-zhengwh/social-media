@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -283,12 +284,13 @@ def write_named_copy(root: str | Path, photo_id: str, result: MenuNamingResult, 
     filename = _check_name(name.replace("/", "／"), "图片名称", limit=190)
     directory = files.ensure_local_directory(Path(root) / photo_id)
     target = directory / (filename + suffix.lower())
-    if target.exists():
-        if hashlib.sha256(target.read_bytes()).hexdigest() == sha256:
+    long_target = files.long_path(target)
+    if os.path.exists(long_target):
+        if hashlib.sha256(Path(long_target).read_bytes()).hexdigest() == sha256:
             return target
         raise MenuNamingError("同一照片ID下已有不同内容，拒绝覆盖")
-    with target.open("xb") as handle:
+    with open(long_target, "xb") as handle:
         handle.write(data)
-    if hashlib.sha256(target.read_bytes()).hexdigest() != sha256:
+    if hashlib.sha256(Path(long_target).read_bytes()).hexdigest() != sha256:
         raise MenuNamingError("本机副本哈希校验失败")
     return target

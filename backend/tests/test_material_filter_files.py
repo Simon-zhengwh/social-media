@@ -253,6 +253,69 @@ def test_normalize_smb_source_rejects_unsafe_forms(value, code):
     assert excinfo.value.code == code
 
 
+@pytest.mark.skipif(os.name != "nt", reason="local drive sources are Windows-only")
+def test_normalize_source_accepts_local_fixed_disk_folder(tmp_path):
+    folder = tmp_path / "菜品选图"
+    folder.mkdir()
+    source = mf.normalize_source(str(folder), drive_type=lambda _: 3)
+    assert source.kind == "local"
+    assert source.root == os.path.normpath(str(folder))
+    assert source.key == "local:" + source.root.casefold()
+    assert source.display_name == "菜品选图"
+
+    # A trailing separator is the same folder, so it must not create a second TAB.
+    again = mf.normalize_source(str(folder) + "\\", drive_type=lambda _: 3)
+    assert again.key == source.key
+    assert again.root == source.root
+
+
+def test_normalize_local_source_rejects_unsafe_forms(tmp_path):
+    folder = tmp_path / "选图"
+    folder.mkdir()
+
+    def normalize(value, *, drive=3):
+        return mf.normalize_local_source(value, drive_type=lambda _: drive)
+
+    with pytest.raises(mf.MaterialFilterFileError) as excinfo:
+        normalize("C:\\")
+    assert excinfo.value.code == "source_folder_required"
+
+    with pytest.raises(mf.MaterialFilterFileError) as excinfo:
+        normalize(str(tmp_path / "missing"))
+    assert excinfo.value.code == "source_unavailable"
+
+    with pytest.raises(mf.MaterialFilterFileError) as excinfo:
+        normalize("C:\\素材\\..\\其他")
+    assert excinfo.value.code == "source_traversal"
+
+    with pytest.raises(mf.MaterialFilterFileError) as excinfo:
+        normalize("\\\\?\\D:\\素材")
+    assert excinfo.value.code == "source_device_path"
+
+    with pytest.raises(mf.MaterialFilterFileError) as excinfo:
+        normalize(str(folder), drive=4)
+    assert excinfo.value.code == "source_network_drive"
+
+    with pytest.raises(mf.MaterialFilterFileError) as excinfo:
+        normalize(str(folder), drive=2)
+    assert excinfo.value.code == "source_drive_rejected"
+
+
+def test_normalize_source_keeps_smb_dispatch():
+    source = mf.normalize_source("\\\\192.168.11.5\\movies\\照片")
+    assert source.kind == "smb"
+    assert source.root == "\\\\192.168.11.5\\movies\\照片"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="extended-length paths are Windows-only")
+def test_long_path_adds_the_windows_prefix():
+    long_name = "D:\\ai_project\\social-media\\local_media\\" + "x" * 250 + ".jpg"
+    assert mf.long_path(long_name) == "\\\\?\\" + long_name
+    assert mf.long_path("\\\\nas\\share\\" + "x" * 250) == "\\\\?\\UNC\\nas\\share\\" + "x" * 250
+    already = "\\\\?\\D:\\short.jpg"
+    assert mf.long_path(already) == already
+
+
 def test_validate_local_output_root_rejects_network_device_and_traversal(tmp_path):
     with pytest.raises(mf.MaterialFilterFileError) as excinfo:
         mf.validate_local_output_root("\\\\192.168.11.5\\movies\\out")

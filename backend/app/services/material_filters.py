@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import os
 import re
 import shutil
 import uuid
@@ -107,28 +108,32 @@ def default_output_root(settings: Settings) -> str:
 def _unique_display_name(db, source) -> str:
     base = source.display_name
     candidates = [base]
-    if source.relative:
-        parent = source.relative.split("\\")[-1]
+    relative = getattr(source, "relative", "")
+    server = getattr(source, "server", "")
+    if relative:
+        parent = relative.split("\\")[-1]
         candidates.append(f"{base}（{parent}）")
-    candidates.append(f"{base}（{source.server}）")
+    if server:
+        candidates.append(f"{base}（{server}）")
     for candidate in candidates:
         if db[FOLDER_COLLECTION].find_one({"display_name": candidate}) is None:
             return candidate
-    return f"{base}（{source.unc[2:12]}）"
+    return f"{base}（{source.root[:10]}）"
 
 
 def add_folder(db, original_input: str, *, readable_check=None) -> tuple[dict[str, Any], bool]:
-    source = files.normalize_smb_source(original_input)
+    source = files.normalize_source(original_input)
     existing = db[FOLDER_COLLECTION].find_one({"canonical_source_key": source.key})
     if existing:
         return existing, False
-    (readable_check or files.check_source_readable)(source.unc)
+    (readable_check or files.check_source_readable)(source.root)
     timestamp = now()
     document = {
         "_id": _new_id("mfolder"),
         "display_name": _unique_display_name(db, source),
         "original_input": str(original_input or "").strip(),
-        "source_root": source.unc,
+        "source_root": source.root,
+        "source_kind": source.kind,
         "canonical_source_key": source.key,
         "created_at": timestamp,
         "updated_at": timestamp,
@@ -247,12 +252,23 @@ def create_scheme(
         resolved_root = files.validate_local_output_root(root)
     except MaterialFilterFileError as exc:
         raise MaterialFilterError(exc.code, exc.message, exc.status_code) from exc
+    if (folder.get("source_kind") or "smb") == "local":
+        source_path = os.path.normcase(os.path.realpath(folder["source_root"]))
+        output_path = os.path.normcase(str(resolved_root))
+        if output_path == source_path or output_path.startswith(source_path + os.sep):
+            # The local source stays read-only: copies and previews must live elsewhere.
+            raise MaterialFilterError(
+                "output_inside_source",
+                "输出目录不能位于本机来源目录内部，请选择其他文件夹",
+                422,
+            )
     timestamp = now()
     document = {
         "_id": _new_id("mscheme"),
         "folder_id": folder["_id"],
         "name": scheme_name,
         "source_root_snapshot": folder["source_root"],
+        "source_kind_snapshot": folder.get("source_kind") or "smb",
         "source_key_snapshot": folder["canonical_source_key"],
         "recursive": bool(recursive),
         "rules": normalized_rules,

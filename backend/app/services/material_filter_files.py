@@ -54,6 +54,16 @@ class SmbSource:
 
 
 @dataclass(frozen=True)
+class SourceRoot:
+    """A read-only source directory: an SMB share or a local fixed disk folder."""
+
+    kind: str
+    root: str
+    key: str
+    display_name: str
+
+
+@dataclass(frozen=True)
 class SourceEntry:
     relative_path: str
     name: str
@@ -147,6 +157,70 @@ def normalize_smb_source(value: str) -> SmbSource:
         key=unc.casefold(),
         display_name=tail[-1] if tail else share,
     )
+
+
+def normalize_local_source(
+    value: str,
+    *,
+    drive_type=None,
+    final_path=None,
+) -> SourceRoot:
+    """Normalize an absolute local folder on a fixed disk.
+
+    Only the folder is read; nothing is written back. Mapped network drives,
+    removable media, device paths and directory links are rejected so the filter
+    keeps a single local fixed-disk source kind next to SMB shares.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        raise _source_error("请输入文件夹地址", "source_required")
+    if _DEVICE_PREFIX.match(raw):
+        raise _source_error("不支持 Windows 设备路径", "source_device_path")
+    if not re.match(r"^[A-Za-z]:[\\/]", raw):
+        raise _source_error(
+            "请输入 SMB 共享目录或以盘符开头的本机目录", "source_unsupported_form"
+        )
+    _, tail = os.path.splitdrive(raw)
+    tail_parts = [part for part in re.split(r"[\\/]+", tail) if part]
+    if not tail_parts:
+        raise _source_error("请选择磁盘上的具体文件夹，而不是整个磁盘", "source_folder_required")
+    for part in tail_parts:
+        if part in {".", ".."}:
+            raise _source_error("地址不能包含相对路径片段", "source_traversal")
+        if _ILLEGAL_SOURCE_CHARS.search(part):
+            raise _source_error("地址包含 Windows 不允许的字符", "source_invalid")
+    root = Path(os.path.normpath(raw))
+    if not root.is_dir():
+        raise _source_error(f"来源目录不存在或不是文件夹：{root}")
+    if _is_reparse_point(root) or root.is_symlink():
+        raise _source_error(
+            "来源目录不能是目录链接、符号链接或 junction", "source_reparse_point"
+        )
+    drive = (drive_type or _default_drive_type)(str(root))
+    if drive == _DRIVE_REMOTE:
+        raise _source_error(
+            "本机目录不能位于映射网络盘，请直接填写 SMB 共享地址", "source_network_drive"
+        )
+    if drive != _DRIVE_FIXED:
+        raise _source_error(
+            "本机目录必须位于固定磁盘，不接受可移动盘或无法识别的磁盘", "source_drive_rejected"
+        )
+    resolved = (final_path or _default_final_path)(root)
+    return SourceRoot(
+        kind="local",
+        root=str(root),
+        key="local:" + str(root).casefold(),
+        display_name=Path(resolved).name or str(root),
+    )
+
+
+def normalize_source(value: str, *, drive_type=None) -> SourceRoot:
+    """Dispatch to the SMB or local fixed-disk normalization."""
+    raw = str(value or "").strip()
+    if re.match(r"^[A-Za-z]:[\\/]", raw):
+        return normalize_local_source(raw, drive_type=drive_type)
+    smb = normalize_smb_source(raw)
+    return SourceRoot(kind="smb", root=smb.unc, key=smb.key, display_name=smb.display_name)
 
 
 def check_source_readable(source_root: str | Path) -> None:
@@ -449,20 +523,41 @@ def ensure_local_directory(
     return validate_local_output_root(resolved, drive_type=drive_type, final_path=final_path)
 
 
+def long_path(value: str | Path) -> str:
+    """Windows extended-length path so a long dish name still writes.
+
+    A menu name plus the local copy directory easily passes MAX_PATH; the
+    ``\\\\?\\`` prefix lets the same bytes land without renaming anything.
+    """
+    text = str(value)
+    if os.name != "nt" or text.startswith("\\\\?\\"):
+        return text
+    absolute = os.path.abspath(text)
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute.lstrip("\\")
+    return "\\\\?\\" + absolute
+
+
+def _is_inside(directory: Path, target: Path) -> bool:
+    base = os.path.normcase(os.path.abspath(directory))
+    candidate = os.path.normcase(os.path.abspath(target))
+    return candidate == base or candidate.startswith(base + os.sep)
+
+
 def _atomic_write(directory: Path, file_name: str, data: bytes) -> Path:
     directory = ensure_local_directory(directory)
     target = directory / file_name
-    if not target.resolve().is_relative_to(directory):
+    if not _is_inside(directory, target):
         raise MaterialFilterFileError("output_traversal", "输出文件名越界", 422)
     temp = directory / f".{uuid.uuid4().hex}.tmp"
     try:
-        with temp.open("xb") as handle:
+        with open(long_path(temp), "xb") as handle:
             handle.write(data)
-        os.replace(temp, target)
+        os.replace(long_path(temp), long_path(target))
     finally:
-        if temp.exists():
+        if os.path.exists(long_path(temp)):
             try:
-                temp.unlink()
+                os.unlink(long_path(temp))
             except OSError:
                 pass
     return target
@@ -493,8 +588,8 @@ def copy_approved_bytes(
     passed_dir = ensure_local_directory(Path(directory) / "passed")
     file_name = output_filename(display_name, short_id, suffix)
     target = passed_dir / file_name
-    if target.exists():
-        existing = hashlib.sha256(target.read_bytes()).hexdigest()
+    if os.path.exists(long_path(target)):
+        existing = hashlib.sha256(Path(long_path(target)).read_bytes()).hexdigest()
         if existing == sha256:
             return file_name, existing
         raise MaterialFilterFileError(
@@ -503,7 +598,7 @@ def copy_approved_bytes(
             409,
         )
     _atomic_write(passed_dir, file_name, data)
-    written = hashlib.sha256(target.read_bytes()).hexdigest()
+    written = hashlib.sha256(Path(long_path(target)).read_bytes()).hexdigest()
     if written != sha256:
         raise MaterialFilterFileError("output_hash_mismatch", "副本校验失败，已隔离为不可用", 500)
     return file_name, written

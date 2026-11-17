@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -151,6 +152,32 @@ def test_add_folder_reports_unreadable_source_without_writing(db):
     with pytest.raises(mf.MaterialFilterFileError):
         store.add_folder(db, "\\\\nas\\share\\照片", readable_check=deny)
     assert store.list_folders(db) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="local drive sources are Windows-only")
+def test_add_folder_accepts_local_fixed_disk_folder(db, settings, tmp_path):
+    folder_dir = tmp_path / "菜品选图"
+    folder_dir.mkdir()
+    folder, created = store.add_folder(db, str(folder_dir), readable_check=lambda _: None)
+    assert created is True
+    assert folder["source_kind"] == "local"
+    assert folder["source_root"] == os.path.normpath(str(folder_dir))
+    assert folder["display_name"] == "菜品选图"
+
+    scheme = store.create_scheme(db, settings, folder, name="朵颐菜品选图")
+    assert scheme["source_root_snapshot"] == folder["source_root"]
+    assert scheme["source_kind_snapshot"] == "local"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="local drive sources are Windows-only")
+def test_create_scheme_rejects_output_inside_local_source(db, settings, tmp_path):
+    folder_dir = tmp_path / "菜品选图"
+    folder_dir.mkdir()
+    folder, _ = store.add_folder(db, str(folder_dir), readable_check=lambda _: None)
+    with pytest.raises(store.MaterialFilterError) as excinfo:
+        store.create_scheme(db, settings, folder, name="越界输出", output_root=str(folder_dir / "out"))
+    assert excinfo.value.code == "output_inside_source"
+    assert store.list_schemes(db, folder["_id"]) == []
 
 
 def test_create_scheme_snapshots_rules_and_model(db, settings):

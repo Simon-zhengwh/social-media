@@ -274,6 +274,29 @@ def test_menu_choice_slashes_preserve_original_names_and_write_one_safe_file(ser
     assert target.read_bytes() == data
 
 
+def test_long_menu_name_still_writes_the_copy(service, menu, tmp_path):
+    from app.services import material_filter_files as files
+
+    long_en = 'Dry-Pot Cabbage and Sliced Pork w. Mixed Vegetable in Chilli Pepper & Cumin '
+    long_en += 'with Roasted Chilli and Asian Green ' * 2
+    long_en = long_en[:155].strip()
+    value = copy.deepcopy(menu)
+    value['items'].append({'id': 'keke-100', 'zh': '干锅手撕包菜', 'en': long_en.strip()})
+    validated = service.validate_menu(value)
+    data = payload('matched', 'keke-100')
+    result = service.validate_result(data, validated)
+    raw = b'original photo bytes'
+    target = service.write_named_copy(
+        tmp_path / 'deep' / 'passed', 'photo_long', result, suffix='.jpg',
+        data=raw, sha256=hashlib.sha256(raw).hexdigest(),
+    )
+    assert len(str(target)) > 260
+    assert files.long_path(target) != str(target)
+    from pathlib import Path
+
+    assert Path(files.long_path(target)).read_bytes() == raw
+
+
 def test_full_szechuan_menu_is_valid_and_keeps_user_pairs(service):
     import json
     from pathlib import Path

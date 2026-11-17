@@ -126,9 +126,10 @@ def pending_rows(db, scheme: dict[str, Any], *, all_passed: bool, force: bool, l
 def local_copy_path(settings, scheme: dict[str, Any], evaluation: dict[str, Any]) -> Path:
     directory = store.scheme_directory(settings, scheme)
     target = directory / str(evaluation["output_path"])
-    if not target.is_file():
+    long_target = files.long_path(target)
+    if not os.path.exists(long_target):
         raise FileNotFoundError(target)
-    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    digest = hashlib.sha256(Path(long_target).read_bytes()).hexdigest()
     if digest != evaluation["source_sha256"]:
         raise ValueError(f"本机副本与评估内容不一致：{target.name}")
     return target
@@ -375,7 +376,7 @@ def main() -> int:
             label = f"[{index}/{len(rows)}] {row['original_name']}"
             try:
                 path = local_copy_path(settings, scheme, row)
-                raw = path.read_bytes()
+                raw = Path(files.long_path(path)).read_bytes()
                 max_file_bytes = int(args.max_body_mb * 1024 * 1024 * 3 / 4) if args.max_body_mb else 0
                 data, new_suffix, recompressed = fit_upload_bytes(
                     raw, max_file_bytes, force_jpeg=path.suffix.lower() in BROWSER_UNSAFE_SUFFIXES

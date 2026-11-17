@@ -482,6 +482,7 @@ export type MaterialFilterFolder = {
   display_name: string
   original_input: string
   source_root: string
+  source_kind?: 'smb' | 'local'
   created_at: string
 }
 

@@ -149,6 +149,7 @@ def folder_out(doc: dict[str, Any]) -> dict[str, Any]:
         "display_name": doc.get("display_name") or "",
         "original_input": doc.get("original_input") or "",
         "source_root": doc.get("source_root") or "",
+        "source_kind": doc.get("source_kind") or "smb",
         "created_at": utc_iso(doc.get("created_at")),
     }
 

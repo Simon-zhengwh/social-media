@@ -792,11 +792,11 @@ export default function MaterialFilterPage() {
       {addingFolder ? (
         <div className="mf-inline-form">
           <label>
-            输入 SMB 文件夹地址
+            输入文件夹地址
             <input
               value={folderInput}
               onChange={(event) => setFolderInput(event.target.value)}
-              placeholder="\\192.168.11.5\movies\See Joy素材\照片"
+              placeholder="\\192.168.11.5\movies\照片 或 D:\素材\照片"
               spellCheck={false}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') void submitFolder()
@@ -811,7 +811,7 @@ export default function MaterialFilterPage() {
               取消
             </button>
           </div>
-          <p className="mf-hint">只读访问当前已连接的共享；添加时会枚举一次目录，不会在 SMB 上创建任何文件。</p>
+          <p className="mf-hint">支持 SMB 共享目录和本机固定磁盘文件夹，均严格只读；添加时只枚举一次目录，不会在来源里创建任何文件。</p>
         </div>
       ) : null}
 
@@ -822,8 +822,8 @@ export default function MaterialFilterPage() {
 
       {!foldersLoading && folders.length === 0 ? (
         <div className="mf-empty">
-          <strong>还没有添加 SMB 文件夹</strong>
-          <p>点击「＋添加文件夹」，输入共享目录地址。每个目录会成为一个 TAB，所有结果只保存在本机。</p>
+          <strong>还没有添加文件夹</strong>
+          <p>点击「＋添加文件夹」，输入共享目录或本机目录地址。每个目录会成为一个 TAB，所有结果只保存在本机。</p>
         </div>
       ) : null}
 

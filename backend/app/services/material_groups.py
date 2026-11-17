@@ -77,8 +77,11 @@ def _edit_group(db, group_id: str, version: str, *, request_id: str = ""):
 
 
 @contextmanager
-def _scheme_job(db, scheme: dict, *, request_id: str = "", kind: str = "group_edit"):
-    """Claim the group-edit lease for whole-scheme maintenance without a group."""
+def _scheme_job(db, scheme: dict, *, request_id: str = "", kind: str = "group_edit", report: dict | None = None):
+    """Claim the group-edit lease for whole-scheme maintenance without a group.
+
+    ``report`` lets the body attach diagnostics (per-photo errors) to the run row.
+    """
     run, created = store.create_run(db, scheme, request_id=request_id, kind=kind)
     if not created:
         raise store.MaterialFilterError("group_edit_exists", "同一次分组操作已存在，请刷新后查看结果", 409)
@@ -90,7 +93,8 @@ def _scheme_job(db, scheme: dict, *, request_id: str = "", kind: str = "group_ed
         status, error = "failed", str(exc)[:500]
         raise
     finally:
-        db[store.RUN_COLLECTION].update_one({"_id": run["_id"]}, {"$set": {"status": status, "error": error, "finished_at": store.now()}})
+        values = {"status": status, "error": error, "finished_at": store.now(), **(report or {})}
+        db[store.RUN_COLLECTION].update_one({"_id": run["_id"]}, {"$set": values})
         store.release_scheme_run(db, scheme["_id"], run["_id"])
 
 
@@ -418,6 +422,11 @@ def _shortlist_representative(group: dict, rows: dict, cache: dict) -> dict | No
     return valid_evaluation(file, cache) if file else None
 
 
+def _shortlist_untouched(shortlist: list[dict], cache: dict) -> bool:
+    """True when no shortlist member carries a sweep or operator decision."""
+    return all((valid_evaluation(file, cache) or {}).get("pick_source") is None for file in shortlist)
+
+
 def _group_needs_sync(group: dict, rows: dict, cache: dict, inherited_groups: set[str], *,
                       respect_swept: bool = True) -> bool:
     """True when a 通过/待复核 group still lacks shortlist picks.
@@ -425,15 +434,23 @@ def _group_needs_sync(group: dict, rows: dict, cache: dict, inherited_groups: se
     A group the automatic sweep already handled keeps operator edits (unpicked
     photos) until new results arrive; the explicit maintenance action ignores that
     marker so it can complete a partly picked shortlist again.
+
+    The marker only records that a sweep visited the group, not that it produced
+    the shortlist: a sweep running under the older 待复核 rule, or one whose copies
+    all failed, left nothing behind. Such a group has an untouched shortlist and is
+    eligible again, otherwise the fix that made 待复核 groups pickable would only
+    apply to grouping revisions created afterwards.
     """
-    if respect_swept and group.get("auto_picked") and group.get("auto_pick_policy") == AUTO_PICK_POLICY:
-        return False
     representative = _shortlist_representative(group, rows, cache)
     passing = bool(representative and representative.get("effective_decision") in SHORTLIST_VERDICTS and representative.get("naming"))
     if not passing:
         return group["_id"] in inherited_groups
     shortlist = _ordered_members(group, rows)[:_shortlist_size(group)]
-    return any(not (valid_evaluation(file, cache) or {}).get("manual_pick") for file in shortlist)
+    if not shortlist or all((valid_evaluation(file, cache) or {}).get("manual_pick") for file in shortlist):
+        return False
+    if respect_swept and group.get("auto_picked") and group.get("auto_pick_policy") == AUTO_PICK_POLICY:
+        return _shortlist_untouched(shortlist, cache)
+    return True
 
 
 def _inherited_pick_groups(db, scheme: dict) -> set[str]:
@@ -573,7 +590,9 @@ def sync_auto_picks(db, settings, scheme: dict, *, max_groups: int | None = None
             break
         totals["visited"] += 1
         result = auto_pick_successful_group(db, settings, scheme, group, cache=cache)
-        db[COLLECTION].update_one({"_id": group["_id"]}, {"$set": {"auto_picked": True, "auto_pick_policy": AUTO_PICK_POLICY}})
+        # A group whose copies all failed is left unmarked, so the next sweep retries it.
+        if result["photos_picked"] or not result["errors"]:
+            db[COLLECTION].update_one({"_id": group["_id"]}, {"$set": {"auto_picked": True, "auto_pick_policy": AUTO_PICK_POLICY}})
         totals["groups"] += int(result["eligible"])
         totals["photos_picked"] += result["photos_picked"]
         totals["errors"].extend(result["errors"])
@@ -602,12 +621,14 @@ def start_auto_pick(db, settings, scheme: dict) -> bool:
 
 def _auto_pick_job(db, settings, scheme_id: str, revision: str) -> None:
     scheme = None
+    report: dict = {}
     try:
         scheme = store.get_scheme(db, scheme_id)
         if scheme.get("group_revision") != revision:
             return
-        with _scheme_job(db, scheme, kind="auto_pick") as current_scheme:
+        with _scheme_job(db, scheme, kind="auto_pick", report=report) as current_scheme:
             totals = sync_auto_picks(db, settings, current_scheme, max_groups=AUTO_PICK_BATCH_GROUPS)
+            report["auto_pick_errors"] = totals["errors"][:20]
         # Re-arm while batches remain; per-photo copy errors end the automatic run and
         # leave the retry to the explicit maintenance action.
         _mark_auto_pick(db, current_scheme, None if totals["remaining"] else revision)
@@ -619,8 +640,10 @@ def _auto_pick_job(db, settings, scheme_id: str, revision: str) -> None:
 
 def backfill_picks_for_passed_groups(db, settings, scheme: dict) -> dict:
     """Apply representative naming/tags and shortlist to already recognized groups."""
-    with _scheme_job(db, scheme) as current_scheme:
+    report: dict = {}
+    with _scheme_job(db, scheme, report=report) as current_scheme:
         totals = sync_auto_picks(db, settings, current_scheme, respect_swept=False)
+        report["auto_pick_errors"] = totals["errors"][:20]
         _mark_auto_pick(db, current_scheme, current_scheme.get("group_revision"))
     return {key: totals[key] for key in ("groups", "photos_picked", "errors")}
 

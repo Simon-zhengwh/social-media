@@ -470,6 +470,33 @@ def test_uncertain_groups_are_shortlisted_so_they_can_be_uploaded(env):
     assert all(item["evaluation"]["manual_pick"] is False for item in cleared)
 
 
+def test_swept_group_that_never_shortlisted_is_healed_by_the_next_sweep(env):
+    db,settings,source,scheme,_=env
+    populate(source,3)
+    groups.scan_scheme(db,settings,scheme)
+    group=groups.get_group(db,groups.list_groups(db,settings,scheme)["items"][0]["id"])
+    representative=next(row for row in db[store.FILE_COLLECTION].find({"scheme_id":scheme["_id"]}) if row["_id"] in group["representative_file_ids"])
+    result=_add_result(db,scheme,representative)
+    naming={"naming_status":"ambiguous","selected_menu_id":None,"candidate_menu_ids":["dish-1"],
+        "name_zh":None,"name_en":None,"visual_subject":"抄手或水饺","reason":"特征都符合",
+        "uncertain_attributes":["菜名"],"category":"食物","tags":["食材"],"menu_version":"v1"}
+    store.update_evaluation(db,result["_id"],{"naming":naming,"decision":"uncertain","effective_decision":"uncertain",
+        "manual_pick":False,"picked_at":None,"pick_source":None})
+    # The sweep ran before 待复核 groups were shortlisted: it left its marker but no pick.
+    db[groups.COLLECTION].update_one({"_id":group["_id"]},{"$set":{"auto_picked":True,"auto_pick_policy":groups.AUTO_PICK_POLICY}})
+    assert groups.list_groups(db,settings,scheme)["stats"]["pending_picks"]==1
+
+    totals=groups.sync_auto_picks(db,settings,store.get_scheme(db,scheme["_id"]))
+    assert totals["groups"]==1 and totals["photos_picked"]==2
+    assert groups.list_groups(db,settings,scheme)["stats"]["pending_picks"]==0
+
+    # A person's unpick is still deliberate: the marker keeps the group out of the sweep.
+    picked=next(item for item in groups.list_members(db,settings,group["_id"])["items"] if item["evaluation"])
+    store.set_manual_pick(db,db[store.EVALUATION_COLLECTION].find_one({"_id":picked["evaluation"]["_id"]}),picked=False)
+    assert groups.list_groups(db,settings,scheme)["stats"]["pending_picks"]==0
+    assert groups.sync_auto_picks(db,settings,store.get_scheme(db,scheme["_id"]))["photos_picked"]==0
+
+
 def test_uncertain_groups_marked_by_the_older_policy_are_swept_again(env):
     db,settings,source,scheme,_=env
     populate(source,3)
