@@ -181,6 +181,9 @@ def test_unified_edit_starts_with_current_poster_then_added_refs_and_preserves_m
     assert call["model"] == "seedream-5.5-image-to-image"
     assert call["reference_names"] == [source_asset["original_name"], "this-turn.png", "original.png"]
     assert "图片1" in call["prompt"] and "当前海报" in call["prompt"]
+    # The edit composer names the poster @海报 and numbers references from @图1.
+    assert "图片1（@海报）" in call["prompt"]
+    assert "图片2（@图1）" in call["prompt"]
     latest = db.whole_tasks.find_one({"_id": created["id"]})
     assert [image["asset_id"] for image in latest["model_input_latest"]["images"]] == [source_asset["_id"], added, original]
     db.whole_tasks.update_one({"_id": created["id"]}, {"$set": {"edit.status": "failed"}})

@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type ClipboardEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { assetDisplayName } from '../assetNames'
-import { hydrateImagePrompt, imageMention, imagePromptIssue, parseImagePrompt, serializeImagePrompt, type PromptImage } from '../imageMentions'
+import { hydrateImagePrompt, imageLabel, imageMention, imagePromptIssue, parseImagePrompt, serializeImagePrompt, type PromptImage } from '../imageMentions'
 import { ZoomableImage } from './ImageLightbox'
 
 /** Kept in sync with the .image-reference-add-menu width in styles.css. */
@@ -25,13 +25,13 @@ function updateChip(node: HTMLElement, images: PromptImage[]) {
   const index = images.findIndex(image => image.assetId === node.dataset.imageMention)
   const image = images[index]
   node.className = `image-mention-chip${image ? '' : ' is-invalid'}`
-  node.setAttribute('aria-label', image ? `图片${index + 1}：${assetDisplayName(image.name)}` : '引用的图片已移除')
+  node.setAttribute('aria-label', image ? `${imageLabel(images, index)}：${assetDisplayName(image.name)}` : '引用的图片已移除')
   node.title = image?.name ?? '请删除该引用，或重新添加原图片'
   const thumbnail = document.createElement('img')
   thumbnail.alt = ''
   if (image) thumbnail.src = image.url
   else thumbnail.hidden = true
-  node.replaceChildren(thumbnail, document.createTextNode(image ? `图片${index + 1}` : '图片已移除'))
+  node.replaceChildren(thumbnail, document.createTextNode(image ? imageLabel(images, index) : '图片已移除'))
 }
 
 function mentionNode(assetId: string, images: PromptImage[]) {
@@ -179,8 +179,8 @@ export function ImageMentionEditor({ value, images, label, placeholder, disabled
     setQuery(null)
   }
 
-  const options = images.map((image, index) => ({ ...image, number: index + 1 }))
-    .filter(image => !query?.text || `图片${image.number} ${image.name}`.toLowerCase().includes(query.text.toLowerCase()))
+  const options = images.map((image, index) => ({ ...image, number: index + 1, label: imageLabel(images, index) }))
+    .filter(image => !query?.text || `${image.label} ${image.name}`.toLowerCase().includes(query.text.toLowerCase()))
   const activeIndex = options.length ? (query?.index ?? 0) % options.length : 0
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.nativeEvent.isComposing || composing.current) return
@@ -279,7 +279,7 @@ export function ImageMentionEditor({ value, images, label, placeholder, disabled
             <div key={image.assetId} id={`${menuId}-${index}`} role="option" aria-selected={index === activeIndex}
               className={index === activeIndex ? 'is-active' : ''} onMouseDown={event => event.preventDefault()}
               onMouseMove={() => setQuery(previous => previous ? { ...previous, index } : null)} onClick={() => insert(image.assetId)}>
-              <img src={image.url} alt="" /><span><strong>图片{image.number}</strong><small>{assetDisplayName(image.name)}</small></span>
+              <img src={image.url} alt="" /><span><strong>{image.label}</strong><small>{assetDisplayName(image.name)}</small></span>
             </div>
           )) : <p>没有匹配的图片，请先添加参考图。</p>}
         </div>, query.root,
@@ -319,9 +319,9 @@ export default function ImagePromptComposer({ images, maxImages = null, addedCou
       <div className="image-reference-strip">
         {images.map((image, index) => (
           <div className={`image-reference-tile${image.removable === false ? ' is-source' : ''}`} key={image.assetId}>
-            <ZoomableImage className="image-reference-preview" src={image.url} alt={`图片${index + 1}：${assetDisplayName(image.name)}`} title={assetDisplayName(image.name)} />
-            <span className="image-reference-label">图片{index + 1}{image.removable === false ? ' · 当前图' : ''}</span>
-            {onRemoveImage && image.removable !== false ? <button type="button" className="image-reference-remove" aria-label={`移除参考图片${index + 1}`}
+            <ZoomableImage className="image-reference-preview" src={image.url} alt={`${imageLabel(images, index)}：${assetDisplayName(image.name)}`} title={assetDisplayName(image.name)} />
+            <span className="image-reference-label">{imageLabel(images, index)}{image.role === 'poster' ? ' · 当前图' : ''}</span>
+            {onRemoveImage && image.removable !== false ? <button type="button" className="image-reference-remove" aria-label={`移除${imageLabel(images, index)}`}
               disabled={editorProps.disabled || uploading} onClick={() => onRemoveImage(image.assetId)}>×</button> : null}
           </div>
         ))}

@@ -18,6 +18,8 @@ type Props = {
   downloadHref: string | null
   finalizationActions?: ReactNode
   currentImage: PromptImage | null
+  /** The task's own reference images, carried in as removable defaults for every turn. */
+  defaultAttachments?: Asset[]
   assets: Asset[]
   assetsLoading: boolean
   onLoadAssets: () => void
@@ -39,6 +41,7 @@ export default function WholeChatPanel({
   downloadHref,
   finalizationActions,
   currentImage,
+  defaultAttachments = [],
   assets,
   assetsLoading,
   onLoadAssets,
@@ -47,13 +50,17 @@ export default function WholeChatPanel({
   const [imageModel, setImageModel] = useState(() =>
     IMAGE_MODEL_OPTIONS.some(option => option.value === initialModel) ? initialModel : DEFAULT_IMAGE_MODEL)
   const [draft, setDraft] = useState('')
-  const [attachments, setAttachments] = useState<Asset[]>([])
+  // Defaults come from the task, not from this dialog: the operator can remove or add freely.
+  const [attachments, setAttachments] = useState<Asset[]>(() => defaultAttachments)
   const [uploading, setUploading] = useState(false)
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
-  const promptImages: PromptImage[] = [...(currentImage ? [currentImage] : []),
-    ...attachments.map(asset => ({ assetId: asset.id, name: asset.original_name, url: asset.url }))]
+  // The poster is `@海报`; the references keep their own 1-based numbering (see imageLabel).
+  const promptImages: PromptImage[] = [...(currentImage ? [{ ...currentImage, role: 'poster' as const }] : []),
+    ...attachments
+      .filter(asset => asset.id !== currentImage?.assetId)
+      .map(asset => ({ assetId: asset.id, name: asset.original_name, url: asset.url }))]
   const promptIssue = imagePromptIssue(draft, promptImages, 1000)
   const running = edit.status === 'running' || sending
 
@@ -111,10 +118,11 @@ export default function WholeChatPanel({
     setSending(true)
     setAttachmentError(null)
     try {
-      const accepted = await onSend(serializeImagePrompt(value, promptImages, 1000).trim(), attachments, imageModel)
+      const sent = attachments.filter(asset => asset.id !== currentImage?.assetId)
+      const accepted = await onSend(serializeImagePrompt(value, promptImages, 1000).trim(), sent, imageModel)
       if (accepted) {
+        // The references stay attached for the next turn; only the typed instruction is spent.
         setDraft('')
-        setAttachments([])
       }
     } catch (error: unknown) {
       setAttachmentError(errorText(error))

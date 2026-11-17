@@ -866,11 +866,18 @@ def run_edit(
                     "Use them only as references for the requested change; do not replace "
                     "the current poster wholesale."
                 )
+            image_roles.append(
+                f"The request names the current poster @海报 (image {original_count + 1}) and "
+                "names this turn's references @图1 up to "
+                f"@图{len(reference_asset_ids)} in the order above."
+            )
         if reference_mode == "unified":
+            # The request text names the poster @海报 and the references @图1..@图N; keep the
+            # payload positions in the same sentence so the model never has to guess.
             image_roles = [
-                "图片1：当前海报，作为本次改图底图；只修改用户指定部分，其他内容与排版保持不变。",
+                "图片1（@海报）：当前海报，作为本次改图底图；只修改用户指定部分，其他内容与排版保持不变。",
                 *[
-                    f"图片{index}：用户本轮参考图，用途由用户要求及 @图片{index} 的引用决定。"
+                    f"图片{index}（@图{index - 1}）：用户本轮参考图{index - 1}，用途由用户要求及对应 @图 引用决定。"
                     for index in range(2, len(reference_asset_ids) + 2)
                 ],
             ]

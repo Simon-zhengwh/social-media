@@ -555,6 +555,13 @@ export default function WholeImageStudio({
   const currentPreview = currentOutput?.preview_url ?? task?.preview_url
   // The download entry sits in the composer footer, so the studio resolves the URL for it.
   const downloadHref = currentOutput?.download_url ?? task?.download_url ?? null
+  // The task's own reference images ride along into the edit composer as removable defaults.
+  const chatDefaultAttachments: Asset[] = task
+    ? (task.input.reference_asset_ids ?? task.input.product_asset_ids ?? [])
+        .map((assetId) => assetFromTask(task, assetId))
+        .filter((asset): asset is Asset => Boolean(asset))
+    : []
+
   const currentPromptImage: PromptImage | null = task && currentPreview ? {
     assetId: `current:${task.id}:${task.current_version_id}:${task.current_output_id}`,
     name: '当前海报', url: currentPreview, removable: false,
@@ -1031,6 +1038,7 @@ export default function WholeImageStudio({
               <PosterFinalizationControl key={`${task.id}:${task.current_version_id}:${task.current_output_id}`} task={task} disabled={busy} />
             ) : null}
             currentImage={currentPromptImage}
+            defaultAttachments={chatDefaultAttachments}
             assets={assets}
             assetsLoading={assetsLoading}
             onLoadAssets={onLoadAssets}
