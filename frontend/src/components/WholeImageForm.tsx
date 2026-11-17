@@ -3,11 +3,13 @@ import PlatformSelector from './PlatformSelector'
 import BrandModeSelector from './BrandModeSelector'
 import PromptField from './PromptField'
 import LogoSelector from './LogoSelector'
+import StoreInfoSelector, { type StoreSelection } from './StoreInfoSelector'
 import type {
   Asset,
   BrandMode,
   BrandStyle,
   BrandLogoImage,
+  MerchantStore,
   PlatformPreset,
   Ratio,
 } from '../types'
@@ -24,6 +26,9 @@ type Props = {
   styleReferencesUploading: boolean
   logoOptions: BrandLogoImage[]
   selectedLogoId: string
+  stores: MerchantStore[]
+  storeSelection: StoreSelection
+  onStoreSelectionChange: (next: StoreSelection) => void
   platforms: PlatformPreset[]
   platformsLoading: boolean
   platformsError: string | null
@@ -63,6 +68,9 @@ export default function WholeImageForm({
   styleReferencesUploading,
   logoOptions,
   selectedLogoId,
+  stores,
+  storeSelection,
+  onStoreSelectionChange,
   platforms,
   platformsLoading,
   platformsError,
@@ -90,6 +98,8 @@ export default function WholeImageForm({
   children,
 }: Props) {
   const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId)
+  const selectedStoreId = (stores.find(store => store.place_id === storeSelection.placeId) ?? stores[0])?.place_id || ''
+  const storeEnabled = storeSelection.enabled && Boolean(selectedStoreId)
   const brandReady =
     brandMode !== 'preset' ||
     (!brandsLoading &&
@@ -150,6 +160,13 @@ export default function WholeImageForm({
         onToggleLogo={onToggleLogo}
       />
 
+      <StoreInfoSelector
+        stores={stores}
+        value={storeSelection}
+        disabled={busy}
+        onChange={onStoreSelectionChange}
+      />
+
       <PromptField
         label="设计需求"
         required
@@ -173,6 +190,9 @@ export default function WholeImageForm({
           product_asset_ids: [],
           platform_id: selectedPlatform?.id ?? selectedPlatformId ?? null,
           placement_id: selectedPlacementId || null,
+          include_store_address: storeEnabled && storeSelection.address,
+          include_store_phone: storeEnabled && storeSelection.phone,
+          store_place_id: storeEnabled ? selectedStoreId : null,
         }}
         onPromptChange={onPromptChange}
       />

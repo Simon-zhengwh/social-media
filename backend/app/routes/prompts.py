@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.request_context import request_db, request_store
+from app.request_context import request_db, request_profile, request_store
 from app.schemas import PromptOptimizeRequest
 from app.services import prompt_optimizer, request_assets
 from app.services.core_ai import CoreAIError
@@ -33,6 +33,7 @@ def optimize_prompt(payload: PromptOptimizeRequest, request: Request) -> dict[st
             request_store(request),
             request.app.state.core_ai,
             request=payload,
+            profile=request_profile(request),
         )
     except prompt_optimizer.PromptOptimizerError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc

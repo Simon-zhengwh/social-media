@@ -130,14 +130,17 @@ def test_unimported_am_merchant_cannot_be_opened_directly():
     assert raw.merchants.count_documents({"_id": "m1"}) == 0
 
 
-def test_context_does_not_request_a_restaurant_profile():
+@pytest.mark.parametrize("has_profile", [True, False])
+def test_context_uses_a_profile_only_when_available(has_profile):
     from app.routes.merchant_context import router
 
     app, _ = _app()
 
     class ProfilelessAM(FakeAM):
         def profile(self, cookie, merchant_id):
-            raise AssertionError("context must not request restaurant profiles")
+            if not has_profile:
+                raise AMClientError(404, "RESTAURANT_BRAND_PROFILE_NOT_FOUND", "no profile")
+            return super().profile(cookie, merchant_id)
 
     app.state.am = ProfilelessAM()
     app.include_router(router, prefix="/api/merchants/{merchant_id}")
@@ -145,7 +148,11 @@ def test_context_does_not_request_a_restaurant_profile():
         "/api/merchants/m1/context", headers={"Cookie": "AMSessionId=good"},
     )
     assert response.status_code == 200
-    assert response.json()["profile"] is None
+    profile = response.json()["profile"]
+    if has_profile:
+        assert profile["name"] == "Merchant"
+    else:
+        assert profile is None
     assert response.json()["merchant"]["merchant_name"] == "Imported m1"
 
 
@@ -164,18 +171,39 @@ def test_middleware_returns_503_when_maintenance_enabled():
     assert raw.assets.count_documents({}) == 0
 
 
-@pytest.mark.parametrize(("method", "path"), [
-    ("POST", "/api/merchants/m1/prompts/optimize"),
-    ("POST", "/api/merchants/m1/whole-image/tasks"),
-    ("GET", "/api/merchants/m1/whole-image/tasks"),
-    ("GET", "/api/merchants/m1/brands"),
+def test_profile_outage_does_not_block_the_merchant_workspace(caplog):
+    from app.routes.merchant_context import router
+
+    app, _ = _app()
+
+    class UnavailableProfileAM(FakeAM):
+        def profile(self, cookie, merchant_id):
+            raise AMClientError(503, "profile_unavailable", "temporarily unavailable")
+
+    app.state.am = UnavailableProfileAM()
+    app.include_router(router, prefix="/api/merchants/{merchant_id}")
+    response = TestClient(app).get("/api/merchants/m1/context", headers={"Cookie": "AMSessionId=good"})
+    assert response.status_code == 200
+    assert response.json()["profile"] is None
+    assert "profile_unavailable" in caplog.text
+
+
+@pytest.mark.parametrize(("method", "path", "wants_profile"), [
+    ("POST", "/api/merchants/m1/prompts/optimize", True),
+    ("POST", "/api/merchants/m1/whole-image/tasks", True),
+    ("GET", "/api/merchants/m1/whole-image/tasks", False),
+    ("GET", "/api/merchants/m1/brands", True),
 ])
-def test_merchant_requests_do_not_load_restaurant_profiles(method, path):
+@pytest.mark.parametrize("has_profile", [True, False])
+def test_merchant_requests_load_optional_profiles(method, path, wants_profile, has_profile):
     app, _ = _app()
 
     class ProfileAM(FakeAM):
         def profile(self, cookie, merchant_id):
-            raise AssertionError("restaurant profiles are unrelated to social-media")
+            assert wants_profile, "listing historical tasks must not load current profiles"
+            if not has_profile:
+                raise AMClientError(404, "RESTAURANT_BRAND_PROFILE_NOT_FOUND", "no profile")
+            return super().profile(cookie, merchant_id)
 
     app.state.am = ProfileAM()
 
@@ -187,7 +215,10 @@ def test_merchant_requests_do_not_load_restaurant_profiles(method, path):
         "Cookie": "AMSessionId=good", "Origin": "https://social-media.connexup-uat.net", "X-Media-Request": "1",
     })
     assert response.status_code == 200
-    assert response.json()["profile"] is None
+    if wants_profile and has_profile:
+        assert response.json()["profile"]["name"] == "Merchant"
+    else:
+        assert response.json()["profile"] is None
 
 def _bypass_app(origin: str = "http://127.0.0.1:5173", bypass: bool = True, merchant: str = "local-merchant"):
     app = FastAPI()
@@ -271,10 +302,10 @@ def test_local_bypass_uses_only_imported_merchants_and_rejects_unknown_ids():
     assert client.get("/api/merchants/unknown/probe").status_code == 404
 
 
-def test_local_bypass_does_not_read_stored_restaurant_profiles():
+def test_local_bypass_reads_stored_profile_when_available():
     app, _ = _bypass_app()
     body = TestClient(app).get("/api/merchants/local-merchant/brands").json()["profile"]
-    assert body is None
+    assert body["name"] == "SEE JOY"
 
 
 def test_local_bypass_allows_the_vite_origin_for_writes():

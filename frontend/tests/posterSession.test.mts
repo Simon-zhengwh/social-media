@@ -71,6 +71,14 @@ test('users, merchants and fresh tabs have independent temporary sessions', () =
   assert.deepEqual(readPosterSession('alice', 'one'), draft())
 })
 
+test('drafts saved while profiles were disabled still reopen without a store selection', () => {
+  const value = draft()
+  if (value.kind !== 'draft') throw new Error('expected draft')
+  delete value.form.storeSelection
+  assert.equal(savePosterSession('alice', 'merchant', value), true)
+  assert.deepEqual(readPosterSession('alice', 'merchant'), value)
+})
+
 test('accepted generation replaces the draft with a task pointer without storing form content', () => {
   savePosterSession('alice', 'merchant', draft())
   const task = { kind: 'task', workspaceId: 'workspace-1', taskId: 'task-1', selectedModel: 'seedream-5.5-image-to-image' } as const

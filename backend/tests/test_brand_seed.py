@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import io
 
+from types import SimpleNamespace
+
 import mongomock
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from PIL import Image, ImageDraw
 
 from app.routes import brands as brand_routes
@@ -155,7 +156,63 @@ def test_extract_palette_drops_near_white_background():
     assert len(hexes) == len(set(hexes))
 
 
-def test_restaurant_profile_initialization_is_no_longer_an_api_action():
-    app = FastAPI()
-    app.include_router(brand_routes.router, prefix="/api")
-    assert TestClient(app).post("/api/brands/initialize-from-profile").status_code == 405
+def _route_request(db, settings, store, profile=None, *, fetch=None, monkeypatch=None):
+    """A request shaped like the merchant middleware leaves it."""
+    if fetch is None:
+        fetch = lambda url: _logo_bytes()
+    if monkeypatch is not None:
+        monkeypatch.setattr(brand_routes, "_fetch_remote_image", fetch)
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            db=ScopedDatabase(db, MERCHANT),
+            merchant_id=MERCHANT,
+            merchant_profile=profile,
+        ),
+        app=SimpleNamespace(state=SimpleNamespace(settings=settings, store=store)),
+    )
+
+
+def test_route_seeds_style_from_projected_profile(settings, store, monkeypatch):
+    from app.services.merchant_profile import project_profile
+
+    db = mongomock.MongoClient().db
+    profile = project_profile(_profile())
+    request = _route_request(db, settings, store, profile, monkeypatch=monkeypatch)
+
+    response = brand_routes.initialize_from_profile(request)
+
+    assert response["created"] is True
+    assert response["id"] == MERCHANT
+    assert response["name"] == "Keke Food可可小卤"
+    assert response["merchant_profile"] is not None
+    assert db.brands.count_documents({"merchant_id": MERCHANT}) == 1
+
+
+def test_route_is_idempotent(settings, store, monkeypatch):
+    from app.services.merchant_profile import project_profile
+
+    db = mongomock.MongoClient().db
+    profile = project_profile(_profile())
+
+    first = brand_routes.initialize_from_profile(
+        _route_request(db, settings, store, profile, monkeypatch=monkeypatch)
+    )
+    second = brand_routes.initialize_from_profile(
+        _route_request(db, settings, store, profile, monkeypatch=monkeypatch)
+    )
+
+    assert first["created"] is True
+    assert second["created"] is False
+    assert second["id"] == first["id"]
+    assert db.brands.count_documents({"merchant_id": MERCHANT}) == 1
+
+
+def test_route_rejects_merchant_without_profile(settings, store, monkeypatch):
+    db = mongomock.MongoClient().db
+    request = _route_request(db, settings, store, None, monkeypatch=monkeypatch)
+
+    with pytest.raises(HTTPException) as exc:
+        brand_routes.initialize_from_profile(request)
+
+    assert exc.value.status_code == 422
+    assert db.brands.count_documents({}) == 0

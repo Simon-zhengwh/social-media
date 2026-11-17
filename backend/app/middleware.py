@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from urllib.parse import unquote
 
@@ -7,7 +8,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from app.config import local_bypass_enabled
-from app.services import maintenance
+from app.services import maintenance, merchant_profile
 from app.services.am_client import AMClientError
 from app.services.media_object_store import create_merchant_store
 from app.services.scoped_db import ScopedDatabase
@@ -15,6 +16,7 @@ from app.services.scoped_db import ScopedDatabase
 MERCHANT_PATH = re.compile(r"^/api/merchants/([^/]+)(?:/|$)")
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 LOCAL_ORIGINS = frozenset({"http://127.0.0.1:5173", "http://localhost:5173"})
+logger = logging.getLogger(__name__)
 
 
 def _local_bypass_context(request: Request, merchant_name: str) -> dict[str, object] | None:
@@ -68,6 +70,24 @@ async def merchant_context_middleware(request: Request, call_next):
         "merchant_name": merchant_name,
     }
     request.state.merchant_profile = None
+    merchant_path = request.url.path[match.end(1):]
+    wants_profile = (
+        merchant_path == "/context"
+        or merchant_path == "/brands" or merchant_path.startswith("/brands/")
+        or (request.method.upper() == "POST" and merchant_path in {"/prompts/optimize", "/whole-image/tasks"})
+    )
+    if wants_profile:
+        if bypass is not None:
+            request.state.merchant_profile = merchant_profile.stored_profile(request.app.state.raw_db, merchant_id)
+        else:
+            try:
+                request.state.merchant_profile = merchant_profile.project_profile(
+                    merchant_profile.load_profile(request.app.state.am, cookie, merchant_id)
+                )
+            except AMClientError as exc:
+                if exc.status_code in {401, 403}:
+                    return _error(exc.status_code, exc.code, exc.message)
+                logger.warning("Optional merchant profile unavailable: merchant=%s code=%s", merchant_id, exc.code)
     request.state.db = ScopedDatabase(request.app.state.raw_db, merchant_id)
     if bypass is not None:
         # Local dev keeps files on disk; UAT routes them through AM media storage.

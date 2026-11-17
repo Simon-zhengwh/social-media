@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.api_errors import am_http_error
 from app.middleware import is_local_bypass as _local_bypass
-from app.request_context import request_db
+from app.request_context import request_db, request_profile
 from app.services import am_assets, poster_finalizations
 from app.services.am_client import AMClientError
 
@@ -55,7 +55,7 @@ def get_merchant_context(merchant_id: str, request: Request) -> dict[str, Any]:
     bypass = _local_bypass(request)
     return {
         "merchant": request.state.merchant_context,
-        "profile": None,
+        "profile": request_profile(request),
         "features": {
             "am_media_library": not bypass,
             "maintenance_cli": True,

@@ -120,6 +120,7 @@ export type MerchantProfile = {
   sections: { title: string; text: string; source_path: string; original: unknown }[]
   prompt_sections: { title: string; text: string }[]
   brand_info?: MerchantBrandInfo | null
+  raw_brand?: { canonical_name?: string }
 }
 
 export type Asset = {

@@ -173,7 +173,7 @@ def test_optimizer_common_rules_and_notes_exclude_hidden_fields(settings, store,
 
 
 @pytest.mark.parametrize("brand_mode", ["preset", "none", "reference"])
-def test_optimizer_ignores_restaurant_profile_background(settings, store, optimizer_db, brand_mode):
+def test_optimizer_uses_only_displayed_merchant_background(settings, store, optimizer_db, brand_mode):
     from types import SimpleNamespace
     from app.routes.brands import _brand_detail
     from app.services.merchant_profile import project_profile
@@ -208,12 +208,15 @@ def test_optimizer_ignores_restaurant_profile_background(settings, store, optimi
     text = client.calls[0]["input"]
     req = SimpleNamespace(state=SimpleNamespace(merchant_id="merchant", merchant_profile=am_profile))
     displayed = _brand_detail(req, db, db.brands.find_one({"_id": "seejoy"}))["merchant_profile"]
-    assert displayed is None
-    for background in ("MERCHANT_NAME", "POSITIONING", "CORE_HIGHLIGHTS", "TARGET_CUSTOMERS", "VOICE_DESCRIPTION"):
-        assert background not in text
+    assert len(displayed["prompt_sections"]) == 4
+    for section in displayed["prompt_sections"]:
+        assert text.count(section["text"]) == 1
+    assert "MERCHANT_NAME" in text
     for hidden in ("HIDDEN_SOURCE_LABEL", "HIDDEN_RECORD_ID", "HIDDEN_RAW_RECORD", "HIDDEN_ORIGINAL",
                    "HIDDEN_PERSONALITY", "HIDDEN_ADDRESS", "HIDDEN_PHONE"):
         assert hidden not in text
+    if brand_mode == "preset":
+        assert "背景参考" in text and "平台限制" in text and "本次要求和备注优先" in text
     assert db.merchant_profiles.find_one({"_id": "merchant"}) == profile
 
 

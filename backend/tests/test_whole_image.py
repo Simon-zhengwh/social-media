@@ -172,7 +172,8 @@ def test_generation_uses_note_snapshot_and_excludes_hidden_fields(settings, stor
 
 
 @pytest.mark.parametrize("optimized", [False, True])
-def test_restaurant_profiles_do_not_reach_generation_or_edit_prompts(settings, store, product_png, optimized):
+@pytest.mark.parametrize("brand_mode", ["preset", "none"])
+def test_merchant_context_reaches_generation_and_edit_prompts(settings, store, product_png, optimized, brand_mode):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     product = _seed_product(db, settings, store, product_png, "dish.png")
@@ -188,22 +189,27 @@ def test_restaurant_profiles_do_not_reach_generation_or_edit_prompts(settings, s
             {"source_path": "locations.0.nap.address", "text": "HIDDEN_ADDRESS"},
         ],
     })
+    from app.services import merchant_profile
+    request.state = SimpleNamespace(merchant_profile=merchant_profile.get_profile(db, "merchant"))
     created = whole_routes.create_task(
         WholeImageTaskCreate(
             prompt="新品海报", product_asset_ids=[product.id], prompt_optimized=optimized,
-            brand_id="seejoy", brand_mode="preset",
+            brand_id="seejoy" if brand_mode == "preset" else None, brand_mode=brand_mode,
         ),
         request, BackgroundTasks(),
     )
 
-    assert db.whole_tasks.find_one({"_id": created["id"]})["brand"]["merchant_context"] == ""
+    snapshot = db.whole_tasks.find_one({"_id": created["id"]})
+    assert "MERCHANT_NAME" in snapshot["merchant_context"]
+    request.state.merchant_profile["prompt_sections"][0]["text"] = "NEW_BACKGROUND"
     whole_service.run_generation(db, settings, store, fake, created["id"])
 
     generation_prompt = fake.edit_calls[0]["prompt"]
     for visible in ("商户背景参考：MERCHANT_NAME", "POSITIONING", "CORE_HIGHLIGHTS", "TARGET_CUSTOMERS", "VOICE_DESCRIPTION"):
-        assert visible not in generation_prompt
+        assert visible in generation_prompt
     assert "HIDDEN_SOURCE_LABEL" not in generation_prompt
     assert "HIDDEN_ADDRESS" not in generation_prompt
+    assert "NEW_BACKGROUND" not in generation_prompt
 
     version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
     fake.edit_calls.clear()
@@ -216,8 +222,8 @@ def test_restaurant_profiles_do_not_reach_generation_or_edit_prompts(settings, s
     whole_service.run_edit(db, settings, store, fake, created["id"], instruction, version["_id"])
 
     edit_prompt = fake.edit_calls[0]["prompt"]
-    assert "商户背景参考：MERCHANT_NAME" not in edit_prompt
-    assert "POSITIONING" not in edit_prompt
+    assert "商户背景参考：MERCHANT_NAME" in edit_prompt
+    assert "POSITIONING" in edit_prompt
     assert "HIDDEN_ADDRESS" not in edit_prompt
 
 

@@ -211,3 +211,12 @@ def test_prompt_without_profile_can_still_carry_store_facts():
 
 	assert "34-20 Linden Pl" in prompt
 	assert "商户背景参考" not in prompt
+
+
+def test_selected_store_facts_work_with_the_projected_profile_returned_to_the_ui():
+    projected = project_profile(profile)
+    facts = merchant_profile.store_facts(projected, "p2", include_address=True, include_phone=False)
+    assert facts == {"name": "Murray Hill", "address": "150-15 Northern Blvd"}
+    assert merchant_profile.store_facts(projected, "p1", include_address=False, include_phone=True) == {
+        "name": "Flushing", "phone": "(347)438-1030",
+    }

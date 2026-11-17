@@ -221,10 +221,11 @@ def store_facts(
     """
     if not profile or not place_id:
         return None
-    for location in profile.get("locations") or []:
+    locations = profile.get("locations") or (profile.get("brand_info") or {}).get("stores") or []
+    for location in locations:
         if not isinstance(location, dict) or str(location.get("place_id") or "") != place_id:
             continue
-        nap = location.get("nap") if isinstance(location.get("nap"), dict) else {}
+        nap = location.get("nap") if isinstance(location.get("nap"), dict) else location
         facts: dict[str, str] = {"name": str(location.get("name") or "").strip()}
         if include_address:
             address = str(nap.get("address") or "").strip()

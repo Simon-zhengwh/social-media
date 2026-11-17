@@ -35,7 +35,7 @@ def test_am_profile_is_the_only_merchant_profile_source_and_ignores_local_legacy
     assert _brand_detail(req, db, doc)["merchant_profile"] is None
 
 
-def test_styles_ignore_projected_am_profiles():
+def test_projected_am_profile_is_shared_by_styles_and_keeps_source_paths():
     db = ScopedDatabase(mongomock.MongoClient().db, "merchant")
     profile = project_profile({
         "merchant_id": "merchant",
@@ -45,7 +45,9 @@ def test_styles_ignore_projected_am_profiles():
     req = request(db.raw, profile=profile)
     for brand_id in ("xhs-style", "ig-style"):
         result = _brand_detail(req, db, seed(db, brand_id))["merchant_profile"]
-        assert result is None
+        assert result["source_record_id"] == "merchant"
+        assert result["sections"][1]["source_path"] == "brand.positioning"
+        assert result["location_place_ids"] == ["place-1"]
 
 
 def test_style_save_and_duplicate_preserve_merchant_scope():
@@ -54,9 +56,9 @@ def test_style_save_and_duplicate_preserve_merchant_scope():
     req = request(raw, profile=profile)
     seed(req.state.db, "linked")
     updated = update_brand("linked", BrandUpdate(name="Changed style", layout_guide="layout", background_guide="background"), req)
-    assert updated["merchant_profile"] is None
+    assert updated["merchant_profile"]["id"] == "merchant"
     copied = duplicate_brand("linked", DuplicateBrandRequest(platform_id="instagram", placement_id="story"), req)
-    assert copied["merchant_profile"] is None
+    assert copied["merchant_profile"]["id"] == "merchant"
     assert copied["layout_guide"] == "layout"
     assert req.state.db.brands.find_one({"_id": "linked"})["merchant_id"] == "merchant"
     assert req.state.db.brands.find_one({"_id": copied["id"]})["merchant_id"] == "merchant"

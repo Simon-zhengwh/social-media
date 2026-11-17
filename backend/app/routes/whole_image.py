@@ -13,10 +13,10 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.api_paths import asset_url, whole_download_url, merchant_base
-from app.request_context import request_db, request_merchant_id, request_store
+from app.request_context import request_db, request_merchant_id, request_store, request_profile
 from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
-from app.services import (original_replacement_runner, brand_rules, brand_style, original_replacement, platform_presets, request_assets, whole_image)
+from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
 from app.services.agent_image import artifacts_out as _artifacts_out
 from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
@@ -534,6 +534,12 @@ def create_task(
         if product is None:
             raise HTTPException(status_code=422, detail="素材图不存在")
     brand_mode = payload.brand_mode or ("preset" if payload.brand_id else "none")
+    profile = request_profile(request)
+    store_facts = merchant_profile.store_facts(
+        profile, payload.store_place_id or "",
+        include_address=payload.include_store_address,
+        include_phone=payload.include_store_phone,
+    )
     brand: brand_style.BrandStyle | None = None
     brand_snapshot: dict[str, Any] | None = None
     style_reference_ids: list[str] = []
@@ -544,6 +550,7 @@ def create_task(
             brand = brand_style.get_brand(db, payload.brand_id)
             brand_snapshot = brand_style.snapshot_brand(
                 brand, db, request_store(request), settings,
+                profile=profile, store_facts=store_facts,
             )
         except brand_style.BrandError as exc:
             raise HTTPException(status_code=422, detail=exc.message) from exc
@@ -616,6 +623,8 @@ def create_task(
         "platform": (platform_config or {}).get("platform"),
         "placement": (platform_config or {}).get("placement"),
         "brand": brand_snapshot,
+        "merchant_context": merchant_profile.prompt_context(profile, store_facts)
+        or (brand_snapshot or {}).get("merchant_context", ""),
         "brand_rules": brand_rules.get_rules(db),
         "canvas": {"width": width, "height": height},
         "provider": {

@@ -547,7 +547,7 @@ def run_generation(
             brand_context = "\n\n" + "\n".join(
                 part for part in (brand_rules.brand_context(brand), _brand_style_context(brand)) if part
             )
-        merchant_context = str(brand.get("merchant_context") or "").strip()
+        merchant_context = str(claimed.get("merchant_context") or brand.get("merchant_context") or "").strip()
         merchant_block = f"\n\n{merchant_context}" if merchant_context else ""
         platform_context = platform_presets.prompt_from_task(
             claimed.get("platform"), claimed.get("placement")
@@ -827,7 +827,7 @@ def run_edit(
         size = gateway_image_size(width, height)
         task_input = task.get("input") or {}
         task_brand = task.get("brand") if isinstance(task.get("brand"), dict) else {}
-        merchant_context = str(task_brand.get("merchant_context") or "").strip()
+        merchant_context = str(task.get("merchant_context") or task_brand.get("merchant_context") or "").strip()
         image_model = gateway_model_name(
             (task.get("edit") or {}).get("image_model")
             or task_input.get("image_model") or settings.core_ai_image_model

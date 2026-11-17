@@ -1,4 +1,5 @@
 import type { Asset, BrandMode, ImageModel, Ratio } from './types'
+import type { StoreSelection } from './components/StoreInfoSelector'
 import type { ModelCounts } from './modelGeneration'
 import { IMAGE_MODEL_OPTIONS } from './imageModels.ts'
 
@@ -14,6 +15,7 @@ export type PosterDraftForm = {
   selectedLogoId: string
   logoChoiceTouched: boolean
   styleReferences: Asset[]
+  storeSelection?: StoreSelection
   selectedModel: ImageModel
   modelCounts: ModelCounts
 }
@@ -51,6 +53,7 @@ function isAsset(value: unknown): boolean {
 
 function isDraftForm(value: unknown): boolean {
   if (!isRecord(value)) return false
+  const store = value.storeSelection
   const counts = value.modelCounts
   return ['prompt', 'selectedPlatformId', 'selectedPlacementId', 'selectedBrandId', 'selectedLogoId'].every(key => typeof value[key] === 'string') &&
     ['promptOptimized', 'logoChoiceTouched'].every(key => typeof value[key] === 'boolean') &&
@@ -58,6 +61,8 @@ function isDraftForm(value: unknown): boolean {
     ['preset', 'reference', 'none'].includes(String(value.brandMode)) && isModel(value.selectedModel) &&
     Array.isArray(value.products) && value.products.length <= 6 && value.products.every(isAsset) &&
     Array.isArray(value.styleReferences) && value.styleReferences.length <= 3 && value.styleReferences.every(isAsset) &&
+    (store === undefined || (isRecord(store) && typeof store.placeId === 'string' &&
+    ['enabled', 'address', 'phone'].every(key => typeof store[key] === 'boolean'))) &&
     isRecord(counts) && Object.entries(counts).every(([model, count]) =>
       isModel(model) && typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 3)
 }
