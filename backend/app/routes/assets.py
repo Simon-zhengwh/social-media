@@ -99,6 +99,7 @@ def upload_asset(
             document,
             data,
             file.filename or document["original_name"],
+            settings=settings,
         )
     except AMClientError as exc:
         # Never fall back to a private copy that pretends to be a library asset.

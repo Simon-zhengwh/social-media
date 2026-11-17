@@ -70,7 +70,7 @@ def uploaded_asset_query() -> dict[str, Any]:
 
 
 def asset_document(prepared: storage.PreparedUpload) -> dict[str, Any]:
-    return {
+    document = {
         "_id": prepared.id,
         "source": "upload",
         "original_name": prepared.original_name,
@@ -85,6 +85,11 @@ def asset_document(prepared: storage.PreparedUpload) -> dict[str, Any]:
         "prepared_url": prepared.prepared_url,
         "created_at": datetime.now(timezone.utc),
     }
+    if prepared.recompressed:
+        # The stored file is a re-encoded JPEG; `bytes` and `sha256` still describe the upload.
+        document["recompressed"] = True
+        document["stored_bytes"] = prepared.stored_bytes
+    return document
 
 
 def persist_upload(

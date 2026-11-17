@@ -13,11 +13,10 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# AM stores the format as a short token rather than a MIME type.
-_MEDIA_FORMAT = {
+# AM stores the image container as a short token; these three are the only image formats it keeps.
+MEDIA_FORMAT_BY_MIME = {
     "image/jpeg": "JPEG",
     "image/png": "PNG",
-    "image/webp": "WEBP",
     "image/gif": "GIF",
 }
 
@@ -129,6 +128,10 @@ class AMClient:
         tags: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a real media-library record, not just an uploaded file object."""
+        media_format = MEDIA_FORMAT_BY_MIME.get(mime_type)
+        if media_format is None:
+            # Never relabel bytes as PNG: AM would store a container it cannot render.
+            raise AMClientError(415, "am_unsupported_media_format", f"AM 素材库不支持 {mime_type}")
         payload = self._request(
             "POST",
             "/ajax/media-library/upload",
@@ -139,7 +142,7 @@ class AMClient:
                 "filename": filename,
                 "file_base64": base64.b64encode(data).decode("ascii"),
                 "media_library_type": "IMAGE",
-                "media_library_format": _MEDIA_FORMAT.get(mime_type, "PNG"),
+                "media_library_format": media_format,
                 "tags": list(tags or []),
             },
         )

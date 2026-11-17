@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,6 +65,9 @@ class PreparedUpload:
     sha256: str
     url: str | None = None
     prepared_url: str | None = None
+    # Set only when the stored file was re-encoded to stay under the upload threshold.
+    stored_bytes: int = 0
+    recompressed: bool = False
 
 
 def ensure_storage_dirs(settings: Settings) -> None:
@@ -92,6 +96,137 @@ def encode_png(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True)
     return buffer.getvalue()
+
+
+# Re-encoding ladder for oversized uploads and the AM copy: keep the original pixels and
+# only shrink when quality alone cannot reach the target.
+JPEG_QUALITIES = (92, 88, 84, 80, 76, 72, 68, 64)
+JPEG_MIN_SIDE = 256
+JPEG_SHRINK_STEPS = 6
+# Transparency and animation cannot survive a JPEG re-encode, so those keep their bytes.
+ALPHA_FORMATS = {"PNG", "APNG", "GIF", "WEBP", "TIFF", "AVIF", "HEIF"}
+# MPO is a phone JPEG with an extra preview frame, so only these formats really animate.
+ANIMATED_FORMATS = {"GIF", "APNG", "WEBP", "TIFF"}
+
+
+@dataclass(frozen=True)
+class FittedUpload:
+    """Bytes that fit a receiver's request body, with the metadata describing them."""
+
+    data: bytes
+    mime_type: str
+    filename: str
+    recompressed: bool
+
+
+@dataclass(frozen=True)
+class StoredOriginal:
+    """The file actually written to the originals/ key, which may be a re-encoded copy."""
+
+    data: bytes
+    extension: str
+    mime_type: str
+    recompressed: bool
+
+
+def base64_body_size(size: int) -> int:
+    """Bytes the same payload occupies once base64-encoded."""
+    return 4 * ((size + 2) // 3)
+
+
+def compress_large_upload(
+    data: bytes,
+    threshold_bytes: int,
+    *,
+    image_format: str,
+    original_name: str,
+    has_alpha: bool,
+    animated: bool,
+) -> StoredOriginal:
+    """Cap an upload above the threshold by re-encoding it, keeping its pixel size when possible.
+
+    Transparency, animation and already-small files keep their bytes. When even the smallest
+    JPEG is still too large the original is stored unchanged instead of failing the upload.
+    """
+    extension, mime_type = _upload_descriptor(image_format, original_name)
+    oversized = threshold_bytes > 0 and len(data) > threshold_bytes
+    if not oversized or animated or (has_alpha and image_format in ALPHA_FORMATS):
+        return StoredOriginal(data=data, extension=extension, mime_type=mime_type, recompressed=False)
+    encoded = _encode_jpeg_within(_flatten_for_jpeg(data), threshold_bytes, lambda size: size)
+    if encoded is None:
+        return StoredOriginal(data=data, extension=extension, mime_type=mime_type, recompressed=False)
+    return StoredOriginal(data=encoded, extension=".jpg", mime_type="image/jpeg", recompressed=True)
+
+
+def fit_upload_to_body(
+    data: bytes,
+    max_body_bytes: int,
+    original_name: str,
+    mime_type: str,
+    *,
+    force_jpeg: bool = False,
+) -> FittedUpload:
+    """Re-encode to JPEG only when the base64 body would overflow the receiver's limit.
+
+    Callers keep their own original untouched; this only shapes the copy sent upstream.
+    `force_jpeg` is for receivers that store no container other than JPEG, PNG and GIF.
+    """
+    if not force_jpeg and (max_body_bytes <= 0 or base64_body_size(len(data)) <= max_body_bytes):
+        return FittedUpload(data=data, mime_type=mime_type, filename=original_name, recompressed=False)
+
+    encoded = _encode_jpeg_within(_flatten_for_jpeg(data), max_body_bytes, base64_body_size)
+    if encoded is None:
+        raise StorageError(
+            "file_too_large",
+            f"图片压缩后仍超过 {max_body_bytes / 1_000_000:g} MB 请求上限，请先压缩后再上传",
+        )
+    return FittedUpload(
+        data=encoded,
+        mime_type="image/jpeg",
+        filename=_jpeg_name(original_name),
+        recompressed=True,
+    )
+
+
+def _encode_jpeg_within(image: Image.Image, limit: int, measure: Callable[[int], int]) -> bytes | None:
+    """Lower the JPEG quality, then the pixel size, until `measure(encoded)` fits `limit`."""
+    current = image
+    for _ in range(JPEG_SHRINK_STEPS):
+        for quality in JPEG_QUALITIES:
+            buffer = io.BytesIO()
+            current.save(buffer, format="JPEG", quality=quality, optimize=True)
+            encoded = buffer.getvalue()
+            if measure(len(encoded)) <= limit:
+                return encoded
+        if current.width <= JPEG_MIN_SIDE and current.height <= JPEG_MIN_SIDE:
+            break
+        current = current.resize(
+            (max(JPEG_MIN_SIDE, int(current.width * 0.85)), max(JPEG_MIN_SIDE, int(current.height * 0.85))),
+            Image.Resampling.LANCZOS,
+        )
+    return None
+
+
+def _flatten_for_jpeg(data: bytes) -> Image.Image:
+    """Decode any supported source into RGB, compositing transparency on white."""
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source)
+            if image.mode in {"RGBA", "LA", "PA"} or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+                canvas.paste(rgba, mask=rgba.getchannel("A"))
+                return canvas
+            return image.convert("RGB")
+    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
+        raise StorageError("invalid_image", "图片解码失败") from exc
+
+
+def _jpeg_name(original_name: str) -> str:
+    name = Path(original_name or "").name
+    if not name:
+        return "upload.jpg"
+    return f"{Path(name).stem or 'upload'}.jpg"
 
 
 def _upload_descriptor(image_format: str, original_name: str) -> tuple[str, str]:
@@ -141,6 +276,7 @@ def prepare_upload(
     try:
         with Image.open(io.BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source)
+            animated = image_format in ANIMATED_FORMATS and getattr(source, "n_frames", 1) > 1
             image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
             has_alpha = "A" in image.getbands() or "transparency" in image.info
             prepared = image.convert("RGBA" if has_alpha else "RGB")
@@ -158,12 +294,21 @@ def prepare_upload(
             raise StorageError("blank_asset", "图片几乎全透明，请检查文件")
 
     asset_id = f"asset_{uuid.uuid4().hex}"
-    extension, mime_type = _upload_descriptor(image_format, original_name)
-    original_key = object_key(settings, "originals", f"{asset_id}{extension}")
+    # Uploads above the threshold are re-encoded so storage, downloads and AM stay reasonable;
+    # the dedupe hash and the reported size still describe the file the user picked.
+    stored = compress_large_upload(
+        data,
+        settings.image_compress_threshold_bytes,
+        image_format=image_format,
+        original_name=original_name,
+        has_alpha=has_alpha,
+        animated=animated,
+    )
+    original_key = object_key(settings, "originals", f"{asset_id}{stored.extension}")
     prepared_key = object_key(settings, "prepared", f"{asset_id}.png")
     written: list[str] = []
     try:
-        store.put_bytes(original_key, data, mime_type)
+        store.put_bytes(original_key, stored.data, stored.mime_type)
         written.append(original_key)
         store.put_bytes(prepared_key, encode_png(prepared), "image/png")
         written.append(prepared_key)
@@ -180,16 +325,18 @@ def prepare_upload(
 
     return PreparedUpload(
         id=asset_id,
-        original_name=original_name or f"upload{extension}",
+        original_name=original_name or f"upload{stored.extension}",
         path=original_key,
         prepared_path=prepared_key,
-        mime_type=mime_type,
+        mime_type=stored.mime_type,
         width=prepared.width,
         height=prepared.height,
         bytes=len(data),
         sha256=hashlib.sha256(data).hexdigest(),
         url=original_url,
         prepared_url=prepared_url,
+        stored_bytes=len(stored.data),
+        recompressed=stored.recompressed,
     )
 
 

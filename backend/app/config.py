@@ -63,6 +63,9 @@ class Settings(BaseSettings):
 
     am_base_url: str = "https://am.connexup-uat.net"
     am_timeout_seconds: int = 30
+    # /ajax/media-library/upload carries the image as base64 JSON and AM's ingress drops
+    # bodies over ~10 MB with a bare 400 that never reaches the AM application.
+    am_upload_max_body_bytes: int = 9_500_000
     am_media_storage_service_key: str = ""
     am_media_storage_base_path: str = "/fbr-uat/product"
     # Local development only: skips the AM Console session check so the

@@ -9,7 +9,7 @@ import httpx
 
 from app.api_paths import asset_url
 from app.services import asset_records, storage
-from app.services.am_client import AMClient, AMClientError
+from app.services.am_client import AMClient, AMClientError, MEDIA_FORMAT_BY_MIME
 from app.services.object_store import ObjectStore
 
 AM_ASSET_PREFIX = "am:"
@@ -422,25 +422,46 @@ def register_in_library(
     document: dict[str, Any],
     data: bytes,
     original_name: str,
+    *,
+    settings: Any = None,
 ) -> dict[str, Any]:
-    """Create the AM media-library record for an upload and remember the mapping."""
+    """Create the AM media-library record for an upload and remember the mapping.
+
+    AM's ingress drops request bodies over ~10 MB, and the upload carries the image as base64,
+    so oversized originals are re-encoded for the library copy only. The local original and the
+    prepared copy used for generation stay untouched.
+    """
+    settings = settings or am.settings
+    mime_type = str(document.get("mime_type") or "image/png")
+    fitted = storage.fit_upload_to_body(
+        data,
+        settings.am_upload_max_body_bytes,
+        original_name,
+        mime_type,
+        # HEIC, AVIF, WEBP, TIFF and friends have no AM format, so they go up as JPEG.
+        force_jpeg=mime_type not in MEDIA_FORMAT_BY_MIME,
+    )
     media = am.upload_media(
         cookie,
         merchant_id,
-        filename=original_name,
-        data=data,
-        mime_type=str(document.get("mime_type") or "image/png"),
+        filename=fitted.filename,
+        data=fitted.data,
+        mime_type=fitted.mime_type,
     )
-    db.assets.update_one(
-        {"_id": document["_id"]},
-        {
-            "$set": {
-                "am_media_library_id": str(media["id"]),
-                "am_file_key": media.get("key"),
-                "am_uploaded_at": datetime.now(timezone.utc),
+    update: dict[str, Any] = {
+        "am_media_library_id": str(media["id"]),
+        "am_file_key": media.get("key"),
+        "am_uploaded_at": datetime.now(timezone.utc),
+    }
+    if fitted.recompressed:
+        update.update(
+            {
+                "am_recompressed": True,
+                "am_upload_name": fitted.filename,
+                "am_upload_bytes": len(fitted.data),
             }
-        },
-    )
+        )
+    db.assets.update_one({"_id": document["_id"]}, {"$set": update})
     return {**document, "am_media_library_id": str(media["id"])}
 
 

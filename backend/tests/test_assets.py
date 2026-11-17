@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import random
 from types import SimpleNamespace
 
 import mongomock
@@ -70,6 +72,82 @@ def test_oversized_upload_is_downscaled_instead_of_rejected(settings, store, tri
     assert result.width == 1800
     assert result.height == 1350
     assert result.prepared_path.endswith(".png")
+
+
+def test_default_compress_threshold_is_10_mb():
+    assert Settings.model_fields["image_compress_threshold_bytes"].default == 10_000_000
+
+
+def test_upload_over_the_threshold_is_recompressed_before_storage(settings, store):
+    settings.image_compress_threshold_bytes = 12_000
+    image = Image.new("RGB", (600, 400))
+    image.putdata([(x * 255 // 600, y * 255 // 400, 200) for y in range(400) for x in range(600)])
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=95)
+    original = buffer.getvalue()
+    assert len(original) > settings.image_compress_threshold_bytes
+
+    result = storage.prepare_upload(settings, store, original, "孜然羊肉.JPG")
+
+    stored = store.get_bytes(result.path)
+    assert result.recompressed is True
+    assert len(stored) <= settings.image_compress_threshold_bytes
+    assert result.path.endswith(".jpg")
+    assert result.mime_type == "image/jpeg"
+    # The reported size and the dedupe hash still describe what the user uploaded.
+    assert result.bytes == len(original)
+    assert result.sha256 == hashlib.sha256(original).hexdigest()
+    with Image.open(io.BytesIO(stored)) as reencoded:
+        assert reencoded.format == "JPEG"
+        # Lowering the quality is enough here, so the pixel size is kept.
+        assert reencoded.size == (600, 400)
+
+
+def test_image_noise_that_quality_cannot_shrink_is_downscaled(settings, store):
+    settings.image_compress_threshold_bytes = 60_000
+    generator = random.Random(3)
+    image = Image.new("RGB", (600, 400))
+    image.putdata([(generator.randrange(256), generator.randrange(256), generator.randrange(256)) for _ in range(600 * 400)])
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=95)
+
+    result = storage.prepare_upload(settings, store, buffer.getvalue(), "noise.jpg")
+
+    assert result.recompressed is True
+    assert len(store.get_bytes(result.path)) <= settings.image_compress_threshold_bytes
+    with Image.open(io.BytesIO(store.get_bytes(result.path))) as reencoded:
+        assert reencoded.width < 600
+        assert reencoded.height < 400
+        assert abs(reencoded.width / reencoded.height - 1.5) < 0.02
+
+
+def test_small_upload_keeps_its_exact_bytes(settings, store, product_png):
+    result = storage.prepare_upload(settings, store, product_png, "dish.png")
+    assert result.recompressed is False
+    assert store.get_bytes(result.path) == product_png
+
+
+def test_transparent_logo_is_not_forced_into_jpeg(settings, store, logo_png):
+    settings.image_compress_threshold_bytes = 1
+    result = storage.prepare_upload(settings, store, logo_png, "logo.png")
+    assert result.recompressed is False
+    assert store.get_bytes(result.path) == logo_png
+    assert storage.open_image(store, result.prepared_path).mode == "RGBA"
+
+
+def test_phone_mpo_upload_is_compressed_like_a_jpeg(settings, store):
+    """MPO is a phone JPEG plus an embedded preview frame, not an animation."""
+    settings.image_compress_threshold_bytes = 4_000
+    main = Image.new("RGB", (800, 600), (120, 80, 40))
+    preview = Image.new("RGB", (160, 120), (10, 200, 30))
+    buffer = io.BytesIO()
+    main.save(buffer, format="MPO", save_all=True, append_images=[preview])
+
+    result = storage.prepare_upload(settings, store, buffer.getvalue(), "phone.jpg")
+
+    assert result.recompressed is True
+    assert result.path.endswith(".jpg")
+    assert len(store.get_bytes(result.path)) <= settings.image_compress_threshold_bytes
 
 
 def test_safety_pixel_limit_still_applies(settings, store, product_png):
