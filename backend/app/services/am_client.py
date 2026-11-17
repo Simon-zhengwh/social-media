@@ -48,12 +48,6 @@ class AMClient:
     def close(self) -> None:
         self.http.close()
 
-    def access(self, cookie: str, merchant_id: str) -> dict[str, Any]:
-        return self._get(
-            f"/ajax/merchant/{quote(merchant_id, safe='')}/access",
-            cookie=cookie,
-        )
-
     def profile(self, cookie: str, merchant_id: str) -> dict[str, Any] | None:
         try:
             return self._get(

@@ -14,11 +14,6 @@ from app.services.am_client import AMClientError
 
 
 class FakeAM:
-    def access(self, cookie, merchant_id):
-        if cookie != "AMSessionId=good":
-            raise AMClientError(401, "unauthorized", "login required")
-        return {"user_id": "u1", "user_name": "AM One", "merchant_id": merchant_id, "merchant_name": "Merchant"}
-
     def profile(self, cookie, merchant_id):
         return {"merchant_id": merchant_id, "brand": {"canonical_name": "Merchant"}, "locations": []}
 
@@ -53,24 +48,24 @@ def _app(imported_merchant_ids=("m1",)):
     return app, raw
 
 
-def test_middleware_requires_am_session_and_csrf_for_writes():
+def test_middleware_opens_the_workspace_without_an_am_session_and_still_guards_writes():
     app, raw = _app()
     client = TestClient(app)
-    assert client.get("/api/merchants/m1/probe").status_code == 401
-    assert client.get("/api/merchants/m1/probe", headers={"Cookie": "AMSessionId=good"}).json()["merchant_id"] == "m1"
-    assert client.post("/api/merchants/m1/probe", headers={"Cookie": "AMSessionId=good"}).status_code == 403
+    opened = client.get("/api/merchants/m1/probe")
+    assert opened.status_code == 200
+    assert opened.json()["merchant_id"] == "m1"
+    assert client.post("/api/merchants/m1/probe").status_code == 403
     assert client.post(
         "/api/merchants/m1/probe",
-        headers={"Cookie": "AMSessionId=good", "Origin": "https://evil.connexup-uat.net", "X-Media-Request": "1"},
+        headers={"Origin": "https://evil.connexup-uat.net", "X-Media-Request": "1"},
     ).status_code == 403
     assert client.post(
         "/api/merchants/m1/probe",
-        headers={"Cookie": "AMSessionId=good", "Origin": "https://social-media.connexup-uat.net"},
+        headers={"Origin": "https://social-media.connexup-uat.net"},
     ).status_code == 403
     assert client.post(
         "/api/merchants/m1/probe",
         headers={
-            "Cookie": "AMSessionId=good",
             "Origin": "https://social-media.connexup-uat.net",
             "X-Media-Request": "1",
         },
@@ -250,7 +245,7 @@ def _bypass_app(origin: str = "http://127.0.0.1:5173", bypass: bool = True, merc
             "merchant_id": request.state.merchant_id,
             "user_id": request.state.merchant_context["user_id"],
             "merchant_name": request.state.merchant_context["merchant_name"],
-            "store": request.state.store.name,
+            "store": getattr(request.state.store, "name", "am"),
         }
 
     @app.get("/api/merchants/{merchant_id}/brands")
@@ -319,9 +314,13 @@ def test_local_bypass_allows_the_vite_origin_for_writes():
     assert client.post("/api/merchants/local-merchant/probe", headers={"Origin": "http://evil.test", "X-Media-Request": "1"}).status_code == 403
 
 
-def test_local_bypass_is_ignored_when_am_is_disabled_or_the_origin_is_public():
+def test_the_local_bypass_is_ignored_when_it_is_disabled_or_the_origin_is_public():
     app, _ = _bypass_app(bypass=False)
-    assert TestClient(app).get("/api/merchants/local-merchant/probe").status_code == 401
+    disabled = TestClient(app).get("/api/merchants/local-merchant/probe")
+    assert disabled.status_code == 200
+    assert disabled.json()["user_id"] == "anonymous"
 
     public, _ = _bypass_app(origin="https://social-media.connexup-uat.net")
-    assert TestClient(public).get("/api/merchants/local-merchant/probe").status_code == 401
+    deployed = TestClient(public).get("/api/merchants/local-merchant/probe")
+    assert deployed.status_code == 200
+    assert deployed.json()["user_id"] == "anonymous"

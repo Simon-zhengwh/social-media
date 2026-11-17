@@ -22,13 +22,11 @@ def client_with(handler):
     return AMClient(settings, http_client=httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True))
 
 
-def test_access_profile_and_media_use_employee_cookie_and_merchant_scope():
+def test_profile_and_media_use_employee_cookie_and_merchant_scope():
     seen = []
 
     def handler(request: httpx.Request):
         seen.append((request.method, request.url.path, request.headers.get("cookie"), request.content))
-        if request.url.path.endswith("/access"):
-            return httpx.Response(200, json={"user_id": "u1", "merchant_id": "m1"})
         if request.url.path.endswith("/profile"):
             return httpx.Response(200, json={"merchant_id": "m1", "brand": {}})
         if request.url.path.endswith("/search"):
@@ -39,7 +37,6 @@ def test_access_profile_and_media_use_employee_cookie_and_merchant_scope():
         return httpx.Response(404)
 
     am = client_with(handler)
-    assert am.access("AMSessionId=abc", "m1")["user_id"] == "u1"
     assert am.profile("AMSessionId=abc", "m1")["merchant_id"] == "m1"
     assert am.search_media("AMSessionId=abc", "m1", keyword="ume")["total"] == 0
     assert all(item[2] == "AMSessionId=abc" for item in seen)
@@ -74,7 +71,7 @@ def test_missing_profile_is_none_but_forbidden_is_error():
     am = client_with(handler)
     assert am.profile("cookie", "m1") is None
     with pytest.raises(AMClientError) as exc:
-        am.access("cookie", "m1")
+        am.search_media("cookie", "m1", keyword="ume")
     assert exc.value.status_code == 403
     assert exc.value.code == "MERCHANT_ACCESS_DENIED"
 

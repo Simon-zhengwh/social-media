@@ -16,9 +16,6 @@ def _client(handler) -> AMClient:
 
 
 class _ExplodingAM:
-    def access(self, cookie, merchant_id):
-        raise AssertionError("AM access must be bypassed locally")
-
     def search_media(self, cookie, merchant_id, **kwargs):
         raise AssertionError("AM media must not be called under the local bypass")
 

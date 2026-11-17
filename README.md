@@ -154,7 +154,7 @@ Set-Location backend
 
 ### UAT 集成
 
-UAT 使用 `/api/merchants/{merchant_id}/...`。商户目录唯一来源是 social-media MongoDB `merchants` 集合，所有登录用户都能看到全部已导入商户；每条记录以 AM 真实商户 ID 作为 `_id`，另含显示用 `name`。用户需先导入记录，页面不会从 AM 搜索或创建名单；访问商户和上传到 AM 媒体库时仍由 AM 根据商户记录、登录用户及负责人/管理员权限校验授权。工作区、品牌风格、提示词优化和新海报可选读取 AM 档案，有则使用、无则跳过；上传素材不请求档案。原照替换、Agent 测试和 HTML/ZIP 产物接口继续受商户授权、CSRF 与维护模式保护。
+UAT 使用 `/api/merchants/{merchant_id}/...`。商户目录唯一来源是 social-media MongoDB `merchants` 集合，所有访问者都能看到全部已导入商户；每条记录以 AM 真实商户 ID 作为 `_id`，另含显示用 `name`。用户需先导入记录，页面不会从 AM 搜索或创建名单；只要记录存在，工作区就对任何访问者开放，不再向 AM 校验商户权限（`/ajax/merchant/{id}/access` 已不再调用）。AM 只在与它直接相关的功能上把关：读取 AM 档案、列出/上传 AM 媒体库时仍需浏览器里的 AM 会话 Cookie，缺失时这些请求各自返回 401/403，工作区照常打开。写请求仍受 CSRF 与维护模式保护。
 
 直接导入或更新名称：
 

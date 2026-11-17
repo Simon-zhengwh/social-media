@@ -16,6 +16,8 @@ from app.services.scoped_db import ScopedDatabase
 MERCHANT_PATH = re.compile(r"^/api/merchants/([^/]+)(?:/|$)")
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 LOCAL_ORIGINS = frozenset({"http://127.0.0.1:5173", "http://localhost:5173"})
+# Any visitor may open a merchant workspace, so requests carry no AM identity of their own.
+ANONYMOUS_ACTOR = {"user_id": "anonymous", "user_name": "访客"}
 logger = logging.getLogger(__name__)
 
 
@@ -53,20 +55,15 @@ async def merchant_context_middleware(request: Request, call_next):
         return _error(404, "merchant_not_imported", "商户未导入 social-media")
     merchant_name = str(merchant.get("name") or merchant_id)
     bypass = _local_bypass_context(request, merchant_name)
-    try:
-        if bypass is not None:
-            access = {"merchant_id": merchant_id, **bypass}
-        else:
-            access = request.app.state.am.access(cookie, merchant_id)
-    except AMClientError as exc:
-        return _error(exc.status_code, exc.code, exc.message)
+    # The imported catalog is the only gate: a merchant in it opens for every visitor,
+    # whether or not this browser carries an AM Console session.
+    actor = bypass or ANONYMOUS_ACTOR
     request.state.merchant_id = merchant_id
-    request.state.merchant_access = access
     request.state.am_cookie = cookie
     request.state.merchant_context = {
-        "user_id": access.get("user_id"),
-        "user_name": access.get("user_name"),
-        "merchant_id": access.get("merchant_id") or merchant_id,
+        "user_id": actor.get("user_id"),
+        "user_name": actor.get("user_name"),
+        "merchant_id": merchant_id,
         "merchant_name": merchant_name,
     }
     request.state.merchant_profile = None
@@ -85,8 +82,8 @@ async def merchant_context_middleware(request: Request, call_next):
                     merchant_profile.load_profile(request.app.state.am, cookie, merchant_id)
                 )
             except AMClientError as exc:
-                if exc.status_code in {401, 403}:
-                    return _error(exc.status_code, exc.code, exc.message)
+                # The profile is prompt decoration, never a gate: a missing AM session or
+                # an unreadable profile must not stop the workspace from opening.
                 logger.warning("Optional merchant profile unavailable: merchant=%s code=%s", merchant_id, exc.code)
     request.state.db = ScopedDatabase(request.app.state.raw_db, merchant_id)
     if bypass is not None:

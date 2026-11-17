@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Query, Request
 
 from app.api_errors import am_http_error
 from app.middleware import is_local_bypass as _local_bypass
@@ -14,22 +14,6 @@ router = APIRouter(tags=["merchant-context"])
 
 # Mounted without the /merchants/{merchant_id} prefix: picking a merchant cannot require one.
 merchant_list_router = APIRouter(prefix="/api/merchants", tags=["merchants"])
-
-
-def _validate_list_context(request: Request) -> None:
-    if _local_bypass(request):
-        return
-    context_merchant_id = str(request.query_params.get("context_merchant_id") or "").strip()
-    if not context_merchant_id:
-        raise HTTPException(status_code=400, detail="缺少 AM 商户上下文")
-    if request.app.state.raw_db.merchants.find_one({"_id": context_merchant_id}, {"_id": 1}) is None:
-        raise HTTPException(status_code=404, detail="当前商户未导入 social-media")
-    try:
-        request.app.state.am.access(
-            request.headers.get("cookie", ""), context_merchant_id
-        )
-    except AMClientError as exc:
-        raise am_http_error(exc) from exc
 
 
 def _merchant_catalog(raw_db: Any, keyword: str) -> list[dict[str, str]]:
@@ -44,8 +28,7 @@ def _merchant_catalog(raw_db: Any, keyword: str) -> list[dict[str, str]]:
 
 @merchant_list_router.get("")
 def list_merchants(request: Request, keyword: str = "") -> dict[str, Any]:
-    """List every manually imported merchant; AM validates only the current session context."""
-    _validate_list_context(request)
+    """List every manually imported merchant; opening one needs no further authorization."""
     merchants = _merchant_catalog(request.app.state.raw_db, keyword)
     return {"total": len(merchants), "merchants": merchants}
 
