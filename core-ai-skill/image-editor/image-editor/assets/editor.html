@@ -28,7 +28,7 @@ main{max-width:1320px;margin:0 auto 32px;padding:0 24px;display:grid;grid-templa
 <div id="rotation-field"><div class="zoom-title"><label for="rotation">旋转</label><output id="rotation-value">0°</output></div><div class="row"><input id="rotation" type="range" min="-45" max="45" step="1" value="0" disabled></div></div>
 <div class="directions"><button data-dx="-4" data-dy="0" aria-label="左移" disabled>←</button><button data-dx="0" data-dy="-4" aria-label="上移" disabled>↑</button><button data-dx="0" data-dy="4" aria-label="下移" disabled>↓</button><button data-dx="4" data-dy="0" aria-label="右移" disabled>→</button></div>
 <div class="small-buttons"><button id="reset" class="secondary" disabled>重置这一层</button><button id="download-element" class="secondary" disabled>下载贴纸 PNG</button></div>
-<div id="photo-upload" hidden><label class="secondary file-button">更换这张原照<input id="upload" type="file" accept="image/*" disabled></label><p id="file-name" class="file-name"></p></div>
+<div id="photo-upload" hidden><label class="secondary file-button"><span id="upload-label">更换这张原照</span><input id="upload" type="file" accept="image/*" disabled></label><p id="file-name" class="file-name"></p></div>
 <hr class="divider">
 <label for="view" class="field view-field">预览方式</label><select id="view" disabled><option value="all">完整海报</option><option value="no-photos">只看设计层（隐藏照片）</option><option value="fixed">只看固定背景</option></select>
 <label class="check"><input id="hide-art" type="checkbox" disabled>隐藏全部可调元素</label>
@@ -54,6 +54,7 @@ const state={ready:false,selected:hasArt?firstArt:firstPhoto,mode:hasArt?'art':'
 const layers=config.layers.map(item=>({...item,...item.initial,image:new Image(),gate:item.kind==='photo'?new Image():null,alpha:null,blob:null,sequence:0}));
 const selected=()=>layers[state.selected];
 const message=(text,error=false)=>{$('status').textContent=text;$('status').classList.toggle('error',error);};
+function imageAlpha(image){const c=document.createElement('canvas');c.width=image.naturalWidth;c.height=image.naturalHeight;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0);return ctx.getImageData(0,0,c.width,c.height).data;}
 for(const kind of ['art','photo']){
  const group=document.createElement('optgroup');group.label=kind==='art'?'可调设计元素':'底图照片';
  layers.forEach((l,i)=>{if(l.kind!==kind)return;const option=document.createElement('option');option.value=l.id;option.textContent=l.label;group.append(option);
@@ -77,7 +78,8 @@ function makeCanvas(options={}){if(!state.ready)throw new Error('图层尚未载
 function render(){
  if(!state.ready)return;const l=selected(),art=l.kind==='art';select.value=l.id;
  zoom.value=String(Math.round(l.scale/l.baseScale*100));$('zoom-value').textContent=`${Math.round(l.scale/l.baseScale*100)}%`;rotation.value=String(l.rotation);$('rotation-value').textContent=`${l.rotation}°`;visible.checked=l.visible;
- $('rotation-field').hidden=!art;$('photo-upload').hidden=art;$('download-element').disabled=!art;$('upload').disabled=art;$('file-name').textContent=l.fileName;
+ $('rotation-field').hidden=!art;$('photo-upload').hidden=false;$('download-element').disabled=!art;$('upload').disabled=false;$('file-name').textContent=l.fileName;
+ $('upload-label').textContent=l.role==='logo'?'更换 Logo':art?'更换这个元素':'更换这张原照';
  $('layer-text').textContent=art?l.text:'只调整这张完整原照，显示范围固定在对应窗口。';
  $('mode-art').classList.toggle('active',state.mode==='art');$('mode-photo').classList.toggle('active',state.mode==='photo');
  $('art-cards').hidden=state.mode!=='art';$('preview-label').textContent=state.mode==='art'?'拖动艺术字，试试新的排版':'拖动底图，文字和装饰保持当前位置';
@@ -116,16 +118,20 @@ $('reset').addEventListener('click',reset);$('reset-all').addEventListener('clic
 document.querySelectorAll('[data-dx]').forEach(b=>b.addEventListener('click',()=>move(Number(b.dataset.dx),Number(b.dataset.dy))));
 view.addEventListener('change',render);hideArt.addEventListener('change',render);
 $('upload').addEventListener('change',async()=>{
- const file=$('upload').files?.[0],l=selected();if(!file||l.kind!=='photo')return;const sequence=++l.sequence,url=URL.createObjectURL(file);
- try{const candidate=new Image();candidate.src=url;await candidate.decode();if(sequence!==l.sequence){URL.revokeObjectURL(url);return;}const previous=l.blob;l.image=candidate;l.blob=url;l.fileName=file.name;
-  const b=l.bounds,s=Math.max((b[2]-b[0])/candidate.naturalWidth,(b[3]-b[1])/candidate.naturalHeight);l.initial={x:(b[0]+b[2])/2,y:(b[1]+b[3])/2,scale:s,baseScale:s,rotation:0,visible:true};Object.assign(l,l.initial);if(previous)URL.revokeObjectURL(previous);render();message('原照已更换，其他图层保持不动。');
- }catch{URL.revokeObjectURL(url);if(sequence===l.sequence)message('图片无法读取，已保留之前的有效原照。',true);}finally{$('upload').value='';}
+ const file=$('upload').files?.[0],l=selected();if(!file)return;const sequence=++l.sequence,url=URL.createObjectURL(file);
+ try{const candidate=new Image();candidate.src=url;await candidate.decode();if(sequence!==l.sequence){URL.revokeObjectURL(url);return;}
+  const art=l.kind==='art',alpha=art?imageAlpha(candidate):null,b=l.bounds,previous=l.blob;
+  if(art){const ratio=l.scale/l.baseScale,s=Math.min(l.image.naturalWidth*l.scale/candidate.naturalWidth,l.image.naturalHeight*l.scale/candidate.naturalHeight),base=Math.min((b[2]-b[0])/candidate.naturalWidth,(b[3]-b[1])/candidate.naturalHeight);l.scale=s;l.baseScale=s/ratio;l.alpha=alpha;l.initial={...l.initial,scale:base,baseScale:base};}
+  else{const s=Math.max((b[2]-b[0])/candidate.naturalWidth,(b[3]-b[1])/candidate.naturalHeight);l.initial={x:(b[0]+b[2])/2,y:(b[1]+b[3])/2,scale:s,baseScale:s,rotation:0,visible:true};Object.assign(l,l.initial);}
+  l.image=candidate;l.blob=url;l.fileName=file.name;document.querySelectorAll('[data-layer]').forEach(button=>{if(button.dataset.layer===l.id)button.querySelector('img').src=url;});
+  if(previous)URL.revokeObjectURL(previous);render();message(art?'元素已更换，其他图层保持不动。':'原照已更换，其他图层保持不动。');
+ }catch{URL.revokeObjectURL(url);if(sequence===l.sequence)message('图片无法读取，已保留之前的有效图片。',true);}finally{$('upload').value='';}
 });
 async function save(canvas,name){const blob=await new Promise((resolve,reject)=>canvas.toBlob(v=>v?resolve(v):reject(new Error('PNG 导出失败。')),'image/png'));const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
 $('download').addEventListener('click',async()=>{const button=$('download');button.disabled=true;try{await save(makeCanvas(),'poster.png');message(`已导出当前画面，${W} × ${H}。`);}catch(e){message(e.message,true);}finally{button.disabled=false;}});
 $('download-element').addEventListener('click',async()=>{const l=selected();if(l.kind!=='art')return;try{const c=document.createElement('canvas');c.width=l.image.naturalWidth;c.height=l.image.naturalHeight;c.getContext('2d').drawImage(l.image,0,0);await save(c,`${l.id}.png`);message('已导出这组艺术字的原始透明 PNG。');}catch(e){message(e.message,true);}});
 fixed.src=config.fixed;if(config.background)background.src=config.background;
-Promise.all([...(config.background?[background.decode()]:[]),fixed.decode(),...layers.flatMap(l=>{l.image.src=l.source;const imageReady=l.image.decode().then(()=>{if(l.kind==='art'){const c=document.createElement('canvas');c.width=l.image.naturalWidth;c.height=l.image.naturalHeight;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(l.image,0,0);l.alpha=ctx.getImageData(0,0,c.width,c.height).data;}});if(l.gate){l.gate.src=l.window;const gateReady=l.gate.decode().then(()=>{const c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(l.gate,0,0);l.gatePixels=ctx.getImageData(0,0,W,H).data;});return [imageReady,gateReady];}return [imageReady];})]).then(()=>{
+Promise.all([...(config.background?[background.decode()]:[]),fixed.decode(),...layers.flatMap(l=>{l.image.src=l.source;const imageReady=l.image.decode().then(()=>{if(l.kind==='art')l.alpha=imageAlpha(l.image);});if(l.gate){l.gate.src=l.window;const gateReady=l.gate.decode().then(()=>{const c=document.createElement('canvas');c.width=W;c.height=H;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(l.gate,0,0);l.gatePixels=ctx.getImageData(0,0,W,H).data;});return [imageReady,gateReady];}return [imageReady];})]).then(()=>{
  state.ready=true;document.querySelectorAll('button,input,select').forEach(c=>c.disabled=false);stage.setAttribute('aria-busy','false');$('mode-art').parentElement.hidden=!(hasArt&&hasPhotos);$('hide-art').closest('label').hidden=!hasArt;$('mode-art').disabled=!hasArt;$('mode-photo').disabled=!hasPhotos;render();message(hasArt?'图层已就绪，可分别调整。':'原照已就绪，设计元素保持固定。');
 }).catch(()=>message('图层载入失败，请重新打开完整 HTML 文件。',true));
 if(new URLSearchParams(location.search).has('selftest'))window.editorTest={state,layers,move,scaleAt,makeCanvas,hit};

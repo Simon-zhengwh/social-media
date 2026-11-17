@@ -196,7 +196,7 @@ class WholeImageTaskCreate(BaseModel):
 
 
 class OriginalReplacementItem(BaseModel):
-    target: str = Field(min_length=1, max_length=1000)
+    target: str = Field(default="", max_length=1000)
     asset_id: str = Field(min_length=1, max_length=128)
 
     @field_validator("target", "asset_id", mode="before")
@@ -208,6 +208,7 @@ class OriginalReplacementItem(BaseModel):
 class OriginalReplacementInput(BaseModel):
     source_asset_id: str = Field(min_length=1, max_length=128)
     replacements: list[OriginalReplacementItem] = Field(min_length=1, max_length=5)
+    split_all_elements: bool = False
 
     @field_validator("source_asset_id", mode="before")
     @classmethod
@@ -219,6 +220,7 @@ class WholeImageOriginalReplacementRequest(BaseModel):
     source_version_id: str = Field(min_length=1, max_length=128)
     source_output_id: str = Field(min_length=1, max_length=128)
     replacements: list[OriginalReplacementItem] = Field(min_length=1, max_length=5)
+    split_all_elements: bool = False
 
     @field_validator("source_version_id", "source_output_id", mode="before")
     @classmethod

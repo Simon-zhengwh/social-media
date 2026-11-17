@@ -24,6 +24,9 @@ class FakeAgent:
         self.on_trigger = None
         self.uploads = []
         self.artifacts = []
+        self.file_polls = []
+        self.file_downloads = []
+        self.file_error = False
 
     def upload_image_blob(self, data, *, content_type):
         self.uploads.append(data)
@@ -35,11 +38,18 @@ class FakeAgent:
             self.on_trigger()
         return "run-replacement"
 
-    def poll_agent_detail(self, run_id):
+    def poll_agent_detail(self, run_id, *, include_files=False):
         self.polls.append(run_id)
+        self.file_polls.append(include_files)
         if self.pending:
             return None
         return AgentRunResult(run_id=run_id, status="COMPLETED", output=self.output, artifacts=self.artifacts)
+
+    def download_agent_file(self, url, *, content_type):
+        self.file_downloads.append(url)
+        if self.file_error:
+            raise CoreAIError('artifact_download_failed', '文件下载失败')
+        return b'<!doctype html><button>Editor</button>' if content_type == 'text/html' else b'PK\x03\x04bundle'
 
     def download_image(self, url):
         self.downloads.append(url)
@@ -90,7 +100,18 @@ def test_ordered_mapping_and_reused_material_are_preserved(env):
         assert image.size == (320, 240)
 
 
-@pytest.mark.parametrize("items", [[], [{"target": " ", "asset_id": "beef"}],
+def test_automatic_and_explicit_targets_keep_their_image_mapping(env):
+    task = create(env, [{"asset_id": "beef"}, {"target": "左上角人物", "asset_id": "person"}])
+    result = run(env, task)
+    assert env.client.triggers[0][1] == (
+        "帮我根据图2的原照内容，自行识别图1中对应的替换对象和位置并替换，并且把图1的左上角人物替换成图3\n\n"
+        "https://example.com/input-1.png\nhttps://example.com/input-2.png\nhttps://example.com/input-3.png"
+    )
+    assert result["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("items", [[], [{"target": "牛肉", "asset_id": " "}],
+    [{"target": "牛" * 1001, "asset_id": "beef"}],
     [{"target": "牛肉", "asset_id": "missing"}], [{"target": "牛肉", "asset_id": "beef"}] * 6])
 def test_invalid_replacements_are_rejected(env, items):
     with pytest.raises(env.service.OriginalReplacementError):
@@ -250,7 +271,7 @@ def test_refresh_pending_run_continues_until_result_without_resetting_deadline(e
     env.service.queue_refresh(env.db, task["_id"])
     original_poll = env.client.poll_agent_detail
 
-    def poll(run_id):
+    def poll(run_id, *, include_files=False):
         saved = env.db.background_replace_tasks.find_one({"_id": task["_id"]})
         assert saved["status"] == "running"
         assert saved["stage"] == "agent_running"
@@ -258,7 +279,7 @@ def test_refresh_pending_run_continues_until_result_without_resetting_deadline(e
         if not env.client.polls:
             env.client.polls.append(run_id)
             return None
-        return original_poll(run_id)
+        return original_poll(run_id, include_files=include_files)
 
     env.client.poll_agent_detail = poll
     result = run(env, task, refresh=True)
@@ -301,10 +322,10 @@ def test_timeout_uses_persisted_deadline_then_manual_query_recovers(env, monkeyp
     env.client.pending = True
     original_poll = env.client.poll_agent_detail
 
-    def advance(run_id):
+    def advance(run_id, *, include_files=False):
         nonlocal now
         now += timedelta(seconds=2700)
-        return original_poll(run_id)
+        return original_poll(run_id, include_files=include_files)
 
     env.client.poll_agent_detail = advance
     result = run(env, task)
@@ -323,11 +344,11 @@ def test_run_id_is_persisted_before_polling(env):
     task = create(env)
     original = env.client.poll_agent_detail
 
-    def poll(run_id):
+    def poll(run_id, *, include_files=False):
         saved = env.db.background_replace_tasks.find_one({"_id": task["_id"]})
         assert saved["run_id"] == run_id
         assert saved["deadline_at"] and saved["agent_input"]
-        return original(run_id)
+        return original(run_id, include_files=include_files)
 
     env.client.poll_agent_detail = poll
     run(env, task)
@@ -378,12 +399,12 @@ def test_temporary_network_error_retries_without_new_trigger(env, monkeypatch):
     original_poll = env.client.poll_agent_detail
     attempts = 0
 
-    def poll(run_id):
+    def poll(run_id, *, include_files=False):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
             raise httpx.ReadTimeout("temporary failure")
-        return original_poll(run_id)
+        return original_poll(run_id, include_files=include_files)
 
     monkeypatch.setattr(env.service.time, "sleep", lambda _: None)
     env.client.poll_agent_detail = poll

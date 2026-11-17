@@ -1047,7 +1047,7 @@ export default function WholeImageStudio({
         </WholeImageResultPanel>
 
         {activeTab ? (
-          <aside id="studio-utility-panel" className="studio-inspector" aria-label="辅助工具内容">
+          <aside id="studio-utility-panel" className={`studio-inspector${activeTab === 'original_replace' ? ' original-replacement-inspector' : ''}`} aria-label="辅助工具内容">
             <div className="studio-utility-heading">
               <button type="button" aria-label="收起辅助工具" onClick={() => selectUtility(null)}>×</button>
             </div>
@@ -1056,13 +1056,8 @@ export default function WholeImageStudio({
                 <WholeChatHistory messages={chatMessages} edit={task?.edit ?? { status: 'idle' }} />
               ) : null}
               {activeTab === 'original_replace' && task ? (
-                <OriginalReplacementPanel key={task.id} task={task} assets={assets} assetsLoading={assetsLoading}
-                  onLoadAssets={onLoadAssets} onGoAssets={onGoAssets}
-                  onApplied={async (next) => {
-                    setTask(next)
-                    lastVersionRef.current = next.current_version_id
-                    await loadVersions(next.id)
-                  }}
+                <OriginalReplacementPanel key={task.id} task={task} assets={assets}
+                  logo={logoOptions.find((logo) => logo.asset_id === effectiveLogoId) ?? null}
                   onRefreshTask={async () => {
                     const next = await getWholeImageTask(task.id)
                     setTask(next)

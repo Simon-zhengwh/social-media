@@ -1,18 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, applyOriginalReplacement, createOriginalReplacement, listOriginalReplacements, merchantPath, refreshOriginalReplacement, uploadAsset } from '../api'
-import type { Asset, OriginalReplacementTask, WholeImageTask } from '../types'
+import { ApiError, createOriginalReplacement, listOriginalReplacements, merchantPath, refreshOriginalReplacement, restoreOriginalReplacementArtifacts } from '../api'
+import type { Asset, BrandLogoImage, OriginalReplacementTask, WholeImageTask } from '../types'
 import { parseServerDate } from '../time'
 import { assetDisplayName } from '../assetNames'
-import AssetPicker from './AssetPicker'
-import { ZoomableImage } from './ImageLightbox'
 
 type Props = {
   task: WholeImageTask
   assets: Asset[]
-  assetsLoading: boolean
-  onLoadAssets: () => void
-  onGoAssets: () => void
-  onApplied: (task: WholeImageTask) => Promise<void>
+  logo: BrandLogoImage | null
   onRefreshTask: () => Promise<void>
 }
 type Row = { id: string; target: string; asset: Asset }
@@ -48,23 +43,27 @@ function selectRecordUrl(id: string | null) {
   window.history.replaceState({}, '', url)
 }
 
-export default function OriginalReplacementPanel({ task, assets, assetsLoading, onLoadAssets, onGoAssets, onApplied, onRefreshTask }: Props) {
+export default function OriginalReplacementPanel({ task, assets, logo, onRefreshTask }: Props) {
   const [rows, setRows] = useState<Row[]>(() => carried(task, assets))
+  const [splitAllElements, setSplitAllElements] = useState(false)
   const [records, setRecords] = useState<OriginalReplacementTask[]>([])
   const [selectedId, setSelectedId] = useState<string | null>()
   const [loading, setLoading] = useState(true)
-  const [operation, setOperation] = useState<'submit' | 'upload' | 'refresh' | 'apply' | null>(null)
+  const [operation, setOperation] = useState<'submit' | 'refresh' | 'restore' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [pickerTarget, setPickerTarget] = useState<string | null>(null)
   const [clock, setClock] = useState(Date.now)
   const lock = useRef(false)
   const mounted = useRef(true)
   const listRequest = useRef(0)
   const selected = records.find((item) => item.id === selectedId) ?? null
+  const htmlArtifact = selected?.artifacts?.find((item) => item.kind === 'html')
   const running = records.some(active)
-  const filled = rows.filter((item) => item.target.trim())
-  const capped = filled.length >= 5
+  const photos = rows.filter((item) => item.asset.id !== logo?.asset_id)
+  const replacements = [
+    ...(logo ? [{ target: 'Logo', asset_id: logo.asset_id }] : []),
+    ...photos.map((item) => ({ target: item.target.trim(), asset_id: item.asset.id })),
+  ]
   const currentOutput = task.outputs.find((item) => item.id === task.current_output_id)
   const canSubmit = Boolean(task.status === 'succeeded' && task.current_version_id && currentOutput?.selectable && task.edit.status !== 'running')
 
@@ -127,37 +126,30 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
 
   const submit = () => {
     if (!canSubmit || lock.current) return
-    if (filled.length < 1) { setError('请至少填写一个替换位置'); return }
-    if (filled.length > 5) { setError('最多提交 5 项替换'); return }
+    if (replacements.length < 1) { setError('请添加原照或选择 Logo'); return }
+    if (replacements.length > 5) { setError('最多提交 5 项替换'); return }
     void perform('submit', async () => {
       const next = await createOriginalReplacement(task.id, task.current_version_id!, task.current_output_id!,
-        filled.map((item) => ({ target: item.target.trim(), asset_id: item.asset.id })))
+        replacements, splitAllElements)
       if (!mounted.current) return
       listRequest.current++
       setRecords((previous) => [next, ...previous]); setSelectedId(next.id); selectRecordUrl(next.id)
-      setClock(Date.now()); setRows(carried(task, assets))
+      setClock(Date.now()); setRows(carried(task, assets)); setSplitAllElements(false)
     })
   }
 
-  const upload = (file?: File) => {
-    if (!file || lock.current) return
-    void perform('upload', async () => {
-      const asset = await uploadAsset(file)
-      if (!mounted.current) return
-      setRows((previous) => [...previous, row(asset)]); onLoadAssets()
-    })
+  const chooseRecord = (id: string | null) => {
+    setSelectedId(id); setError(null); selectRecordUrl(id)
+    if (!id) setSplitAllElements(false)
   }
-
-  const chooseRecord = (id: string | null) => { setSelectedId(id); setError(null); selectRecordUrl(id) }
   const elapsed = selected ? Math.max(0, Math.floor((clock - parseServerDate(selected.started_at || selected.created_at).getTime()) / 1000)) : 0
-  const sourceChanged = selected && (selected.source_version_id !== task.current_version_id || selected.source_output_id !== task.current_output_id)
 
   return (
     <div className="original-replacement-panel">
-      <div className="original-replacement-heading">
-        <strong>原照替换</strong>
-        <button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation) || loading} onClick={() => chooseRecord(null)}>新建替换</button>
-      </div>
+      {!loading && !selected ? <label className="original-replacement-mode">
+        <input type="checkbox" checked={splitAllElements} disabled={Boolean(operation)} onChange={(event) => setSplitAllElements(event.target.checked)} />
+        全部拆分元素（含艺术字）
+      </label> : null}
       {records.length > 0 ? (
         <label className="original-replacement-history">替换记录
           <select value={selectedId ?? ''} disabled={Boolean(operation)} onChange={(event) => chooseRecord(event.target.value || null)}>
@@ -169,8 +161,9 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
       {loading ? <p role="status">正在恢复替换记录…</p> : selected ? (
         <>
           <div className="original-replacement-targets">
-            {selected.replacements.map((item, index) => <div key={`${index}-${item.asset_id}`}><img src={item.preview_url} alt={item.name} /><span>{item.target}</span></div>)}
+            {selected.replacements.map((item, index) => <div key={`${index}-${item.asset_id}`}><img src={item.preview_url} alt={item.name} /><span>{item.target || '自动识别'}</span></div>)}
           </div>
+          {selected.split_all_elements ? <p className="original-replacement-mode">全部拆分元素（含艺术字）</p> : null}
           {active(selected) ? <div className="replacement-status" role="status">{stages[selected.stage] || selected.stage} · 已等待 {Math.floor(elapsed / 60)} 分 {elapsed % 60} 秒<p>可继续修改海报或关闭页面，结果仍基于提交时的 v{selected.source_version}。</p></div> : null}
           {selected.error ? <div className="asset-notice asset-notice-error" role="alert"><p>{selected.error.message}</p>
             {selected.run_id ? <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation)} onClick={() => void perform('refresh', async () => {
@@ -181,64 +174,43 @@ export default function OriginalReplacementPanel({ task, assets, assetsLoading, 
               }
             })}>查询已有结果</button> : null}
           </div> : null}
-          <div className="replacement-comparison">
-            <figure><figcaption>替换前 · v{selected.source_version}</figcaption><ZoomableImage src={selected.source.preview_url} alt="替换前海报" className="replacement-preview" /></figure>
-            {selected.output ? <figure><figcaption>替换结果</figcaption><ZoomableImage src={selected.output.preview_url} alt="原照替换结果" className="replacement-preview" /></figure> : null}
-          </div>
-          {selected.output && selected.status === 'succeeded' ? (
-            <>
-              {selected.applied_version_id ? <p className="original-replacement-applied" role="status">已应用为 v{selected.applied_version}，可在版本列表查看。</p> : (
-                <>
-                  {sourceChanged ? <p className="original-replacement-warning">替换结果基于 v{selected.source_version}，当前为 v{task.current_version}。应用将切换为新的原照替换版本，已有版本保留。</p> : null}
-                  <p className="replacement-help">请对比确认菜品真实性及文字、排版是否完整。这里不提供自动像素保真认证。</p>
-                  <button type="button" className="mp-btn-primary replacement-submit" disabled={Boolean(operation) || task.edit.status === 'running' || !task.current_output_id} onClick={() => void perform('apply', async () => {
-                    const next = await applyOriginalReplacement(task, selected.id)
-                    if (!mounted.current) return
-                    await onApplied(next); await load()
-                  })}>{operation === 'apply' ? '正在应用…' : '应用为新版本'}</button>
-                  {task.edit.status === 'running' ? <p className="replacement-help">当前正在改图，完成后可应用替换结果。</p> : null}
-                </>
-              )}
-              <a className="mp-btn-ghost mp-btn-small" href={selected.output.download_url} download>下载替换结果 PNG</a>
-            </>
-          ) : null}
-          {selected.agent_output ? <details className="replacement-agent-output"><summary>处理说明与辅助文件</summary><pre>{selected.agent_output}</pre></details> : null}
+          {htmlArtifact?.preview_url ? <a className="mp-btn-primary replacement-submit" href={htmlArtifact.preview_url} target="_blank" rel="noopener noreferrer">打开 HTML</a> : null}
+          {selected.artifact_error ? <p className="original-replacement-warning" role="status">{selected.artifact_error}</p> : null}
+          {selected.run_id && !active(selected) && (!htmlArtifact || selected.artifact_error) ? <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation)} onClick={() => void perform('restore', async () => {
+            const next = await restoreOriginalReplacementArtifacts(task.id, selected.id)
+            if (mounted.current) {
+              listRequest.current++
+              setRecords((previous) => previous.map((item) => item.id === next.id ? next : item))
+            }
+          })}>{operation === 'restore' ? '正在加载…' : '加载 HTML 编辑器'}</button> : null}
         </>
       ) : (
         <>
           <div className="replacement-rows">
-            {rows.map((item) => {
+            {logo ? <div className="replacement-row original-replacement-row original-replacement-logo is-checked">
+              <div className="original-replacement-choice">
+                <img src={logo.url} alt="Logo" />
+                <span className="original-replacement-name">Logo</span>
+              </div>
+            </div> : null}
+            {photos.map((item) => {
               const asset = assets.find((candidate) => candidate.id === item.asset.id) ?? item.asset
-              return <div key={item.id} className={`replacement-row original-replacement-row${item.target.trim() ? ' is-checked' : ''}`}>
+              return <div key={item.id} className="replacement-row original-replacement-row is-checked">
                 <div className="original-replacement-choice">
                   <img src={asset.url} alt="" />
-                  <span className="original-replacement-name">{assetDisplayName(asset.original_name)}</span>
-                  <button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation)} onClick={() => setRows((previous) => previous.filter((candidate) => candidate.id !== item.id))}>移除</button>
+                  <input id={`original-target-${item.id}`} aria-label={`替换位置：${assetDisplayName(asset.original_name)}`} className="replacement-target" value={item.target} maxLength={1000} disabled={Boolean(operation)} placeholder="留空自动识别，如：右下角牛肉、背景" onChange={(event) => updateRow(item.id, { target: event.target.value })} />
+                  <button type="button" className="mp-btn-ghost mp-btn-small original-replacement-remove" aria-label={`移除原照：${assetDisplayName(asset.original_name)}`} disabled={Boolean(operation)} onClick={() => setRows((previous) => previous.filter((candidate) => candidate.id !== item.id))}>移除</button>
                 </div>
-                <label htmlFor={`original-target-${item.id}`}>替换位置</label>
-                <input id={`original-target-${item.id}`} className="replacement-target" value={item.target} maxLength={1000} disabled={Boolean(operation) || (capped && !item.target.trim())} placeholder="例如：右下角牛肉" onChange={(event) => updateRow(item.id, { target: event.target.value })} />
               </div>
             })}
           </div>
-          {rows.length === 0 ? <p className="replacement-help">还没有原照，可从资产库选择或上传，再填写替换位置。</p> : null}
-          <div className="original-replacement-add">
-            <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation) || capped} onClick={() => { setPickerTarget('new'); onLoadAssets() }}>＋ 从资产库添加</button>
-            <label className={`mp-btn-secondary mp-btn-small replacement-upload${operation || capped ? ' is-disabled' : ''}`}>上传原照
-              <input type="file" accept="image/*" aria-label="上传额外原照" disabled={Boolean(operation) || capped} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; upload(file) }} />
-            </label>
-          </div>
-          <p className="replacement-help">已填 {filled.length}/5 项，通常约 30 分钟出结果，可稍后找回。</p>
-          <button type="button" className="mp-btn-primary replacement-submit" disabled={Boolean(operation) || !canSubmit || filled.length === 0} onClick={submit}>{operation === 'submit' ? '提交中…' : operation === 'upload' ? '正在上传…' : '开始原照替换'}</button>
+          {photos.length === 0 && !logo ? <p className="replacement-help">请先在设计需求中添加参考图或选择 Logo。</p> : null}
+          {replacements.length > 5 ? <p className="original-replacement-warning" role="alert">最多提交 5 项，请移除部分原照或关闭 Logo。</p> : null}
+          <button type="button" className="mp-btn-primary replacement-submit" disabled={Boolean(operation) || !canSubmit || replacements.length === 0 || replacements.length > 5} onClick={submit}>{operation === 'submit' ? '提交中…' : '开始原照替换'}</button>
           {!canSubmit ? <p className="replacement-help">请等待当前操作完成，并先选定一张完整海报结果。</p> : null}
         </>
       )}
       {error || loadError ? <div className="asset-notice asset-notice-error" role="alert"><p>{error || loadError}</p><button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation)} onClick={() => void load()}>刷新替换记录</button></div> : null}
-      <AssetPicker key={pickerTarget ?? 'original-closed'} open={pickerTarget !== null} purpose="product" assets={assets} loading={assetsLoading}
-        onClose={() => setPickerTarget(null)} onSelect={(asset) => {
-          if (pickerTarget === 'new') setRows((previous) => [...previous, row(asset)])
-          else if (pickerTarget) updateRow(pickerTarget, { asset })
-          setPickerTarget(null)
-        }} onGoAssets={() => { setPickerTarget(null); onGoAssets() }} />
     </div>
   )
 }

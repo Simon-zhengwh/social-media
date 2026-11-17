@@ -174,7 +174,7 @@ def build_editor(manifest,output_dir,base_dir=None):
     art=[]
     for element in elements:
         path=resolve(element['source']);im,_=image_info(path)
-        if 'A' not in im.getbands() or im.getchannel('A').getextrema()[0]!=0 or not im.getchannel('A').getbbox():
+        if ('A' in im.getbands() and not im.getchannel('A').getbbox()) or (element.get('role') != 'logo' and ('A' not in im.getbands() or im.getchannel('A').getextrema()[0]!=0)):
             raise ValueError('Each art element needs native visible RGBA content and transparency')
         b=box(element['box'],width,height,'element box')
         scale=min((b[2]-b[0])/im.width,(b[3]-b[1])/im.height)
@@ -219,7 +219,8 @@ def build_editor(manifest,output_dir,base_dir=None):
         name=copy_input(path,element['id']);replay_art['source']=name
         replay_art['original_name']=element.get('original_name',path.name)
         layers.append({'id':element['id'],'kind':'art','label':str(element.get('label',element['id'])),'source':data_url(out/name),
-                       'text':str(element.get('text','')),'bounds':b,'fileName':replay_art['original_name'],'initial':initial})
+                       'text':str(element.get('text','')),'bounds':b,'fileName':replay_art['original_name'],'initial':initial,
+                       **({'role':'logo'} if element.get('role') == 'logo' else {})})
     report_files=[]
     for index,(path,receipt) in enumerate(reports,1):
         name=f'generation-{index}.json';(out/name).write_text(json.dumps(receipt,ensure_ascii=False,indent=2),encoding='utf-8');report_files.append(name)

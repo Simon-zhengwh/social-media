@@ -48,13 +48,15 @@ def _asset(db: Any, asset_id: str) -> dict[str, Any]:
             "width": int(asset.get("width") or 0), "height": int(asset.get("height") or 0)}
 
 
-def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacements: list[dict[str, str]]) -> dict[str, Any]:
+def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacements: list[dict[str, str]],
+                split_all_elements: bool = False) -> dict[str, Any]:
     from pydantic import ValidationError
 
     try:
-        payload = OriginalReplacementInput(source_asset_id=source_asset_id, replacements=replacements)
+        payload = OriginalReplacementInput(source_asset_id=source_asset_id, replacements=replacements,
+                                           split_all_elements=split_all_elements)
     except ValidationError as exc:
-        raise OriginalReplacementError("invalid_input", "请选择原图并填写 1–5 项替换元素和对应图片", 422) from exc
+        raise OriginalReplacementError("invalid_input", "请选择原图和 1–5 项替换图片", 422) from exc
     source = _asset(db, payload.source_asset_id)
     if source["width"] <= 0 or source["height"] <= 0:
         raise OriginalReplacementError("reference_invalid", "原图尺寸无效，请重新上传", 422)
@@ -107,11 +109,28 @@ def _build_input(db: Any, settings: Settings, store: ObjectStore, client: CoreAI
     for item in data["replacements"]:
         image_number = image_ids.index(item["asset_id"]) + 1
         clause = f"把图1的{item['target']}替换成图{image_number}"
-        if item["target"] == "背景":
+        if not item["target"]:
+            clause = f"根据图{image_number}的原照内容，自行识别图1中对应的替换对象和位置并替换"
+        elif item["target"] == "背景":
             clause = (f"把图1的整张摄影底图（包括照片中的主体和场景）替换成图{image_number}，"
                       "保留图1的文字、Logo、笔刷、贴纸、装饰和原有排版，保持图1的画布尺寸不变")
         clauses.append(clause)
     instruction = "帮我" + "，并且".join(clauses)
+    for item in data["replacements"]:
+        if item["target"].casefold() == "logo":
+            image_number = image_ids.index(item["asset_id"]) + 1
+            instruction += (
+                f"\n图{image_number}的 Logo 原文件须作为 HTML 中的独立可替换图层，标记 role=logo，"
+                "不与文字、笔刷或固定设计层合并；保留原文件的完整图案、颜色与透明度，不重绘或裁切 Logo。"
+                "移除固定层中的旧 Logo，保留周围设计和衬底；提供选择 Logo、移动、等比缩放及“更换 Logo”入口。"
+                "未要求全部拆层时，只额外拆出 Logo，其他未指定设计保持固定。"
+            )
+    if data.get("split_all_elements", False):
+        instruction += (
+            "\n同时将整张海报的全部设计元素拆成可独立调整的图层，包括标题、所有文字组、Logo、笔刷、贴纸、插画、装饰、分隔线和照片。"
+            "文字按原稿内容与风格制作为独立艺术字透明 PNG 图层，不改写文案；照片使用对应原照，底图完整不透明。"
+            "按 skill 的元素拆层流程交付离线 HTML、完整图层，以及与图1同尺寸的不透明最终 PNG。"
+        )
     return instruction + "\n\n" + "\n".join(url(asset_id) for asset_id in image_ids)
 
 
@@ -152,6 +171,8 @@ def _final_image_candidates(result: AgentRunResult) -> list[str]:
         re.findall(r'(!?)\[([^\]]*)\]\(<?(https://[^\s)>]+)>?(?:\s+"[^"]*")?\)', result.output)
     ):
         artifact = artifacts.get(url)
+        if artifact and not artifact.content_type.startswith("image/"):
+            continue
         described = label + (f" {artifact.file_name} {artifact.title}" if artifact else "")
         if STRONG_AUXILIARY.search(described):
             continue
@@ -161,6 +182,8 @@ def _final_image_candidates(result: AgentRunResult) -> list[str]:
             scored.append((score, order, url))
     if not scored:
         for order, item in enumerate(result.artifacts):
+            if not item.content_type.startswith("image/"):
+                continue
             described = f"{item.file_name} {item.title}"
             if STRONG_AUXILIARY.search(described):
                 continue
@@ -179,10 +202,50 @@ def _final_image_candidates(result: AgentRunResult) -> list[str]:
     return list(dict.fromkeys(url for _, url in fallback))
 
 
+def _save_editor_artifacts(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
+                           task: dict[str, Any], result: AgentRunResult) -> None:
+    saved = list(task.get("artifacts") or [])
+    failed = False
+    for artifact in (agent_image.pick_html_artifact(result), agent_image.pick_bundle_artifact(result)):
+        if artifact is None:
+            continue
+        try:
+            existing = db.whole_artifacts.find_one({"task_id": task["_id"], "source_url": artifact.download_url})
+            if existing and store.exists(existing["path"]):
+                meta = {"id": existing["_id"], "kind": existing["kind"], "file_name": existing["file_name"],
+                        "content_type": existing["content_type"], "size": existing["bytes"], "title": existing.get("title", "")}
+            else:
+                data = client.download_agent_file(artifact.download_url, content_type=artifact.content_type)
+                meta = agent_image.save_agent_artifact(db, settings, store, task_id=task["_id"],
+                                                       version=0, artifact=artifact, data=data)
+            saved = [item for item in saved if item["kind"] != meta["kind"]]
+            saved.append(meta)
+        except Exception:
+            failed = True
+            logger.exception("failed to store original replacement artifact for %s", task["_id"])
+    _update(db, task["_id"], artifacts=saved,
+            artifact_error="部分编辑器文件未能保存，可重新加载。" if failed else None)
+
+
+def restore_artifacts(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
+                      task_id: str) -> dict[str, Any]:
+    task = get_task(db, task_id)
+    if task["status"] in ACTIVE or not task.get("run_id"):
+        raise OriginalReplacementError("artifacts_not_ready", "请等待运行完成后加载 HTML 编辑器", 409)
+    result = client.poll_agent_detail(task["run_id"], include_files=True)
+    if result is None:
+        raise OriginalReplacementError("artifacts_not_ready", "远端仍在处理中，请稍后加载", 409)
+    _save_editor_artifacts(db, settings, store, client, task, result)
+    if agent_image.pick_html_artifact(result) is None:
+        _update(db, task_id, artifact_error="该运行未返回 HTML 编辑器。")
+    return get_task(db, task_id)
+
+
 def _save_result(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
                  task: dict[str, Any], result: Any) -> None:
     task_id = task["_id"]
     _update(db, task_id, agent_output=result.output, stage="saving", progress=85)
+    _save_editor_artifacts(db, settings, store, client, task, result)
     required = (task["source"]["width"], task["source"]["height"])
     candidates = _final_image_candidates(result)
     if not candidates:
@@ -263,7 +326,7 @@ def run_task(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClie
         deadline = _utc(task["deadline_at"]) if task.get("deadline_at") else utcnow()
         while True:
             try:
-                result = client.poll_agent_detail(task["run_id"])
+                result = client.poll_agent_detail(task["run_id"], include_files=True)
             except (httpx.TimeoutException, httpx.NetworkError):
                 if refresh:
                     raise OriginalReplacementError("agent_unavailable", "查询网络异常，可稍后查询已有结果", 502)
@@ -331,4 +394,7 @@ def task_out(doc: dict[str, Any]) -> dict[str, Any]:
     return {"id": task_id, **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements",
             "agent_id", "run_id", "agent_input", "agent_output", "error", "whole_task_id", "source_version_id",
             "source_output_id", "source_version", "applied_version_id", "applied_version"]}, "output": output,
+            "split_all_elements": (doc.get("input") or {}).get("split_all_elements", False),
+            "artifacts": agent_image.artifacts_out(doc, str(doc.get("merchant_id") or "")),
+            "artifact_error": doc.get("artifact_error"),
             **{key: utc_iso(doc.get(key)) for key in ["created_at", "updated_at", "started_at", "deadline_at"]}}

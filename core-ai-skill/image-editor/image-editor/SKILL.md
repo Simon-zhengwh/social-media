@@ -1,6 +1,10 @@
 ---
 name: image-editor
-description: 在Core AI通过原生generate_image工具修改已有海报：替换1到N个菜品、整张摄影背景或多个照片窗口，精准改字，以及按组拆分部分或全部设计元素。支持模型原生透明素材、OpenCV原照保真抠图、离线HTML调整和PNG导出；不是从零设计海报。
+description: Use when the user asks to edit an existing poster by replacing original dish photos, backgrounds, photo windows or logos, changing text, or separating design elements into editable offline HTML. Scope is existing-poster editing through Core AI native generate_image and source-preserving compositing, not designing a new poster from scratch.
+metadata:
+  version: 1.1.0
+  author: simon
+  tags: [image-editing, poster, logo, offline-html]
 ---
 
 # Image Editor — Core AI 2026-11-06 v2
@@ -13,7 +17,15 @@ description: 在Core AI通过原生generate_image工具修改已有海报：替�
 
 修改已有海报，按替换对象选择流程。默认保留未指定的文字、Logo、贴纸与设计；“换图/做HTML”不等于拆元素。既支持纯设计海报，也支持单图和多图海报，不套用固定案例的坐标或颜色。
 
-## 五类流程
+## Output specification
+
+HTML 类交付 `editor.html`、同尺寸最终 PNG 及完整结果包；改字交付 `final.png` 和新字贴纸。保留原文件、manifest、真实模型回执及审核记录，按 `references/platform-runtime.md` 发布真实链接。
+
+## Quality assurance
+
+按 `references/verification.md` 分别记录技术、视觉、浏览器结论。检查旧对象完整移除、原照保真、独立图层、画布尺寸及导出，未执行不写 PASS；Logo 换图的可执行回归见 `tests/test_logo_replacement.py`。
+
+## Decision logic
 
 | 用户目标 | 执行与交付 | 先读 |
 |---|---|---|
@@ -31,6 +43,7 @@ description: 在Core AI通过原生generate_image工具修改已有海报：替�
 - “替换背景”先判断是整张摄影底图（含旧主体和场景），还是只换环境、保留原主体。后者要把需保留主体作为独立层处理，不能套用清空全部摄影内容的提示词。范围不清且会删除主体时先确认。
 - 仅改字不默认做HTML或拆全海报。艺术字PNG是位图，不能像文本框一样输入改字；改写须有明确新文案。
 - “全部拆开”是明确拆层授权：盘点标题、Logo、笔刷、贴纸、装饰、分隔线和照片等，说明哪些合组、哪些仍固定。不能只拆六组文字就声称全部元素已拆。组合任务按各素材实际性质处理，不把菜品抠图塞进旧照片窗口。
+- 用户提供 Logo 并要求替换时，Logo 是独立可替换元素：用官方原文件作为 `role: logo` 图层，不与文字、笔刷或固定层合并；清除固定层中旧 Logo，保留周边设计。未要求全部拆层时只额外拆出 Logo，HTML 须能选择、移动、等比缩放及“更换 Logo”，见[元素拆层](references/elements.md)。
 
 ## 菜品批量入口
 
@@ -53,7 +66,7 @@ description: 在Core AI通过原生generate_image工具修改已有海报：替�
 
 所有HTML使用原海报画布。模型模板长宽比偏差超过0.2%拒绝，不contain补透明条或强行拉伸。菜品背景画幅变化时先显式配准，见菜品流程。
 
-## 执行与验收
+## Workflow
 
 1. 映射海报、原照、目标和准确文案。先选上表流程，批量读取输入信息；菜品使用上面的批量入口。
 2. 由Agent直接调用Core AI原生generate_image；参数按当前工具声明，见[工具协议](references/tool-interface.md)。透明素材请求原生真实alpha，补背景请求完全不透明。图片模型生成素材，Python构建器不发起模型请求。提示词见[模型提示词](references/model-prompts.md)，背景与改字另见各自参考。
@@ -81,7 +94,7 @@ python scripts/check_editor.py work/editor-v1/editor.html --out work/browser-che
 python scripts/package_text_edit.py --manifest work/text.json --out work/text-result-v1
 ```
 
-## 生成记录与失败处理
+## Error handling
 
 保存每次generate_image真实调用的用途、完整prompt、参数、引用及原样文本回执。用 `scripts/record_core_ai_generation.py` 保存/下载原生PNG、绑定SHA256、保留media_id/实际链接并生成PENDING审核记录；它只读取已返回的图片，不调用生成接口。通用record_generation.py是内部共享辅助，不能用它绕过原生回执。不要伪造工具结果或以预览图冒充原生文件，命令见[平台运行](references/platform-runtime.md)、背景与改字参考。
 

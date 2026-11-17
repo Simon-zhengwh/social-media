@@ -10,6 +10,7 @@ from app import schemas
 from app.main import app
 from app.routes import task_center, whole_image as routes
 from app.services import original_replacement_runner, storage, whole_image
+from app.services.core_ai import AgentArtifact
 from tests.conftest import png_bytes
 from tests.test_original_replacement_runner import FakeAgent
 from tests.test_whole_image import FakeCoreAI, _generate, _request
@@ -19,7 +20,7 @@ from tests.test_whole_image import FakeCoreAI, _generate, _request
 def env(settings, store):
     db = mongomock.MongoClient().db
     task_id, task = _generate(db, settings, store, FakeCoreAI())
-    for asset_id in ("beef", "environment"):
+    for asset_id in ("beef", "environment", "logo"):
         image = storage.prepare_upload(settings, store, png_bytes(), asset_id + ".png")
         db.assets.insert_one({"_id": asset_id, "original_name": asset_id + ".png",
                               "path": image.path, "prepared_path": image.prepared_path,
@@ -59,6 +60,85 @@ def test_original_replacement_routes_exist():
     assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/apply" in paths
     assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/refresh-result" in paths
     assert "/api/merchants/{merchant_id}/whole-image/tasks/{task_id}/original-replacements/{replacement_id}/download" in paths
+
+def editor_files(env):
+    env.client.artifacts = [
+        AgentArtifact('editor.html', 'text/html', 'https://example.com/editor.html', '原照编辑器'),
+        AgentArtifact('result.zip', 'application/zip', 'https://example.com/result.zip', '完整结果包'),
+    ]
+
+
+def test_replacement_keeps_html_bundle_preview_and_applied_version(env):
+    editor_files(env)
+    task = create(env)
+    complete(env, task)
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert env.client.file_polls == [True]
+    assert [item['kind'] for item in restored['artifacts']] == ['html', 'bundle']
+    html = restored['artifacts'][0]
+    assert html['preview_url'] == f"/api/whole-image/artifacts/{html['id']}/preview"
+    preview = routes.preview_artifact(html['id'], env.request)
+    assert b'Editor' in preview.body
+    assert 'sandbox allow-scripts allow-downloads;' in preview.headers['content-security-policy']
+    assert 'allow-same-origin' not in preview.headers['content-security-policy']
+    assert routes.download_artifact(html['id'], env.request).body == preview.body
+    result = apply(env, task)
+    version = env.db.whole_versions.find_one({'_id': result['current_version_id']})
+    assert [item['kind'] for item in version['outputs'][0]['artifacts']] == ['html', 'bundle']
+
+
+def test_restore_html_from_existing_successful_run_without_regenerating(env):
+    task = create(env)
+    complete(env, task)
+    before = env.db.background_replace_tasks.find_one({'_id': task['id']})
+    editor_files(env)
+    restored = routes.restore_original_replacement_artifacts(env.task_id, task['id'], env.request)
+    again = routes.restore_original_replacement_artifacts(env.task_id, task['id'], env.request)
+    assert restored['artifacts'] == again['artifacts']
+    assert len(env.client.triggers) == 1
+    assert len(env.client.file_downloads) == 2
+    assert env.db.whole_artifacts.count_documents({}) == 2
+    after = env.db.background_replace_tasks.find_one({'_id': task['id']})
+    assert after['output'] == before['output']
+    assert after['status'] == before['status'] == 'succeeded'
+    assert env.db.whole_tasks.find_one({'_id': env.task_id})['current_version_id'] == env.source_id
+    env.db.whole_tasks.insert_one({'_id': 'other-task'})
+    with pytest.raises(HTTPException) as exc:
+        routes.restore_original_replacement_artifacts('other-task', task['id'], env.request)
+    assert exc.value.status_code == 404
+
+
+def test_artifact_failure_keeps_png_success_and_can_be_retried(env):
+    editor_files(env)
+    env.client.file_error = True
+    task = create(env)
+    complete(env, task)
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert restored['status'] == 'succeeded'
+    assert restored['output']
+    assert restored['artifacts'] == []
+    assert restored['artifact_error']
+    env.client.file_error = False
+    retried = routes.restore_original_replacement_artifacts(env.task_id, task['id'], env.request)
+    assert len(retried['artifacts']) == 2
+    assert retried['artifact_error'] is None
+
+def test_restore_files_is_merchant_scoped_and_waits_for_known_run(env):
+    from app.services.scoped_db import ScopedDatabase
+
+    task = create(env)
+    with pytest.raises(HTTPException) as exc:
+        routes.restore_original_replacement_artifacts(env.task_id, task['id'], env.request)
+    assert exc.value.status_code == 409
+    assert env.client.triggers == []
+    assert env.client.polls == []
+    env.db.whole_tasks.update_one({'_id': env.task_id}, {'$set': {'merchant_id': 'm1'}})
+    env.db.background_replace_tasks.update_one({'_id': task['id']}, {'$set': {'merchant_id': 'm1'}})
+    env.request.state = SimpleNamespace(db=ScopedDatabase(env.db, 'm2'), store=env.store)
+    with pytest.raises(HTTPException) as exc:
+        routes.restore_original_replacement_artifacts(env.task_id, task['id'], env.request)
+    assert exc.value.status_code == 404
+    assert env.client.polls == []
 
 
 def test_linked_replacement_refresh_reuses_run_and_scopes_to_parent(env):
@@ -116,7 +196,79 @@ def test_replacement_uses_selected_output_and_only_selected_material(env):
     assert restored[0]["status"] == "succeeded"
 
 
-@pytest.mark.parametrize("items", [[], [{"target": " ", "asset_id": "beef"}],
+def test_logo_replacement_reaches_agent_and_saved_version_without_position(env):
+    items = [{"target": "Logo", "asset_id": "logo"}, {"target": "右下角牛肉", "asset_id": "beef"}]
+    task = create(env, items)
+    complete(env, task)
+    prompt = env.client.triggers[0][1]
+    assert prompt.startswith("帮我把图1的Logo替换成图2，并且把图1的右下角牛肉替换成图3")
+    assert "图2的 Logo 原文件" in prompt
+    assert "独立可替换图层" in prompt
+    assert "role=logo" in prompt
+    assert "更换 Logo" in prompt
+    assert "不与文字、笔刷或固定设计层合并" in prompt
+    assert "https://example.com/input-1.png\nhttps://example.com/input-2.png\nhttps://example.com/input-3.png" in prompt
+    result = apply(env, task)
+    version = env.db.whole_versions.find_one({"_id": result["current_version_id"]})
+    assert version["replacements"] == items
+
+
+def test_split_all_elements_reaches_agent_and_survives_history_and_apply(env):
+    task = create(env, [{"asset_id": "beef"}], split_all_elements=True)
+    assert task["split_all_elements"] is True
+    saved = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    assert saved["input"]["split_all_elements"] is True
+    complete(env, task)
+    prompt = env.client.triggers[0][1]
+    assert "自行识别图1中对应的替换对象和位置并替换" in prompt
+    assert "全部设计元素" in prompt
+    assert "标题、所有文字组、Logo、笔刷、贴纸、插画、装饰、分隔线和照片" in prompt
+    assert "独立艺术字透明 PNG 图层" in prompt
+    assert "不改写文案" in prompt
+    assert "离线 HTML、完整图层" in prompt
+    assert "与图1同尺寸的不透明最终 PNG" in prompt
+    assert routes.list_original_replacements(env.task_id, env.request)[0]["split_all_elements"] is True
+    result = apply(env, task)
+    version = env.db.whole_versions.find_one({"_id": result["current_version_id"]})
+    assert version["model_input"]["parameters"]["split_all_elements"] is True
+    assert "全部拆分元素" in version["instruction"]
+
+
+@pytest.mark.parametrize("options", [{}, {"split_all_elements": False}])
+def test_split_all_elements_defaults_to_off_and_keeps_the_original_prompt(env, options):
+    task = create(env, **options)
+    assert task["split_all_elements"] is False
+    complete(env, task)
+    assert env.client.triggers[0][1] == (
+        "帮我把图1的右下角牛肉替换成图2\n\n"
+        "https://example.com/input-1.png\nhttps://example.com/input-2.png"
+    )
+    env.db.background_replace_tasks.update_one({"_id": task["id"]}, {"$unset": {"input.split_all_elements": ""}})
+    assert routes.list_original_replacements(env.task_id, env.request)[0]["split_all_elements"] is False
+
+
+@pytest.mark.parametrize("target", [None, "", "   "])
+def test_optional_position_reaches_agent_and_saved_version(env, target):
+    photo = {"asset_id": "beef"}
+    if target is not None:
+        photo["target"] = target
+    task = create(env, [photo])
+    complete(env, task)
+    assert env.client.triggers[0][1] == (
+        "帮我根据图2的原照内容，自行识别图1中对应的替换对象和位置并替换\n\n"
+        "https://example.com/input-1.png\nhttps://example.com/input-2.png"
+    )
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert restored["replacements"][0]["target"] == ""
+    result = apply(env, task)
+    version = env.db.whole_versions.find_one({"_id": result["current_version_id"]})
+    assert version["replacements"] == [{"target": "", "asset_id": "beef"}]
+    assert version["instruction"] == "原照替换：自动识别"
+    assert version["model_input"]["images"][1]["role"] == "自动识别"
+
+
+@pytest.mark.parametrize("items", [[], [{"target": "牛肉", "asset_id": " "}],
+    [{"target": "牛" * 1001, "asset_id": "beef"}],
     [{"target": "牛肉", "asset_id": "beef"}] * 6])
 def test_invalid_replacement_selection_is_rejected(env, items):
     with pytest.raises(ValidationError):

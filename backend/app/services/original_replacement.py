@@ -17,7 +17,7 @@ def _task(db: Any, task_id: str) -> dict[str, Any]:
 
 
 def create(db: Any, task_id: str, *, source_version_id: str, source_output_id: str,
-           replacements: list[dict[str, str]]) -> dict[str, Any]:
+           replacements: list[dict[str, str]], split_all_elements: bool = False) -> dict[str, Any]:
     task = _task(db, task_id)
     if task.get("status") != "succeeded":
         raise StudioError("source_not_ready", "请先生成并选择海报", 409)
@@ -28,7 +28,8 @@ def create(db: Any, task_id: str, *, source_version_id: str, source_output_id: s
                    if item.get("id") == source_output_id), None)
     if not output or not output.get("selectable"):
         raise StudioError("invalid_source", "请选择可编辑的完整海报结果，透明图层不能作为底图", 422)
-    task = original_replacement_runner.create_task(db, source_asset_id=output["asset_id"], whole_task_id=task_id, replacements=replacements)
+    task = original_replacement_runner.create_task(db, source_asset_id=output["asset_id"], whole_task_id=task_id,
+                                                  replacements=replacements, split_all_elements=split_all_elements)
     association = {"whole_task_id": task_id, "source_version_id": source_version_id,
                    "source_output_id": source_output_id, "source_version": version["version"]}
     db.background_replace_tasks.update_one({"_id": task["_id"]}, {"$set": association})
@@ -86,18 +87,22 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
         db.whole_versions.delete_one({"_id": version_id, "task_id": task_id})
         now = whole_image.utcnow()
         images = [{**replacement["source"], "role": "替换底图"}]
-        images.extend({**item, "role": item["target"]} for item in replacement["replacements"])
+        images.extend({**item, "role": item["target"] or "自动识别"} for item in replacement["replacements"])
+        split_all_elements = replacement["input"].get("split_all_elements", False)
         model_input = {"channel": "agent", "endpoint": f"/api/runs/agent/{replacement.get('agent_id')}/trigger",
                        "model": replacement.get("agent_id") or "", "prompt": replacement.get("agent_input") or "",
-                       "parameters": {"run_id": replacement.get("run_id")}, "images": images}
-        instruction = "原照替换：" + "、".join(item["target"] for item in replacement["replacements"])
+                       "parameters": {"run_id": replacement.get("run_id"), "split_all_elements": split_all_elements}, "images": images}
+        instruction = "原照替换：" + "、".join(item["target"] or "自动识别" for item in replacement["replacements"])
+        if split_all_elements:
+            instruction += "；全部拆分元素（含艺术字）"
         version = whole_image._version_document(
             task_id=task_id, version=whole_image._next_version(db, task_id),
             parent_version_id=source["_id"], output_asset_id=output["asset_id"], instruction=instruction,
             operation="original_replace", width=output["width"], height=output["height"], model_input=model_input,
             outputs=[{"id": "original_replace_result", "channel": "agent", "role": "original_replace_result",
                       "label": "原照替换结果", "asset_id": output["asset_id"], "width": output["width"],
-                      "height": output["height"], "selectable": True, "model_input": model_input, "created_at": now}])
+                      "height": output["height"], "selectable": True, "model_input": model_input,
+                      "artifacts": replacement.get("artifacts") or [], "created_at": now}])
         version.update(_id=version_id, replacement_task_id=replacement_id,
                        source_output_id=replacement["source_output_id"], replacements=replacement["input"]["replacements"])
         db.whole_versions.insert_one(version)

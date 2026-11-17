@@ -398,6 +398,9 @@ export type OriginalReplacementItem = { target: string; asset_id: string }
 
 export type OriginalReplacementTask = {
   id: string
+  split_all_elements?: boolean
+  artifacts?: WholeImageArtifact[]
+  artifact_error?: string | null
   whole_task_id?: string | null
   source_version_id?: string | null
   source_output_id?: string | null

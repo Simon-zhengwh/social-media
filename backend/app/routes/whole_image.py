@@ -18,6 +18,7 @@ from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeIma
                          WholeImageOriginalReplacementApplyRequest)
 from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
 from app.services.agent_image import artifacts_out as _artifacts_out
+from app.services.core_ai import CoreAIError
 from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
 from app.time_utils import utc_iso
@@ -1028,6 +1029,19 @@ def refresh_original_replacement(task_id: str, replacement_id: str, request: Req
     if doc["status"] == "queued":
         background_tasks.add_task(original_replacement_runner.run_task, db, state.settings,
                                   store, state.core_ai, replacement_id, refresh=True)
+    return original_replacement_runner.task_out(doc)
+
+
+@router.post("/tasks/{task_id}/original-replacements/{replacement_id}/artifacts/restore")
+def restore_original_replacement_artifacts(task_id: str, replacement_id: str, request: Request) -> dict[str, Any]:
+    _require_configured(request)
+    db = request_db(request)
+    state = request.app.state
+    try:
+        original_replacement.get_task(db, task_id, replacement_id)
+        doc = original_replacement_runner.restore_artifacts(db, state.settings, request_store(request), state.core_ai, replacement_id)
+    except (whole_image.StudioError, CoreAIError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return original_replacement_runner.task_out(doc)
 
 

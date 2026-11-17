@@ -11,6 +11,7 @@ import {
   createWholeImageEdit,
   merchantPath,
   refreshOriginalReplacement,
+  restoreOriginalReplacementArtifacts,
   listMerchants,
 } from '../src/api.ts'
 import type { WholeImageTask } from '../src/types.ts'
@@ -76,6 +77,25 @@ test('original replacement requests retain merchant scope and write protection',
   ])
   for (const { init } of requests) assert.equal(init?.credentials, 'same-origin')
   for (const { init } of requests.slice(1)) assert.equal(new Headers(init?.headers).get('X-Media-Request'), '1')
+})
+
+test('original replacement sends the whole-element choice and defaults it off', async () => {
+  const requests = mockBrowser()
+  const replacements = [{ target: '', asset_id: 'asset' }]
+  await createOriginalReplacement('poster', 'version', 'output', replacements)
+  await createOriginalReplacement('poster', 'version', 'output', replacements, true)
+  assert.equal(JSON.parse(String(requests[0].init?.body)).split_all_elements, false)
+  assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
+    source_version_id: 'version', source_output_id: 'output', replacements, split_all_elements: true,
+  })
+})
+
+test('restoring replacement files queries the existing run within the merchant scope', async () => {
+  const requests = mockBrowser()
+  await restoreOriginalReplacementArtifacts('poster/a', 'replacement/a')
+  assert.equal(requests[0].path, '/api/merchants/merchant%2Fa/whole-image/tasks/poster%2Fa/original-replacements/replacement%2Fa/artifacts/restore')
+  assert.equal(requests[0].init?.method, 'POST')
+  assert.equal(new Headers(requests[0].init?.headers).get('X-Media-Request'), '1')
 })
 
 test('missing merchant context prevents replacement requests before network access', async () => {

@@ -223,15 +223,19 @@ export async function refreshOriginalReplacement(taskId: string, replacementId: 
   return parseResponse<OriginalReplacementTask>(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements/${encodeURIComponent(replacementId)}/refresh-result`, { method: 'POST' }))
 }
 
+export async function restoreOriginalReplacementArtifacts(taskId: string, replacementId: string): Promise<OriginalReplacementTask> {
+  return parseResponse<OriginalReplacementTask>(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements/${encodeURIComponent(replacementId)}/artifacts/restore`, { method: 'POST' }))
+}
+
 export async function listOriginalReplacements(taskId: string): Promise<OriginalReplacementTask[]> {
   return parseResponse<OriginalReplacementTask[]>(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements`))
 }
 
 export async function createOriginalReplacement(taskId: string, sourceVersionId: string, sourceOutputId: string,
-  replacements: OriginalReplacementItem[]): Promise<OriginalReplacementTask> {
+  replacements: OriginalReplacementItem[], splitAllElements = false): Promise<OriginalReplacementTask> {
   return parseResponse<OriginalReplacementTask>(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ source_version_id: sourceVersionId, source_output_id: sourceOutputId, replacements }),
+    body: JSON.stringify({ source_version_id: sourceVersionId, source_output_id: sourceOutputId, replacements, split_all_elements: splitAllElements }),
   }))
 }
 
