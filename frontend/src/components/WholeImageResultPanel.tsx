@@ -3,7 +3,6 @@ import type { ImageModel, WholeImageArtifact, WholeImageOutput, WholeImageTask, 
 import WholeArtifactPreview from './WholeArtifactPreview'
 import ModelCandidateGroup from './ModelCandidateGroup'
 import CandidateVersionPicker from './CandidateVersionPicker'
-import EditableProjectPanel from './EditableProjectPanel'
 
 type Props = {
   task: WholeImageTask | null
@@ -268,7 +267,6 @@ export default function WholeImageResultPanel({
           </div>
 
           <div className="preview-footer">
-            {isReady && task && currentOutput ? <EditableProjectPanel key={`${task.id}:${task.current_version_id}:${currentOutput.id}`} task={task} output={currentOutput} disabled={Boolean(isEditing || busy)} /> : null}
             {isReady && task && !comparisonVisible && currentOutput ? (
               <div className="preview-actions">
                 <ArtifactActions output={currentOutput} onPreview={setArtifactPreview} />

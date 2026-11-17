@@ -1,67 +1,19 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import type { WholeImageArtifact } from '../types'
-import { getEditableProject, saveEditableProject } from '../api'
-import { isEditorSaveMessage, latestSaveQueue, type EditorBinding } from '../editableProjectProtocol'
 
 type Props = {
   artifact: WholeImageArtifact | null
   onClose: () => void
-  projectId?: string
 }
 
 export default function WholeArtifactPreview(props: Props) {
-  return <ArtifactPreview key={props.projectId || props.artifact?.id || 'closed'} {...props} />
+  return <ArtifactPreview key={props.artifact?.id || 'closed'} {...props} />
 }
 
-function ArtifactPreview({ artifact, onClose, projectId }: Props) {
+function ArtifactPreview({ artifact, onClose }: Props) {
   const open = Boolean(artifact?.preview_url)
   const onCloseRef = useRef(onClose)
-  const frame = useRef<HTMLIFrameElement>(null)
-  const [projectLoaded, setProjectLoaded] = useState(false)
-  const [saveStatus, setSaveStatus] = useState(projectId ? '正在读取已保存工程…' : '')
-
-  useEffect(() => {
-    if (!open || !projectId) return
-    let active = true
-    let snapshot: Record<string, unknown> | undefined
-    const binding: EditorBinding = { sessionId: crypto.randomUUID(), projectId, revision: 0 }
-    const persist = latestSaveQueue(async project => {
-      if (!active) return
-      setSaveStatus('正在保存到当前任务…')
-      try {
-        const saved = await saveEditableProject(projectId, binding.revision, project)
-        if (!active) return
-        binding.revision = saved.revision
-        snapshot = project
-        frame.current?.contentWindow?.postMessage({ type: 'image-editor-v2:saved', ...binding }, '*')
-        setSaveStatus('已保存到当前任务')
-      } catch (e) {
-        if (!active) return
-        const message = e instanceof Error ? e.message : '保存失败，请重试'
-        frame.current?.contentWindow?.postMessage({ type: 'image-editor-v2:save-error', ...binding, message }, '*')
-        setSaveStatus(message)
-        throw e
-      }
-    })
-    const onMessage = async (event: MessageEvent) => {
-      if (event.source !== frame.current?.contentWindow || !active) return
-      if (event.data?.type === 'image-editor-v2:ready' && snapshot) {
-        frame.current?.contentWindow?.postMessage({ type: 'image-editor-v2:init', ...binding, project: snapshot }, '*')
-        return
-      }
-      if (!isEditorSaveMessage(event.data, binding)) return
-      await persist(event.data.project).catch(() => {})
-    }
-    window.addEventListener('message', onMessage)
-    void getEditableProject(projectId).then(data => {
-      if (!active) return
-      if (!data.project) throw new Error('已保存工程缺失')
-      snapshot = data.project; binding.revision = data.revision
-      setProjectLoaded(true); setSaveStatus('修改后点击保存，之后可从当前任务继续编辑。')
-    }).catch(e => { if (active) setSaveStatus(e instanceof Error ? e.message : '读取工程失败') })
-    return () => { active = false; window.removeEventListener('message', onMessage) }
-  }, [open, projectId])
 
   useEffect(() => {
     onCloseRef.current = onClose
@@ -119,15 +71,14 @@ function ArtifactPreview({ artifact, onClose, projectId }: Props) {
             </button>
           </div>
         </div>
-        {!projectId || projectLoaded ? <iframe
-          key={projectId || artifact.id}
-          ref={frame}
+        <iframe
+          key={artifact.id}
           title={`${title}编辑器`}
           src={artifact.preview_url}
           sandbox="allow-scripts allow-downloads"
-        /> : null}
+        />
         <p className="model-input-hint">
-          {projectId ? saveStatus : '在编辑器里可拖动、缩放原照并导出 PNG；完全离线运行，不发起外部请求。'}
+          在编辑器里可拖动、缩放原照并导出 PNG；完全离线运行，不发起外部请求。
         </p>
       </div>
     </div>,
