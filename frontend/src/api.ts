@@ -643,7 +643,7 @@ export async function createPosterEditBatch(
  assetIds: string[],
  candidateCount: number,
 ): Promise<PosterEditBatch> {
- const response = await fetch('/api/poster-edits/batches', {
+ const response = await apiFetch('/api/poster-edits/batches', {
  method: 'POST',
  headers: { 'Content-Type': 'application/json' },
  body: JSON.stringify({
@@ -656,12 +656,12 @@ export async function createPosterEditBatch(
 }
 
 export async function getPosterEditBatch(batchId: string): Promise<PosterEditBatch> {
- const response = await fetch(`/api/poster-edits/batches/${encodeURIComponent(batchId)}`)
+ const response = await apiFetch(`/api/poster-edits/batches/${encodeURIComponent(batchId)}`)
  return parseResponse<PosterEditBatch>(response)
 }
 
 export async function getPosterEdit(taskId: string): Promise<PosterEditTask> {
- const response = await fetch(`/api/poster-edits/${encodeURIComponent(taskId)}`)
+ const response = await apiFetch(`/api/poster-edits/${encodeURIComponent(taskId)}`)
  return parseResponse<PosterEditTask>(response)
 }
 
