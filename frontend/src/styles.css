@@ -26,6 +26,23 @@
 .original-replacement-warning { padding: 12px; border: 1px solid #f0d59d; border-radius: 8px; background: #fffbeb; color: #78511b; line-height: 1.7; }
 .original-replacement-mode { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 12px; line-height: 1.5; }
 .original-replacement-mode input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--color-secondary-500); }
+.original-replacement-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.original-model-inputs { display: flex; gap: 12px; margin: 12px 0 16px; padding: 10px; border-radius: 8px; background: var(--color-neutral-50); }
+.original-model-inputs > div { min-width: 0; }
+.original-model-inputs > div > span { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+.original-model-base { flex: none; padding-right: 12px; border-right: 1px solid var(--color-neutral-200); }
+.original-model-references { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.original-model-references figure { width: 44px; margin: 0; }
+.original-model-references figcaption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; }
+.original-model-inputs .zoomable-image { display: block; width: 44px; height: 48px; border-radius: 5px; background: white; }
+.original-model-inputs img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.original-model-candidates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.original-model-candidate { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.original-model-candidate > strong { overflow: hidden; font-size: 10px; letter-spacing: -.025em; text-overflow: ellipsis; white-space: nowrap; }
+.original-model-candidate img { display: block; width: 100%; height: auto; border-radius: 8px; }
+.original-model-status, .original-model-feedback-text { overflow-wrap: anywhere; }
+.original-model-feedback { display: grid; gap: 6px; margin-top: 16px; }
+.original-model-feedback textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; padding: 8px; border: 1px solid var(--color-neutral-200); border-radius: 8px; }
 .replacement-help { color: var(--color-neutral-500); font-size: 12px; line-height: 1.7; }
 .replacement-rows { display: flex; flex-direction: column; gap: 14px; margin: 14px 0; }
 .replacement-row { padding: 16px; border: 1px solid var(--color-neutral-200); border-radius: 12px; background: #fcfcfd; }

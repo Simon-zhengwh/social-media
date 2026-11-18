@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from pymongo import ReturnDocument
 
+from app.config import Settings
 from app.services import original_replacement_runner, whole_image
+from app.services.canvas import gateway_image_size
+from app.services.core_ai import CoreAIClient
+from app.services.image_ref import cleanup_image_refs, image_ref_from_asset
+from app.services.object_store import ObjectStore
 from app.services.whole_image import StudioError
+
+REPLACEMENT_MODELS = ("seedream-5-pro-image-to-image", "seedream-5.5-image-to-image", "minimax-h3-image-edit")
 
 
 def _task(db: Any, task_id: str) -> dict[str, Any]:
@@ -17,7 +25,8 @@ def _task(db: Any, task_id: str) -> dict[str, Any]:
 
 
 def create(db: Any, task_id: str, *, source_version_id: str, source_output_id: str,
-           replacements: list[dict[str, str]], split_all_elements: bool = False) -> dict[str, Any]:
+           replacements: list[dict[str, str]], split_all_elements: bool = False, kind: str = "agent",
+           retry_of: str | None = None, feedback: str = "") -> dict[str, Any]:
     task = _task(db, task_id)
     if task.get("status") != "succeeded":
         raise StudioError("source_not_ready", "请先生成并选择海报", 409)
@@ -28,12 +37,102 @@ def create(db: Any, task_id: str, *, source_version_id: str, source_output_id: s
                    if item.get("id") == source_output_id), None)
     if not output or not output.get("selectable"):
         raise StudioError("invalid_source", "请选择可编辑的完整海报结果，透明图层不能作为底图", 422)
-    task = original_replacement_runner.create_task(db, source_asset_id=output["asset_id"], whole_task_id=task_id,
-                                                  replacements=replacements, split_all_elements=split_all_elements)
     association = {"whole_task_id": task_id, "source_version_id": source_version_id,
                    "source_output_id": source_output_id, "source_version": version["version"]}
-    db.background_replace_tasks.update_one({"_id": task["_id"]}, {"$set": association})
-    return {**task, **association}
+    if kind == "model":
+        association.update(kind=kind, retry_of=retry_of, feedback=feedback, candidates=[
+            {"model": model, "status": "queued"} for model in REPLACEMENT_MODELS])
+    return original_replacement_runner.create_task(
+        db, source_asset_id=output["asset_id"], whole_task_id=task_id, replacements=replacements,
+        split_all_elements=kind == "agent" and split_all_elements, metadata=association)
+
+
+def retry_model_batch(db: Any, task_id: str, replacement_id: str, feedback: str) -> dict[str, Any]:
+    previous = get_task(db, task_id, replacement_id)
+    if previous.get("kind") != "model" or previous["status"] in original_replacement_runner.ACTIVE:
+        raise StudioError("batch_not_ready", "请等待本批模型处理结束", 409)
+    return create(db, task_id, source_version_id=previous["source_version_id"],
+                  source_output_id=previous["source_output_id"], replacements=previous["input"]["replacements"],
+                  kind="model", retry_of=replacement_id, feedback=feedback)
+
+
+def _model_prompt(task: dict[str, Any]) -> str:
+    lines = ["图片 1 是唯一的海报底稿。保持原画布比例、取景、标题、文字、排版、装饰和未指定区域。"
+             "只对下列素材对应的目标做局部替换。输出完整海报。"]
+    for index, item in enumerate(task["replacements"], start=2):
+        target = item["target"] or "按素材内容匹配底稿中对应的对象或区域"
+        lines.append(f"图片 {index} 是替换原照。目标：{target}。")
+    lines.extend([
+        "目标为菜品时：以底稿中食物本身为准，锁定中心位置、可见宽高与画面占比。"
+        "盘子的尺寸不能代替食物尺寸；禁止将食物缩小、放大或挪位。保留原照的食材、形状、摆盘和质感，"
+        "禁止重绘、增减食材或改换餐具。仅允许轻微调整光色、边缘和接触阴影以融入底稿。",
+        "目标为场景时：保留原照的主要场景特征，可调整取景、透视与光色来融合。"
+        "明确指定「背景」时可替换整张摄影底图，同时保留原海报的文字、排版和装饰。",
+    ])
+    if any(item["target"].casefold() == "logo" for item in task["replacements"]):
+        lines.append("Logo 使用对应的官方原文件。在底稿 Logo 的原中心、原显示框内等比放置，"
+                     "保留完整图案、文字、颜色和比例，禁止拉伸、压扁、裁切或重绘。")
+    else:
+        lines.append("保留底稿上的 Logo 或原有的无 Logo 状态。")
+    if task.get("feedback"):
+        lines.append(f"本轮反馈：{task['feedback']}。按反馈修正指定问题，仍以图片 1 为大小、位置和排版的基准。")
+    return "\n".join(lines)
+
+
+def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient, batch_id: str) -> None:
+    tasks = db.background_replace_tasks
+    batch = tasks.find_one_and_update(
+        {"_id": batch_id, "kind": "model", "status": "queued"},
+        {"$set": {"status": "running", "stage": "model_running", "started_at": whole_image.utcnow(),
+                  "updated_at": whole_image.utcnow()}}, return_document=ReturnDocument.AFTER)
+    if not batch:
+        return
+
+    references = []
+    images = [{**batch["source"], "role": "替换底图"},
+              *({**item, "role": item["target"] or "自动识别"} for item in batch["replacements"])]
+    prompt = _model_prompt(batch)
+    width, height = batch["source"]["width"], batch["source"]["height"]
+    size = gateway_image_size(width, height)
+
+    def run_candidate(index: int, model: str) -> None:
+        model_input = {"channel": "gateway", "provider": "core-ai", "endpoint": "/images/edits",
+                       "model": model, "prompt": prompt, "images": images,
+                       "parameters": {"size": size, "quality": settings.core_ai_image_quality,
+                                      "n": 1, "output_format": "png"}}
+        candidate = {"model": model, "status": "running", "model_input": model_input,
+                     "started_at": whole_image.utcnow()}
+        field = f"candidates.{index}"
+        tasks.update_one({"_id": batch_id}, {"$set": {field: candidate}})
+        try:
+            data = client.edit_image(prompt, references, size=size, model=model)
+            output = whole_image._save_output_asset(
+                db, settings, store, task_id=batch_id, version=1, role=model,
+                data=data, target_size=(width, height), allow_letterbox=False)
+            candidate.update(status="succeeded", output=output)
+        except Exception as exc:  # noqa: BLE001 - the other candidates keep running
+            candidate.update(status="failed", error=whole_image._error_text(exc))
+        now = whole_image.utcnow()
+        candidate["completed_at"] = now
+        tasks.update_one({"_id": batch_id}, {"$set": {field: candidate, "updated_at": now}})
+
+    try:
+        for item in images:
+            references.append(image_ref_from_asset(db, store, item["asset_id"]))
+        with ThreadPoolExecutor(max_workers=len(REPLACEMENT_MODELS)) as pool:
+            futures = [pool.submit(run_candidate, index, model) for index, model in enumerate(REPLACEMENT_MODELS)]
+            for future in futures:
+                future.result()
+    except Exception as exc:  # noqa: BLE001 - report errors loading shared inputs
+        original_replacement_runner._fail(db, batch_id, exc)
+        return
+    finally:
+        cleanup_image_refs(references)
+
+    if any(item["status"] == "succeeded" for item in tasks.find_one({"_id": batch_id})["candidates"]):
+        original_replacement_runner._update(db, batch_id, status="succeeded", stage="done", progress=100)
+    else:
+        original_replacement_runner._fail(db, batch_id, StudioError("all_models_failed", "三个模型均未生成候选"))
 
 
 def list_tasks(db: Any, task_id: str) -> list[dict[str, Any]]:
@@ -50,18 +149,28 @@ def get_task(db: Any, task_id: str, replacement_id: str) -> dict[str, Any]:
 
 
 def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_version_id: str,
-          expected_current_output_id: str) -> dict[str, Any]:
+          expected_current_output_id: str, candidate_model: str | None = None) -> dict[str, Any]:
     current = _task(db, task_id)
     replacement = db.background_replace_tasks.find_one({"_id": replacement_id, "whole_task_id": task_id})
     if replacement is None:
         raise StudioError("replacement_missing", "原照替换任务不属于当前海报", 404)
+    candidate = None
+    application_key = replacement_id
+    if replacement.get("kind") == "model":
+        candidate = next((item for item in replacement["candidates"] if item["model"] == candidate_model), None)
+        if candidate is None:
+            raise StudioError("candidate_required", "请选择本批次的模型候选", 422)
+        application_key = f"{replacement_id}_{candidate['model'].replace('.', '_')}"
+        output = candidate.get("output") if candidate["status"] == "succeeded" else None
+    else:
+        output = replacement.get("output") if replacement["status"] == "succeeded" else None
+
     # A stable ID makes retries idempotent without reselecting an older result.
-    version_id = f"wver_original_{replacement_id}"
-    already_applied = _applied_task(db, current, replacement_id)
+    version_id = f"wver_original_{application_key}"
+    already_applied = _applied_task(db, current, replacement_id, application_key, candidate_model)
     if already_applied is not None:
         return already_applied
-    output = replacement.get("output")
-    if replacement["status"] != "succeeded" or not output:
+    if not output:
         raise StudioError("result_not_ready", "替换结果尚未成功，请先查询并确认结果", 409)
     if not db.assets.find_one({"_id": output["asset_id"]}):
         raise StudioError("result_missing", "替换成图已不存在", 409)
@@ -72,11 +181,12 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
     prior = db.whole_tasks.find_one_and_update(
         {"_id": task_id, "status": "succeeded", "edit.status": {"$ne": "running"},
          "current_version_id": expected_current_version_id, "current_output_id": expected_current_output_id,
-         f"original_replacement_versions.{replacement_id}": {"$exists": False}},
+         "candidate_deleted_at": {"$exists": False},
+         f"original_replacement_versions.{application_key}": {"$exists": False}},
         {"$set": {"edit.status": "running", "edit.original_apply_token": token}},
         return_document=ReturnDocument.BEFORE)
     if prior is None:
-        already_applied = _applied_task(db, _task(db, task_id), replacement_id)
+        already_applied = _applied_task(db, _task(db, task_id), replacement_id, application_key, candidate_model)
         if already_applied is not None:
             return already_applied
         raise StudioError("apply_conflict", "当前海报已变化或正在改图，请刷新并重新确认后应用", 409)
@@ -95,11 +205,15 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
         instruction = "原照替换：" + "、".join(item["target"] or "自动识别" for item in replacement["replacements"])
         if split_all_elements:
             instruction += "；全部拆分元素（含艺术字）"
+        if candidate:
+            model_input = candidate["model_input"]
+            if replacement.get("feedback"):
+                instruction += f"。本轮反馈：{replacement['feedback']}"
         version = whole_image._version_document(
             task_id=task_id, version=whole_image._next_version(db, task_id),
             parent_version_id=source["_id"], output_asset_id=output["asset_id"], instruction=instruction,
             operation="original_replace", width=output["width"], height=output["height"], model_input=model_input,
-            outputs=[{"id": "original_replace_result", "channel": "agent", "role": "original_replace_result",
+            outputs=[{"id": "original_replace_result", "channel": model_input["channel"], "role": "original_replace_result",
                       "label": "原照替换结果", "asset_id": output["asset_id"], "width": output["width"],
                       "height": output["height"], "selectable": True, "model_input": model_input,
                       "artifacts": replacement.get("artifacts") or [], "created_at": now}])
@@ -114,12 +228,12 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
                       "output_asset_id": output["asset_id"], "canvas": {"width": output["width"], "height": output["height"]},
                       "status": "succeeded", "stage": "done", "progress": 100, "error": None,
                       "edit": {"status": "idle"}, "model_input_latest": model_input, "model_input_attempt": None,
-                      f"original_replacement_versions.{replacement_id}": version_id,
+                      f"original_replacement_versions.{application_key}": version_id,
                       "provider.status": "completed", "updated_at": now}})
         if committed.modified_count != 1:
             raise StudioError("apply_conflict", "海报状态发生变化，请刷新后重试", 409)
     except Exception:
-        if not (_task(db, task_id).get("original_replacement_versions") or {}).get(replacement_id):
+        if not (_task(db, task_id).get("original_replacement_versions") or {}).get(application_key):
             if inserted:
                 db.whole_versions.delete_one({"_id": version_id})
             # The image belongs to the replacement task; rolling back a version must never delete it.
@@ -133,16 +247,31 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
 
 
 def _mark_applied(db: Any, replacement_id: str, version: dict[str, Any]) -> None:
-    db.background_replace_tasks.update_one({"_id": replacement_id}, {"$set": {
-        "applied_version_id": version["_id"], "applied_version": version["version"]}})
+    tasks = db.background_replace_tasks
+    values = {"applied_version_id": version["_id"], "applied_version": version["version"]}
+    model_input = version.get("model_input") or {}
+    if model_input.get("channel") == "gateway":
+        model = model_input["model"]
+        task = tasks.find_one({"_id": replacement_id})
+        index, candidate = next((i, item) for i, item in enumerate(task["candidates"]) if item["model"] == model)
+        tasks.update_one({"_id": replacement_id}, {"$set": {f"candidates.{index}.{key}": value for key, value in values.items()}})
+        values.update(applied_candidate_model=model, output=candidate["output"])
+    # A retry for an older candidate must not replace the batch's latest download.
+    tasks.update_one({"_id": replacement_id, "applied_version": {"$not": {"$gt": version["version"]}}}, {"$set": values})
 
 
-def _applied_task(db: Any, task: dict[str, Any], replacement_id: str) -> dict[str, Any] | None:
-    version_id = (task.get("original_replacement_versions") or {}).get(replacement_id)
+def _applied_task(db: Any, task: dict[str, Any], replacement_id: str,
+                  application_key: str, candidate_model: str | None) -> dict[str, Any] | None:
+    applied = task.get("original_replacement_versions") or {}
+    version_id = applied.get(application_key) or applied.get(replacement_id)
     if not version_id:
         return None
     version = db.whole_versions.find_one({"_id": version_id, "task_id": task["_id"]})
     if version is None:
         raise StudioError("applied_version_missing", "已应用的替换版本不存在，请检查历史记录", 409)
+    # Backfill the candidate for batches already applied under the original batch-wide key.
     _mark_applied(db, replacement_id, version)
+    model_input = version.get("model_input") or {}
+    if model_input.get("channel") == "gateway" and model_input["model"] != candidate_model:
+        return None
     return _task(db, task["_id"])

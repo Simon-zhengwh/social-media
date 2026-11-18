@@ -422,8 +422,22 @@ export type OriginalReplacementReference = {
 
 export type OriginalReplacementItem = { target: string; asset_id: string }
 
+export type OriginalReplacementCandidate = {
+  model: ImageModel
+  status: 'queued' | 'running' | 'succeeded' | 'failed'
+  output: { width: number; height: number; preview_url: string } | null
+  error: string | null
+  applied_version_id?: string | null
+  applied_version?: number | null
+}
+
 export type OriginalReplacementTask = {
   id: string
+  kind?: 'agent' | 'model'
+  candidates?: OriginalReplacementCandidate[]
+  retry_of?: string | null
+  feedback?: string | null
+  applied_candidate_model?: ImageModel | null
   split_all_elements?: boolean
   artifacts?: WholeImageArtifact[]
   artifact_error?: string | null

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from app.api_paths import asset_thumb_url, asset_url, whole_download_url, merchant_base
 from app.request_context import request_db, request_merchant_id, request_store, request_profile
 from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageWorkspaceTitle, WholeImageOriginalReplacementRequest,
-                         WholeImageOriginalReplacementApplyRequest)
+                         WholeImageOriginalReplacementApplyRequest, WholeImageOriginalReplacementFeedbackRequest)
 from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
 from app.services.agent_image import artifacts_out as _artifacts_out
 from app.services.core_ai import CoreAIError
@@ -1052,7 +1052,24 @@ def create_original_replacement(task_id: str, payload: WholeImageOriginalReplace
         doc = original_replacement.create(db, task_id, **values)
     except (whole_image.StudioError, original_replacement_runner.OriginalReplacementError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    background_tasks.add_task(original_replacement_runner.run_task, db, state.settings, store, state.core_ai, doc["_id"])
+    run = original_replacement.run_model_batch if payload.kind == "model" else original_replacement_runner.run_task
+    background_tasks.add_task(run, db, state.settings, store, state.core_ai, doc["_id"])
+    return original_replacement_runner.task_out(doc)
+
+
+@router.post("/tasks/{task_id}/original-replacements/{replacement_id}/feedback", status_code=202)
+def retry_model_replacement(task_id: str, replacement_id: str, payload: WholeImageOriginalReplacementFeedbackRequest,
+                            request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    _require_configured(request)
+    state = request.app.state
+    db = request_db(request)
+    _get_task_or_404(db, task_id)
+    try:
+        doc = original_replacement.retry_model_batch(db, task_id, replacement_id, payload.feedback)
+    except (whole_image.StudioError, original_replacement_runner.OriginalReplacementError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    background_tasks.add_task(original_replacement.run_model_batch, db, state.settings,
+                              request_store(request), state.core_ai, doc["_id"])
     return original_replacement_runner.task_out(doc)
 
 

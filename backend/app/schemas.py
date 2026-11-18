@@ -229,6 +229,7 @@ class WholeImageOriginalReplacementRequest(BaseModel):
     source_output_id: str = Field(min_length=1, max_length=128)
     replacements: list[OriginalReplacementItem] = Field(min_length=1, max_length=5)
     split_all_elements: bool = False
+    kind: Literal["agent", "model"] = "agent"
 
     @field_validator("source_version_id", "source_output_id", mode="before")
     @classmethod
@@ -239,6 +240,16 @@ class WholeImageOriginalReplacementRequest(BaseModel):
 class WholeImageOriginalReplacementApplyRequest(BaseModel):
     expected_current_version_id: str = Field(min_length=1, max_length=128)
     expected_current_output_id: str = Field(min_length=1, max_length=128)
+    candidate_model: ImageModel | None = None
+
+
+class WholeImageOriginalReplacementFeedbackRequest(BaseModel):
+    feedback: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("feedback", mode="before")
+    @classmethod
+    def strip_feedback(cls, value: str) -> str:
+        return value.strip() if isinstance(value, str) else value
 
 
 class PosterFinalizationRequest(BaseModel):

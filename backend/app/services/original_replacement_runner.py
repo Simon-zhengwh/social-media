@@ -49,7 +49,7 @@ def _asset(db: Any, asset_id: str) -> dict[str, Any]:
 
 
 def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacements: list[dict[str, str]],
-                split_all_elements: bool = False) -> dict[str, Any]:
+                split_all_elements: bool = False, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     from pydantic import ValidationError
 
     try:
@@ -65,7 +65,8 @@ def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacemen
     doc = {"_id": f"brep_{uuid.uuid4().hex}", "status": "queued", "stage": "queued", "progress": 0,
            "whole_task_id": whole_task_id, "input": payload.model_dump(), "source": source, "replacements": items,
            "output": None, "agent_id": None, "run_id": None, "agent_input": None, "agent_output": None,
-           "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now}
+           "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now,
+           **(metadata or {})}
     # Keep the existing collection so linked replacement history survives retirement.
     db.background_replace_tasks.insert_one(doc)
     return db.background_replace_tasks.find_one({"_id": doc["_id"]})
@@ -386,12 +387,27 @@ def get_task(db: Any, task_id: str) -> dict[str, Any]:
 def task_out(doc: dict[str, Any]) -> dict[str, Any]:
     output = doc.get("output")
     task_id = str(doc["_id"])
+    merchant_id = str(doc.get("merchant_id") or "")
     if output:
-        merchant_id = str(doc.get("merchant_id") or "")
         output = {"asset_id": output["asset_id"], "width": output["width"], "height": output["height"],
                   "preview_url": asset_url(merchant_id, str(output["asset_id"])),
                   "download_url": original_replacement_download_url(merchant_id, str(doc["whole_task_id"]), task_id)}
-    return {"id": task_id, **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements",
+    candidates = []
+    for candidate in doc.get("candidates", []):
+        item = {key: candidate.get(key) for key in ("model", "status", "error")}
+        for key in ("applied_version_id", "applied_version"):
+            item[key] = candidate.get(key) or (doc.get(key) if item["model"] == doc.get("applied_candidate_model") else None)
+        candidate_output = candidate.get("output")
+        if doc["status"] in {"interrupted", "failed"} and item["status"] in ACTIVE:
+            item.update(status="failed", error=(doc.get("error") or {}).get("message") or "模型结果未保存")
+        item["output"] = {
+            "width": candidate_output["width"], "height": candidate_output["height"],
+            "preview_url": asset_url(merchant_id, candidate_output["asset_id"]),
+        } if candidate_output else None
+        candidates.append(item)
+    return {"id": task_id, "kind": doc.get("kind", "agent"), "candidates": candidates,
+            **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements", "feedback",
+            "retry_of", "applied_candidate_model",
             "agent_id", "run_id", "agent_input", "agent_output", "error", "whole_task_id", "source_version_id",
             "source_output_id", "source_version", "applied_version_id", "applied_version"]}, "output": output,
             "split_all_elements": (doc.get("input") or {}).get("split_all_elements", False),
