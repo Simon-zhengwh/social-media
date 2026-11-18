@@ -1573,13 +1573,6 @@ label.product-add.is-disabled {
   object-fit: cover;
 }
 
-.asset-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 .asset-name {
   overflow: hidden;
   font-size: 12px;
@@ -1733,7 +1726,7 @@ label.product-add.is-disabled {
 .asset-usage-dialog h2 { margin: 0; font-size: 20px; }
 .asset-usage-dialog p { margin: 12px 0; font-size: 14px; }
 .finalization-error { color: #b42318; font-size: 14px; }
-.asset-usage-count { margin-left: auto; padding: 4px 8px; border: 0; border-radius: 6px; color: #6530d8; background: #f4efff; font: inherit; font-size: 13px; cursor: pointer; }
+.asset-usage-count { margin: auto 0 0 auto; padding: 2px 0; border: 0; color: var(--color-neutral-500); background: none; font: inherit; font-size: 11px; cursor: pointer; }
 .asset-usage-list { display: grid; gap: 16px; margin-top: 20px; }
 .asset-usage-item { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 20px; padding: 14px; border: 1px solid #e8e3ee; border-radius: 12px; }
 .asset-usage-item img { width: 120px; height: 150px; object-fit: contain; }
@@ -7685,21 +7678,6 @@ label.product-add.is-disabled {
   border-color: var(--color-secondary-600);
 }
 
-.asset-tag-edit {
-  padding: 2px 6px;
-  border: 1px dashed var(--color-neutral-300);
-  border-radius: 999px;
-  background: #fff;
-  color: var(--color-neutral-500);
-  font-size: 9.5px;
-  line-height: 1.5;
-}
-
-.asset-tag-edit:hover {
-  border-color: var(--color-secondary-600);
-  color: var(--color-secondary-600);
-}
-
 .asset-name-row {
   display: flex;
   align-items: center;
@@ -7712,7 +7690,7 @@ label.product-add.is-disabled {
   min-width: 0;
 }
 
-.asset-rename-btn {
+.asset-edit-btn {
   flex: 0 0 auto;
   padding: 0 2px;
   border: 0;
@@ -7722,54 +7700,67 @@ label.product-add.is-disabled {
   line-height: 1;
 }
 
-.asset-rename-btn:hover {
+.asset-edit-btn:hover {
   color: var(--color-secondary-600);
 }
 
-.asset-name-input {
+.asset-edit-dialog {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  align-items: center;
+  gap: 24px;
+  width: min(720px, 100%);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+}
+
+.asset-edit-preview {
+  display: block;
   width: 100%;
-  margin-top: 10px;
-}
-
-.asset-tag-dialog {
-  width: min(460px, 100%);
-}
-
-.asset-tag-editor {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-top: 12px;
-  padding: 8px;
-  border: 1px solid var(--color-neutral-200);
+  height: 100%;
+  min-height: 240px;
+  max-height: 320px;
   border-radius: 12px;
+  background: var(--color-neutral-50);
+  object-fit: contain;
 }
 
-.asset-tag-editor .asset-tag-input {
-  flex: 1 1 160px;
+.asset-edit-fields {
   min-width: 0;
-  min-height: 30px;
 }
 
-.asset-tag-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 4px 3px 9px;
-  border-radius: 999px;
-  background: var(--color-secondary-50);
-  color: var(--color-secondary-600);
-  font-size: 10px;
+.asset-edit-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  color: var(--color-neutral-700);
+  font-size: 12px;
 }
 
-.asset-tag-chip button {
-  padding: 0 4px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-size: 11px;
-  line-height: 1;
+.asset-edit-field:first-child {
+  margin-top: 0;
+}
+
+.asset-edit-field .mp-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.asset-edit-field textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+@media (max-width: 600px) {
+  .asset-edit-dialog {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .asset-edit-preview {
+    min-height: 0;
+    max-height: 180px;
+  }
 }
 
 /* FB-004: merchant facts (with the shared logo set) and the AM profile above the style list. */

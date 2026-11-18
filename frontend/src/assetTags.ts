@@ -8,13 +8,13 @@
 export const MAX_ASSET_TAGS = 5
 
 /**
- * Merge typed-but-uncommitted text into the saved set.
+ * Merge comma-separated typed text into the saved set.
  *
  * Trims, drops blanks and de-duplicates case-insensitively while keeping the first spelling.
  * No cap is applied here so the caller can tell "too many" apart from "saved".
  */
 export function normalizeTags(tags: string[], pending = ''): string[] {
-  const merged = pending.trim() ? [...tags, pending] : tags
+  const merged = [...tags, ...pending.split(/[,，]/)]
   const result: string[] = []
   for (const raw of merged) {
     const tag = raw.trim()

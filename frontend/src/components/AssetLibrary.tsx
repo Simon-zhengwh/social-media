@@ -63,19 +63,15 @@ export default function AssetLibrary({
   const [deletingIds, setDeletingIds] = useState<string[] | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [tagEditor, setTagEditor] = useState<{ asset: Asset; tags: string[] } | null>(null)
-  const [tagInput, setTagInput] = useState('')
-  const [tagSaving, setTagSaving] = useState(false)
-  const [tagError, setTagError] = useState<string | null>(null)
-  const [nameEditor, setNameEditor] = useState<{ asset: Asset; draft: string } | null>(null)
-  const [nameSaving, setNameSaving] = useState(false)
-  const [nameError, setNameError] = useState<string | null>(null)
+  const [assetEditor, setAssetEditor] = useState<{ asset: Asset; name: string; tags: string } | null>(null)
+  const [assetSaving, setAssetSaving] = useState(false)
+  const [assetEditError, setAssetEditError] = useState<string | null>(null)
   const [usageAsset, setUsageAsset] = useState<Asset | null>(null)
 
   const keyword = draft ?? query
   // Nothing searches while typing: a query runs on 搜索 or Enter, and that is also the only
   // moment a semantic search may call the query agent.
-  const [semantic, setSemantic] = useState(false)
+  const [semantic, setSemantic] = useState(true)
 
   const submitSearch = (nextTag: string) => {
     setDraft(nextTag)
@@ -156,74 +152,48 @@ export default function AssetLibrary({
   const allSelected = assets.length > 0 && selectedAssets.length === assets.length
   const deleting = deletingIds !== null
 
-  const openTagEditor = (asset: Asset) => {
-    setTagEditor({ asset, tags: asset.tags ?? [] })
-    setTagInput('')
-    setTagError(null)
+  const openAssetEditor = (asset: Asset) => {
+    setAssetEditor({ asset, name: assetDisplayName(asset.original_name), tags: (asset.tags ?? []).join(', ') })
+    setAssetEditError(null)
   }
 
-  const addTag = (raw: string) => {
-    if (!tagEditor) return
-    const tag = raw.trim()
-    if (!tag) {
-      setTagInput('')
-      return
-    }
-    if (tagEditor.tags.length >= MAX_ASSET_TAGS) {
-      setTagError(`每张素材最多 ${MAX_ASSET_TAGS} 个 Tag`)
-      return
-    }
-    if (tagEditor.tags.some((item) => item.toLowerCase() === tag.toLowerCase())) {
-      setTagInput('')
-      return
-    }
-    setTagEditor({ asset: tagEditor.asset, tags: [...tagEditor.tags, tag] })
-    setTagInput('')
-    setTagError(null)
-  }
+  const tagsChanged = Boolean(assetEditor && assetEditor.tags !== (assetEditor.asset.tags ?? []).join(', '))
+  const editedTags = assetEditor
+    ? tagsChanged ? normalizeTags([], assetEditor.tags) : assetEditor.asset.tags ?? []
+    : []
+  const tagValidationError = editedTags.length > MAX_ASSET_TAGS
+    ? `每张素材最多 ${MAX_ASSET_TAGS} 个 Tag，当前 ${editedTags.length} 个`
+    : editedTags.some((tag) => tag.length > 40) ? '每个 Tag 最多 40 个字符' : null
 
-  const saveTags = async () => {
-    if (!tagEditor) return
-    // Typed text that was never committed with Enter still counts: dropping it would look
-    // like a save that did nothing. Over-limit sets are rejected before they reach the API.
-    const tags = normalizeTags(tagEditor.tags, tagInput)
-    if (tags.length > MAX_ASSET_TAGS) {
-      setTagError(`每张素材最多 ${MAX_ASSET_TAGS} 个 Tag`)
-      return
-    }
-    setTagSaving(true)
-    setTagError(null)
-    try {
-      const saved = await updateAssetTags(tagEditor.asset.id, tags)
-      onTagsSaved(saved)
-      setTagEditor(null)
-      setTagInput('')
-    } catch (reason: unknown) {
-      // Keep the unsaved input visible: the card must not claim a sync that did not happen.
-      setTagError(reason instanceof Error ? reason.message : '保存 Tag 失败，请稍后重试')
-    } finally {
-      setTagSaving(false)
-    }
-  }
-
-  const saveName = async () => {
-    if (!nameEditor) return
-    const name = nameEditor.draft.trim()
+  const saveAsset = async () => {
+    if (!assetEditor || assetSaving || tagValidationError) return
+    const name = assetEditor.name.trim()
     if (!name) {
-      setNameError('素材名称不能为空')
+      setAssetEditError('素材名称不能为空')
       return
     }
-    setNameSaving(true)
-    setNameError(null)
+    setAssetSaving(true)
+    setAssetEditError(null)
+    let renamed = false
     try {
-      const saved = await renameAsset(nameEditor.asset.id, assetRenameFileName(name, nameEditor.asset.original_name))
-      onNameSaved(saved)
-      setNameEditor(null)
+      const fileName = assetRenameFileName(name, assetEditor.asset.original_name)
+      if (fileName !== assetEditor.asset.original_name) {
+        const saved = await renameAsset(assetEditor.asset.id, fileName)
+        renamed = true
+        onNameSaved(saved)
+        // Remember completed writes so retrying a failed Tag save does not rename again.
+        setAssetEditor((current) => current ? { ...current, asset: saved } : null)
+      }
+      if (tagsChanged) {
+        const saved = await updateAssetTags(assetEditor.asset.id, editedTags)
+        onTagsSaved(saved)
+      }
+      setAssetEditor(null)
     } catch (reason: unknown) {
-      // Keep the dialog open: the card must not claim a rename that AM rejected.
-      setNameError(reason instanceof Error ? reason.message : '保存名称失败，请稍后重试')
+      const message = reason instanceof Error ? reason.message : '保存失败，请稍后重试'
+      setAssetEditError(renamed ? `名称已保存，Tag 保存失败：${message}` : message)
     } finally {
-      setNameSaving(false)
+      setAssetSaving(false)
     }
   }
 
@@ -241,8 +211,8 @@ export default function AssetLibrary({
             className="mp-input asset-search-input"
             type="search"
             value={keyword}
-            aria-label="搜索素材名称、Tag 或描述"
-            placeholder="搜索名称、Tag 或描述"
+            aria-label="搜索素材名称、Tag 或关键词"
+            placeholder="搜索名称、Tag 或关键词"
             onChange={(event) => setDraft(event.target.value)}
           />
           <button type="submit" className="mp-btn-secondary mp-btn-small" disabled={loading} aria-busy={loading}>
@@ -265,7 +235,7 @@ export default function AssetLibrary({
               className="mp-btn-secondary mp-btn-small"
               disabled={indexBusy || Boolean(index.active_run)}
               onClick={() => onReindex('reindex')}
-              title="重新同步素材清单并为全部素材生成描述"
+              title="重新同步素材清单并重建全部素材的中英文关键词"
             >
               {index.active_run
                 ? `索引中 ${(index.active_run.counters.total ?? index.total) - (index.active_run.counters.remaining ?? 0)}/${index.active_run.counters.total ?? index.total}`
@@ -384,25 +354,17 @@ export default function AssetLibrary({
                     {deletingIds?.includes(asset.id) ? '…' : '×'}
                   </button>
                 </div>
-                <div className="asset-card-head">
-                  <button type="button" className="asset-usage-count" onClick={() => setUsageAsset(asset)}>
-                    引用 {asset.usage_count ?? 0} 次
-                  </button>
-                </div>
-                {/* The rename affordance sits next to the name it edits. */}
+                {/* One editor handles both the name and tags. */}
                 <div className="asset-name-row">
                   <strong className="asset-name" title={assetDisplayName(asset.original_name)}>
                     {assetDisplayName(asset.original_name)}
                   </strong>
                   <button
                     type="button"
-                    className="asset-rename-btn"
-                    title="重命名这张素材"
-                    aria-label={`重命名 ${assetDisplayName(asset.original_name)}`}
-                    onClick={() => {
-                      setNameEditor({ asset, draft: assetDisplayName(asset.original_name) })
-                      setNameError(null)
-                    }}
+                    className="asset-edit-btn"
+                    title="编辑名称和 Tag"
+                    aria-label={`编辑 ${assetDisplayName(asset.original_name)}`}
+                    onClick={() => openAssetEditor(asset)}
                   >
                     ✎
                   </button>
@@ -420,15 +382,10 @@ export default function AssetLibrary({
                       {tag}
                     </button>
                   ))}
-                  <button
-                    type="button"
-                    className="asset-tag-edit"
-                    aria-label={`编辑 ${assetDisplayName(asset.original_name)} 的 Tag`}
-                    onClick={() => openTagEditor(asset)}
-                  >
-                    {(asset.tags ?? []).length > 0 ? '✎' : '＋ Tag'}
-                  </button>
                 </div>
+                <button type="button" className="asset-usage-count" onClick={() => setUsageAsset(asset)}>
+                  引用 {asset.usage_count ?? 0} 次
+                </button>
               </article>
             ))}
           </div>
@@ -476,90 +433,65 @@ export default function AssetLibrary({
       </div>
     ) : null}
 
-      {tagEditor ? (
+      {assetEditor ? (
         <div
           className="brand-delete-modal-backdrop"
-          onMouseDown={(event) => { if (event.target === event.currentTarget && !tagSaving) setTagEditor(null) }}
+          onMouseDown={(event) => { if (event.target === event.currentTarget && !assetSaving) setAssetEditor(null) }}
         >
-          <div className="brand-delete-modal asset-tag-dialog" role="dialog" aria-modal="true" aria-labelledby="asset-tag-title">
-            <strong id="asset-tag-title">编辑 Tag</strong>
-            <p>{assetDisplayName(tagEditor.asset.original_name)} · 最多 {MAX_ASSET_TAGS} 个</p>
-            <div className="asset-tag-editor">
-              {tagEditor.tags.map((tag) => (
-                <span className="asset-tag-chip" key={tag}>
-                  {tag}
-                  <button
-                    type="button"
-                    aria-label={`移除 ${tag}`}
-                    disabled={tagSaving}
-                    onClick={() => setTagEditor({
-                      asset: tagEditor.asset,
-                      tags: tagEditor.tags.filter((item) => item !== tag),
-                    })}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-              <input
-                className="mp-input asset-tag-input"
-                value={tagInput}
-                maxLength={40}
-                disabled={tagSaving || tagEditor.tags.length >= MAX_ASSET_TAGS}
-                aria-label="新增 Tag"
-                placeholder={tagEditor.tags.length >= MAX_ASSET_TAGS ? '已达上限' : '输入后按 Enter 添加'}
-                onChange={(event) => setTagInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ',' || event.key === '，') {
-                    event.preventDefault()
-                    addTag(tagInput)
-                  }
-                }}
-                onBlur={() => { if (tagInput.trim()) addTag(tagInput) }}
-              />
-            </div>
-            {tagError ? <div className="brand-duplicate-error">{tagError}</div> : null}
-            <div className="brand-delete-modal-actions">
-              <button type="button" onClick={() => setTagEditor(null)} disabled={tagSaving} autoFocus>取消</button>
-              <button type="button" className="is-primary" onClick={() => void saveTags()} disabled={tagSaving}>
-                {tagSaving ? '保存中…' : '保存 Tag'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {nameEditor ? (
-        <div
-          className="brand-delete-modal-backdrop"
-          onMouseDown={(event) => { if (event.target === event.currentTarget && !nameSaving) setNameEditor(null) }}
-        >
-          <div className="brand-delete-modal asset-tag-dialog" role="dialog" aria-modal="true" aria-labelledby="asset-name-title">
-            <strong id="asset-name-title">重命名素材</strong>
-            <p>只修改显示名称，图片内容和 Tag 不受影响。</p>
-            <input
-              className="mp-input asset-name-input"
-              value={nameEditor.draft}
-              maxLength={300}
-              disabled={nameSaving}
-              aria-label="素材名称"
-              autoFocus
-              onChange={(event) => setNameEditor({ asset: nameEditor.asset, draft: event.target.value })}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  void saveName()
-                }
-                if (event.key === 'Escape' && !nameSaving) setNameEditor(null)
-              }}
+          <form
+            className="brand-delete-modal asset-edit-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="编辑素材"
+            onSubmit={(event) => { event.preventDefault(); void saveAsset() }}
+            onKeyDown={(event) => { if (event.key === 'Escape' && !assetSaving) setAssetEditor(null) }}
+          >
+            <img
+              className="asset-edit-preview"
+              src={assetEditor.asset.url}
+              alt={assetDisplayName(assetEditor.asset.original_name)}
             />
-            {nameError ? <div className="brand-duplicate-error">{nameError}</div> : null}
-            <div className="brand-delete-modal-actions">
-              <button type="button" onClick={() => setNameEditor(null)} disabled={nameSaving}>取消</button>
-              <button type="button" className="is-primary" onClick={() => void saveName()} disabled={nameSaving}>
-                {nameSaving ? '保存中…' : '保存名称'}
-              </button>
+            <div className="asset-edit-fields">
+              <label className="asset-edit-field">
+                名称
+                <input
+                  className="mp-input"
+                  value={assetEditor.name}
+                  maxLength={300}
+                  disabled={assetSaving}
+                  autoFocus
+                  onChange={(event) => {
+                    setAssetEditor({ ...assetEditor, name: event.target.value })
+                    setAssetEditError(null)
+                  }}
+                />
+              </label>
+              <label className="asset-edit-field">
+                Tag（逗号分隔，最多 {MAX_ASSET_TAGS} 个）
+                <textarea
+                  className="mp-input"
+                  rows={2}
+                  value={assetEditor.tags}
+                  disabled={assetSaving}
+                  aria-invalid={Boolean(tagValidationError)}
+                  aria-describedby={tagValidationError ? 'asset-edit-error' : undefined}
+                  onChange={(event) => {
+                    setAssetEditor({ ...assetEditor, tags: event.target.value })
+                    setAssetEditError(null)
+                  }}
+                />
+              </label>
+              {tagValidationError || assetEditError ? (
+                <div id="asset-edit-error" className="brand-duplicate-error" role="alert">{tagValidationError ?? assetEditError}</div>
+              ) : null}
+              <div className="brand-delete-modal-actions">
+                <button type="button" onClick={() => setAssetEditor(null)} disabled={assetSaving}>取消</button>
+                <button type="submit" className="is-primary" disabled={assetSaving || Boolean(tagValidationError)}>
+                  {assetSaving ? '保存中…' : '保存'}
+                </button>
+              </div>
             </div>
-          </div>
+          </form>
         </div>
       ) : null}
     </section>

@@ -30,6 +30,17 @@ test('typed-but-uncommitted tags are saved with the set they belong to', () => {
   assert.equal(MAX_ASSET_TAGS, 5)
 })
 
+test('comma-separated edits produce a trimmed flat tag array', () => {
+  assert.deepEqual(normalizeTags([], ' 官网, 火锅， , 门店, HOTPot, hotpot, '), ['官网', '火锅', '门店', 'HOTPot'])
+  assert.deepEqual(normalizeTags([], ' , ， '), [])
+  assert.deepEqual(normalizeTags(['existing,tag'], 'new，tag'), ['existing,tag', 'new', 'tag'])
+})
+
+test('comma-separated edits retain excess tags so the editor can report the five-tag limit', () => {
+  assert.equal(normalizeTags([], 'a,b,c,d,e').length, MAX_ASSET_TAGS)
+  assert.deepEqual(normalizeTags([], 'a,b,c,d,e,f'), ['a', 'b', 'c', 'd', 'e', 'f'])
+})
+
 test('the asset page sends the tag filter with the keyword and paging', async () => {
   const requests = mockBrowser()
   await listAssetPage('招牌 菜', 120, 24, 'Hot Pot')
