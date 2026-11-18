@@ -4877,6 +4877,11 @@ label.product-add.is-disabled {
 .poster-workspace .form-card .model-count-options button { width: 26px; height: 28px; }
 .poster-workspace .form-card .model-generation-error { padding: 8px 0 0; }
 .poster-utility-toolbar { position: static; grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; min-height: 42px; padding: 6px 12px; border-bottom: 1px solid var(--color-neutral-100); border-radius: 18px 18px 0 0; background: white; }
+.poster-task-heading { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.poster-task-heading h1 { margin: 0; overflow: hidden; color: var(--color-primary-900); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.poster-title-edit { flex: none; min-width: 28px; min-height: 28px; padding: 0; font-size: 16px; }
+.poster-task-heading .poster-task-title-input { width: 220px; min-width: 0; padding: 5px 8px; }
+.poster-utility-toolbar > a, .poster-task-heading > button { white-space: nowrap; }
 .model-toolbar-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 12px 0; border-bottom: 1px solid var(--color-neutral-100); }
 .model-view-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-width: 0; padding: 10px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--color-neutral-500); font: inherit; font-size: 11px; font-weight: 600; line-height: 1.4; cursor: pointer; }
 .model-view-button:hover:not(:disabled) { color: var(--color-secondary-600); background: var(--color-secondary-50); }
@@ -6675,17 +6680,22 @@ label.product-add.is-disabled {
   white-space: nowrap;
 }
 
+.task-card-meta span:last-child { margin-left: auto; }
+
 .task-prompt {
   display: -webkit-box;
   overflow: hidden;
   color: var(--color-primary-900);
   font-family: var(--font-display);
-  font-size: 11.5px;
+  font-size: 13px;
   line-height: 1.3;
   letter-spacing: -0.02em;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
+
+.task-card-prompt { margin: 0; overflow: hidden; color: var(--color-neutral-600); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.task-card-replacement { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 
 .task-tags {
   display: flex;
@@ -6977,7 +6987,19 @@ label.product-add.is-disabled {
  cursor: progress;
 }
 
-/* Selection toggle for bulk delete; kept visible so the batch flow is discoverable. */
+.asset-select-thumb {
+ position: relative;
+ display: block;
+ width: 100%;
+ height: 100%;
+ padding: 0;
+ border: 0;
+ background: transparent;
+ cursor: pointer;
+}
+
+.asset-card.is-selected { border-color: var(--color-secondary-500); }
+
 .asset-select {
  position: absolute;
  top: 6px;
@@ -6993,11 +7015,10 @@ label.product-add.is-disabled {
  color: #fff;
  font-size: 13px;
  line-height: 1;
- cursor: pointer;
  transition: background var(--dur-base) var(--ease-standard), border-color var(--dur-base) var(--ease-standard);
 }
 
-.asset-select:hover {
+.asset-select-thumb:hover .asset-select {
  border-color: var(--color-accent, #6b5cff);
 }
 
@@ -7006,7 +7027,7 @@ label.product-add.is-disabled {
  border-color: var(--color-accent, #6b5cff);
 }
 
-.asset-select:disabled {
+.asset-select-thumb:disabled {
  cursor: progress;
  opacity: 0.6;
 }

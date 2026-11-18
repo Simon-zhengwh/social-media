@@ -8,9 +8,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.api_paths import original_replacement_download_url
 from app.request_context import request_db
 from app.routes import whole_image as whole_routes
-from app.time_utils import utc_iso
 
 router = APIRouter(prefix="/task-center", tags=["task-center"])
 
@@ -34,31 +34,37 @@ def _encode_cursor(item: dict[str, Any]) -> str:
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _original_replacement_groups(db: Any) -> list[dict[str, Any]]:
-    from app.services.original_replacement_runner import task_out
-
-    groups = []
-    for doc in db.background_replace_tasks.find({"whole_task_id": {"$type": "string", "$ne": ""}}).sort("created_at", -1):
-        task = task_out(doc)
-        active = task["status"] in {"queued", "running"}
-        succeeded = task["status"] == "succeeded"
-        output = task.get("output") or {}
-        error = (task.get("error") or {}).get("message")
-        candidate = {"id": task["id"], "candidate_index": 0, "status": task["status"],
-                     "stage": task["stage"], "progress": task["progress"], "current_version": 0,
-                     "preview_url": output.get("preview_url"), "download_url": output.get("download_url"),
-                     "edit_status": "idle", "error": error, "created_at": task["created_at"], "updated_at": task["updated_at"]}
-        groups.append({"id": task["id"], "kind": "original_replace", "whole_task_id": task.get("whole_task_id"),
-                       "status": "active" if active else "ready" if succeeded else "failed",
-                       "prompt": "；".join(item["target"] for item in task["replacements"]),
-                       "brand_name": None, "platform_name": None, "placement_name": None,
-                       "canvas": {"width": task["source"]["width"], "height": task["source"]["height"]},
-                       "candidate_count": 1, "active_count": int(active), "succeeded_count": int(succeeded),
-                       "failed_count": int(not active and not succeeded), "retryable_count": 0,
-                       "representative_task_id": task["id"], "preview_url": output.get("preview_url"),
-                       "download_url": output.get("download_url"), "error_message": error, "candidates": [candidate],
-                       "created_at": doc["created_at"], "updated_at": doc["updated_at"]})
-    return groups
+def _workspace_replacements(
+    db: Any, workspace_by_candidate: dict[str, str], status: str,
+) -> dict[str, dict[str, Any]]:
+    replacements: dict[str, dict[str, Any]] = {}
+    if not workspace_by_candidate:
+        return replacements
+    docs = db.background_replace_tasks.find(
+        {"whole_task_id": {"$type": "string", "$ne": ""}},
+        {"whole_task_id": 1, "merchant_id": 1, "status": 1, "created_at": 1, "output.asset_id": 1},
+    ).sort([("created_at", -1), ("_id", -1)])
+    for doc in docs:
+        candidate_id = doc["whole_task_id"]
+        workspace_id = workspace_by_candidate.get(candidate_id)
+        if workspace_id is None:
+            continue
+        run_status = doc.get("status")
+        stage = "active" if run_status in {"queued", "running"} else "ready" if run_status == "succeeded" else "failed"
+        if status != "all" and stage != status:
+            continue
+        previous = replacements.get(workspace_id)
+        if previous and (previous["status"] == "active" or stage != "active"):
+            continue
+        replacement_id = str(doc["_id"])
+        replacements[workspace_id] = {
+            "id": replacement_id,
+            "whole_task_id": candidate_id,
+            "status": stage,
+            "download_url": original_replacement_download_url(str(doc.get("merchant_id") or ""), candidate_id, replacement_id)
+            if (doc.get("output") or {}).get("asset_id") else None,
+        }
+    return replacements
 
 
 def _decode_cursor(value: str) -> tuple[datetime, str]:
@@ -86,16 +92,21 @@ def list_task_center(
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
     db = request_db(request)
+    groups = whole_routes._list_task_groups(db)
+    workspace_by_candidate = {candidate["id"]: group["id"] for group in groups for candidate in group["candidates"]}
+    replacements = _workspace_replacements(db, workspace_by_candidate, status if kind == "original_replace" else "all")
     items: list[dict[str, Any]] = []
-    if kind in {"all", "generate"}:
-        whole_docs = list(db.whole_tasks.find({"candidate_deleted_at": {"$exists": False}}).sort("created_at", -1))
-        for group in whole_routes._build_task_groups(whole_docs):
-            group["kind"] = "generate"
-            items.append(group)
-    if kind in {"all", "original_replace"}:
-        items.extend(_original_replacement_groups(db))
+    for group in groups:
+        replacement = replacements.get(group["id"])
+        if kind == "original_replace" and replacement is None:
+            continue
+        group["kind"] = "generate"
+        group["original_replacement"] = replacement
+        if replacement and replacement["status"] == "active":
+            group["status"] = "active"
+        items.append(group)
 
-    if status != "all":
+    if status != "all" and kind != "original_replace":
         items = [item for item in items if item["status"] == status]
     items.sort(key=lambda item: (_as_utc(item["created_at"]), item["id"]), reverse=True)
     total = len(items)

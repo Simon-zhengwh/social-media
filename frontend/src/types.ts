@@ -361,9 +361,15 @@ export type WholeImageTaskGroupCandidate = {
 
 export type WholeImageTaskGroup = {
   image_models?: ImageModel[]
-  whole_task_id?: string | null
   id: string
-  kind: 'generate' | 'original_replace'
+  kind?: 'generate'
+  title?: string | null
+  original_replacement?: {
+    id: string
+    whole_task_id: string
+    status: WholeImageTaskGroupStatus
+    download_url: string | null
+  } | null
   status: WholeImageTaskGroupStatus
   prompt: string
   brand_name: string | null

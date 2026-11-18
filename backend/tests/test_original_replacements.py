@@ -399,11 +399,22 @@ def test_apply_failure_does_not_delete_shared_image(env, monkeypatch):
 
 
 def test_task_center_links_associated_replacements_to_the_whole_task(env):
-    task = create(env)
-    groups = task_center.list_task_center(env.request, kind="original_replace")["items"]
-    group = next(item for item in groups if item["id"] == task["id"])
-    assert group["whole_task_id"] == env.task_id
-    assert group["kind"] == "original_replace"
+    first = create(env)
+    complete(env, first)
+    second = create(env)
+    for kind in ("all", "original_replace"):
+        result = task_center.list_task_center(env.request, kind=kind, status="active")
+        assert result["total"] == 1
+        group = result["items"][0]
+        assert group["id"] == env.task_id
+        assert group["kind"] == "generate"
+        assert group["candidate_count"] == 1
+        assert group["original_replacement"]["id"] == second["id"]
+        assert group["original_replacement"]["whole_task_id"] == env.task_id
+    finished = task_center.list_task_center(env.request, kind="original_replace", status="ready")["items"][0]
+    assert finished["id"] == env.task_id
+    assert finished["original_replacement"]["id"] == first["id"]
+    assert finished["original_replacement"]["download_url"]
 
 
 def test_restart_does_not_resume_retired_standalone_tasks(env):

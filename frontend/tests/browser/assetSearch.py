@@ -11,6 +11,10 @@ from playwright.sync_api import expect, sync_playwright
 def run(base_url, out_dir):
     checks, errors, unexpected, submissions = [], [], [], []
     pending = {}
+    deletions = []
+    assets = [dict(id=name, original_name=name + '.png', width=100, height=100,
+                   mime_type='image/png', url='data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22/%3E')
+              for name in ('first', 'middle', 'last')]
 
     def check(name, passed=True):
         assert passed, name
@@ -45,7 +49,12 @@ def run(base_url, out_dir):
                 if parse_qs(url.query).get('search_id'):
                     pending['results'] = route
                     return
-                data = dict(items=[], total=0, skip=0, limit=36)
+                data = dict(items=assets, total=len(assets), skip=0, limit=36)
+            elif path == '/api/assets/delete':
+                deletion = request.post_data_json
+                deletions.append(deletion)
+                assets[:] = [asset for asset in assets if asset['id'] not in deletion['ids']]
+                data = dict(deleted=deletion['ids'], am_deleted=[], local_deleted=deletion['ids'])
             else:
                 unexpected.append(path)
                 return route.fulfill(status=404, json=dict(detail='Unexpected fixture request'))
@@ -106,6 +115,28 @@ def run(base_url, out_dir):
                 check(surface + ': mobile search field stays visible without horizontal overflow',
                       field.bounding_box()['width'] >= 100 and page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
                 page.set_viewport_size(dict(width=1280, height=900))
+            page.goto(base_url + '/?merchant_id=m1&view=assets')
+            expect(page.locator('.asset-select')).to_have_count(0)
+            page.get_by_role('button', name='多选', exact=True).click(timeout=2000)
+            expect(page.locator('.asset-select')).to_have_count(3)
+            expect(page.get_by_role('button', name='删除选中 0', exact=True)).to_be_disabled()
+            page.get_by_role('button', name='选择 first', exact=True).click()
+            page.get_by_role('button', name='选择 last', exact=True).click()
+            page.get_by_role('button', name='删除选中 2', exact=True).click()
+            dialog = page.get_by_role('dialog', name='删除选中的 2 张素材？')
+            dialog.get_by_role('button', name='取消', exact=True).click()
+            check('asset selection: cancelling confirmation sends no delete request', not deletions)
+            page.get_by_role('button', name='退出多选', exact=True).click()
+            expect(page.locator('.asset-select')).to_have_count(0)
+            page.get_by_role('button', name='多选', exact=True).click()
+            expect(page.get_by_role('button', name='删除选中 0', exact=True)).to_be_disabled()
+            page.get_by_role('button', name='选择 first', exact=True).click()
+            page.get_by_role('button', name='选择 last', exact=True).click()
+            page.get_by_role('button', name='删除选中 2', exact=True).click()
+            dialog.get_by_role('button', name='确认删除', exact=True).click()
+            expect(page.locator('.asset-card')).to_have_count(1)
+            expect(page.get_by_role('button', name='选择 middle', exact=True)).to_be_visible()
+            check('asset selection: delete sends only the explicitly selected IDs', deletions == [dict(ids=['first', 'last'], force=False)])
             check('no browser errors or unexpected API calls', not errors and not unexpected)
         finally:
             browser.close()

@@ -62,6 +62,7 @@ export default function AssetLibrary({
   const [pendingDelete, setPendingDelete] = useState<{ assets: Asset[]; force: boolean } | null>(null)
   const [deletingIds, setDeletingIds] = useState<string[] | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [selecting, setSelecting] = useState(false)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [assetEditor, setAssetEditor] = useState<{ asset: Asset; name: string; tags: string } | null>(null)
   const [assetSaving, setAssetSaving] = useState(false)
@@ -75,6 +76,7 @@ export default function AssetLibrary({
 
   const submitSearch = (nextTag: string) => {
     setDraft(nextTag)
+    setSelectedIds([])
     onSearch(nextTag.trim(), false)
   }
 
@@ -149,7 +151,6 @@ export default function AssetLibrary({
   }
 
   const selectedAssets = assets.filter((asset) => selectedIds.includes(asset.id))
-  const allSelected = assets.length > 0 && selectedAssets.length === assets.length
   const deleting = deletingIds !== null
 
   const openAssetEditor = (asset: Asset) => {
@@ -203,6 +204,8 @@ export default function AssetLibrary({
         className="asset-toolbar"
         onSubmit={(event) => {
           event.preventDefault()
+          if (loading) return
+          setSelectedIds([])
           onSearch(keyword.trim(), semantic)
         }}
       >
@@ -252,22 +255,25 @@ export default function AssetLibrary({
               重试失败 {index?.failed}
             </button>
           ) : null}
-          {assets.length > 0 ? (
+          {selecting || assets.length > 0 ? (
             <button
               type="button"
               className="mp-btn-secondary mp-btn-small"
-              onClick={() => setSelectedIds(allSelected ? [] : assets.map((asset) => asset.id))}
+              onClick={() => {
+                setSelecting((previous) => !previous)
+                setSelectedIds([])
+              }}
               disabled={deleting}
             >
-              {allSelected ? '取消全选' : '全选'}
+              {selecting ? '退出多选' : '多选'}
             </button>
           ) : null}
-          {selectedAssets.length > 0 ? (
+          {selecting ? (
             <button
               type="button"
               className="mp-btn-secondary mp-btn-small asset-bulk-delete"
               onClick={() => setPendingDelete({ assets: selectedAssets, force: false })}
-              disabled={deleting}
+              disabled={deleting || selectedAssets.length === 0}
             >
               删除选中 {selectedAssets.length}
             </button>
@@ -322,48 +328,42 @@ export default function AssetLibrary({
       ) : (
         <>
           <div className="asset-grid">
-            {assets.map((asset) => (
-              <article className="asset-card" key={asset.id}>
+            {assets.map((asset) => {
+              const selected = selectedIds.includes(asset.id)
+              const name = assetDisplayName(asset.original_name)
+              return <article className={`asset-card${selected ? ' is-selected' : ''}`} key={asset.id}>
                 <div className="asset-thumb">
-                  {/* Selection drives bulk delete; the ✕ next to it deletes just this card. */}
-                  <button
-                    type="button"
-                    className={`asset-select${selectedIds.includes(asset.id) ? ' is-on' : ''}`}
-                    aria-pressed={selectedIds.includes(asset.id)}
-                    aria-label={`${selectedIds.includes(asset.id) ? '取消选择' : '选择'} ${assetDisplayName(asset.original_name)}`}
-                    title="选择后可批量删除"
-                    disabled={deleting}
-                    onClick={() => toggleSelected(asset.id)}
-                  >
-                    {selectedIds.includes(asset.id) ? '✓' : ''}
-                  </button>
-                  <ZoomableImage
-                    className="asset-thumb-preview"
-                    src={asset.url}
-                    alt={assetDisplayName(asset.original_name)}
-                    title={assetDisplayName(asset.original_name)}
-                  />
-                  <button
-                    type="button"
-                    className="asset-delete-fab"
-                    title={asset.source === 'am' ? '删除这张素材（含 AM 素材库记录）' : '删除这张素材'}
-                    aria-label={`删除 ${assetDisplayName(asset.original_name)}`}
-                    disabled={deleting}
-                    onClick={() => setPendingDelete({ assets: [asset], force: false })}
-                  >
-                    {deletingIds?.includes(asset.id) ? '…' : '×'}
-                  </button>
+                  {selecting ? (
+                    <button type="button" className="asset-thumb-preview asset-select-thumb"
+                      aria-label={`选择 ${name}`} aria-pressed={selected} disabled={deleting}
+                      onClick={() => toggleSelected(asset.id)}>
+                      <img src={asset.url} alt="" />
+                      <span className={`asset-select${selected ? ' is-on' : ''}`} aria-hidden="true">{selected ? '✓' : ''}</span>
+                    </button>
+                  ) : (
+                    <>
+                      <ZoomableImage className="asset-thumb-preview" src={asset.url} alt={name} title={name} />
+                      <button
+                        type="button"
+                        className="asset-delete-fab"
+                        title={asset.source === 'am' ? '删除这张素材（含 AM 素材库记录）' : '删除这张素材'}
+                        aria-label={`删除 ${name}`}
+                        disabled={deleting}
+                        onClick={() => setPendingDelete({ assets: [asset], force: false })}
+                      >
+                        {deletingIds?.includes(asset.id) ? '…' : '×'}
+                      </button>
+                    </>
+                  )}
                 </div>
                 {/* One editor handles both the name and tags. */}
                 <div className="asset-name-row">
-                  <strong className="asset-name" title={assetDisplayName(asset.original_name)}>
-                    {assetDisplayName(asset.original_name)}
-                  </strong>
+                  <strong className="asset-name" title={name}>{name}</strong>
                   <button
                     type="button"
                     className="asset-edit-btn"
                     title="编辑名称和 Tag"
-                    aria-label={`编辑 ${assetDisplayName(asset.original_name)}`}
+                    aria-label={`编辑 ${name}`}
                     onClick={() => openAssetEditor(asset)}
                   >
                     ✎
@@ -387,7 +387,7 @@ export default function AssetLibrary({
                   引用 {asset.usage_count ?? 0} 次
                 </button>
               </article>
-            ))}
+            })}
           </div>
           {/* Scrolling the grid keeps the sentinel in view, so pages load one after another. */}
           {hasMore ? (

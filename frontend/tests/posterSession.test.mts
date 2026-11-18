@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { beforeEach, test } from 'node:test'
-import { clearPosterSession, newPosterDesignUrl, readPosterSession, savePosterSession, type PosterSession } from '../src/posterSession.ts'
+import { clearPosterSession, formatPosterTitle, newPosterDesignUrl, readPosterSession, savePosterSession, type PosterSession } from '../src/posterSession.ts'
 import { imageMention, serializeImagePrompt } from '../src/imageMentions.ts'
 
 class MemoryStorage {
@@ -57,6 +57,16 @@ test('a draft survives remount/reload with image order, bound mentions and every
   assert.equal(serializeImagePrompt(restored.form.prompt, restored.form.products.map(asset => ({
     assetId: asset.id, name: asset.original_name, url: asset.url,
   }))), '保留@图片2，参考@图片1')
+})
+
+test('default task titles show local creation time to the second', () => {
+  assert.equal(formatPosterTitle(new Date(2026, 0, 2, 0, 4, 5)), '2026-01-02 00:04:05')
+})
+
+test('a blank editor keeps its title across reload without freezing form defaults', () => {
+  const blank = { kind: 'blank', workspaceId: 'workspace-1', title: '2026-01-02 00:04:05' } as const
+  assert.equal(savePosterSession('alice', 'merchant', blank), true)
+  assert.deepEqual(readPosterSession('alice', 'merchant'), blank)
 })
 
 test('users, merchants and fresh tabs have independent temporary sessions', () => {

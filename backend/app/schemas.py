@@ -1,7 +1,7 @@
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 # Ceiling for one poster's reference images. The workbench itself does not cap the picker;
 # this is only the server-side guard against runaway payloads.
@@ -147,6 +147,13 @@ class BrandUpdate(BaseModel):
         return result
 
 
+WorkspaceTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+class WholeImageWorkspaceTitle(BaseModel):
+    title: WorkspaceTitle
+
+
 class WholeImageTaskCreate(BaseModel):
     image_model: ImageModel = "gpt-image-2.5-sunburst"
     prompt: str = Field(min_length=1, max_length=5000)
@@ -161,6 +168,7 @@ class WholeImageTaskCreate(BaseModel):
     candidate_count: int = Field(default=3, ge=1, le=6)
     candidate_batch_id: str | None = Field(default=None, max_length=128)
     generation_workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    workspace_title: WorkspaceTitle | None = None
     candidate_index: int = Field(default=0, ge=0, le=5)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)

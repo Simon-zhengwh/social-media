@@ -514,6 +514,7 @@ export type WholeImageTaskCreatePayload = {
   candidate_count?: number
   candidate_batch_id?: string | null
   generation_workspace_id?: string | null
+  workspace_title?: string
   candidate_index?: number
   product_asset_ids?: string[]
   platform_id?: string | null
@@ -542,6 +543,22 @@ export async function listWholeImageTaskBatch(batchId: string): Promise<WholeIma
 export async function listWholeImageWorkspace(workspaceId: string): Promise<WholeImageTask[]> {
   const response = await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/tasks`)
   return parseResponse<WholeImageTask[]>(response)
+}
+
+type WorkspaceTitle = { title: string | null; created_at: string }
+
+export async function getWholeImageWorkspaceTitle(workspaceId: string): Promise<WorkspaceTitle> {
+  const response = await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/title`)
+  return parseResponse<WorkspaceTitle>(response)
+}
+
+export async function renameWholeImageWorkspace(workspaceId: string, title: string): Promise<WorkspaceTitle> {
+  const response = await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/title`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  return parseResponse<WorkspaceTitle>(response)
 }
 
 export async function deleteWholeImageCandidate(taskId: string): Promise<void> {

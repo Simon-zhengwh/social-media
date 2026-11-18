@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from app.api_paths import asset_url, whole_download_url, merchant_base
 from app.request_context import request_db, request_merchant_id, request_store, request_profile
-from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
+from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageWorkspaceTitle, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
 from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
 from app.services.agent_image import artifacts_out as _artifacts_out
@@ -135,8 +135,8 @@ def _task_sort_key(doc: dict[str, Any]) -> tuple[int, datetime, str]:
     )
 
 
-def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, Any]:
-    tasks = sorted(docs, key=_task_sort_key)
+def _task_group_summary(group_id: str, tasks: list[dict[str, Any]], first_candidate: dict[str, Any]) -> dict[str, Any]:
+    tasks = sorted(tasks, key=_task_sort_key)
     active_count = sum(1 for doc in tasks if _task_is_active(doc))
     succeeded_count = sum(1 for doc in tasks if doc.get("status") == "succeeded")
     failed_count = sum(1 for doc in tasks if doc.get("status") == "failed")
@@ -180,10 +180,11 @@ def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, 
         ),
         None,
     )
-    created_at = min((_as_utc(doc.get("created_at")) for doc in tasks))
+    created_at = _as_utc(first_candidate.get("created_at"))
     updated_at = max((_as_utc(doc.get("updated_at")) for doc in tasks))
     return {
         "id": group_id,
+        "title": first_candidate.get("workspace_initial_title"),
         "status": group_status,
         "prompt": str(first_input.get("prompt") or ""),
         "brand_name": str((brand or {}).get("name") or "") or None,
@@ -212,16 +213,31 @@ def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+def _workspace_start_key(doc: dict[str, Any]) -> tuple[datetime, str]:
+    return _as_utc(doc.get("created_at")), str(doc["_id"])
+
+
 def _build_task_groups(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for doc in docs:
         grouped.setdefault(_task_group_key(doc), []).append(doc)
-    items = [
-        _task_group_summary(group_id, group_docs)
-        for group_id, group_docs in grouped.items()
-    ]
+    items = []
+    for group_id, group_docs in grouped.items():
+        visible_docs = [doc for doc in group_docs if not doc.get("candidate_deleted_at")]
+        if visible_docs:
+            items.append(_task_group_summary(group_id, visible_docs, min(group_docs, key=_workspace_start_key)))
     items.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
     return items
+
+
+def _list_task_groups(db: Any) -> list[dict[str, Any]]:
+    groups = _build_task_groups(list(db.whole_tasks.find().sort("created_at", -1)))
+    titles = {doc["workspace_id"]: doc["title"] for doc in db.whole_workspace_titles.find(
+        {"workspace_id": {"$in": [group["id"] for group in groups]}}, {"workspace_id": 1, "title": 1},
+    )}
+    for group in groups:
+        group["title"] = titles.get(group["id"], group["title"])
+    return groups
 
 
 def _encode_task_cursor(item: dict[str, Any]) -> str:
@@ -659,6 +675,8 @@ def create_task(
         "created_at": now,
         "updated_at": now,
     }
+    if payload.workspace_title is not None:
+        doc["workspace_initial_title"] = payload.workspace_title
     db.whole_tasks.insert_one(doc)
     background_tasks.add_task(
         whole_image.run_generation,
@@ -687,8 +705,7 @@ def list_tasks(
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
     db = request_db(request)
-    docs = list(db.whole_tasks.find({"candidate_deleted_at": {"$exists": False}}).sort("created_at", -1))
-    items = _build_task_groups(docs)
+    items = _list_task_groups(db)
     if status != "all":
         items = [item for item in items if item["status"] == status]
     total = len(items)
@@ -731,19 +748,52 @@ def get_task_batch(batch_id: str, request: Request) -> list[dict[str, Any]]:
     return [task_out(db, doc) for doc in docs if not doc.get("candidate_deleted_at")]
 
 
+def _workspace_filter(workspace_id: str) -> dict[str, Any]:
+    return {"$or": [
+        {"input.generation_workspace_id": workspace_id},
+        {"input.candidate_batch_id": workspace_id, "input.generation_workspace_id": None},
+        {"_id": workspace_id, "input.generation_workspace_id": None, "input.candidate_batch_id": None},
+    ]}
+
+
 @router.get("/workspaces/{workspace_id}/tasks")
 def get_workspace_tasks(workspace_id: str, request: Request) -> list[dict[str, Any]]:
     db = request_db(request)
-    docs = list(db.whole_tasks.find({"$or": [
-        {"input.generation_workspace_id": workspace_id},
-        {"input.candidate_batch_id": workspace_id, "input.generation_workspace_id": None},
-        {"_id": workspace_id, "input.generation_workspace_id": None},
-    ]}).sort(
+    docs = list(db.whole_tasks.find(_workspace_filter(workspace_id)).sort(
         [("created_at", 1), ("input.candidate_index", 1), ("_id", 1)]
     ))
     if not docs:
         raise HTTPException(status_code=404, detail="生成工作区不存在")
     return [task_out(db, doc) for doc in docs if not doc.get("candidate_deleted_at")]
+
+
+def _workspace_start(db: Any, workspace_id: str) -> dict[str, Any]:
+    first = db.whole_tasks.find_one(
+        _workspace_filter(workspace_id),
+        {"created_at": 1, "workspace_initial_title": 1},
+        sort=[("created_at", 1), ("_id", 1)],
+    )
+    if first is None:
+        raise HTTPException(status_code=404, detail="生成工作区不存在")
+    return first
+
+
+@router.get("/workspaces/{workspace_id}/title")
+def get_workspace_title(workspace_id: str, request: Request) -> dict[str, Any]:
+    db = request_db(request)
+    first = _workspace_start(db, workspace_id)
+    saved = db.whole_workspace_titles.find_one({"workspace_id": workspace_id}, {"title": 1})
+    return {"title": saved["title"] if saved else first.get("workspace_initial_title"), "created_at": utc_iso(first.get("created_at"))}
+
+
+@router.put("/workspaces/{workspace_id}/title")
+def rename_workspace(workspace_id: str, payload: WholeImageWorkspaceTitle, request: Request) -> dict[str, Any]:
+    db = request_db(request)
+    first = _workspace_start(db, workspace_id)
+    db.whole_workspace_titles.update_one(
+        {"workspace_id": workspace_id}, {"$set": {"title": payload.title}}, upsert=True,
+    )
+    return {"title": payload.title, "created_at": utc_iso(first.get("created_at"))}
 
 
 @router.delete("/tasks/{task_id}/candidate", status_code=204)
