@@ -337,12 +337,12 @@ export default function AssetLibrary({
                     <button type="button" className="asset-thumb-preview asset-select-thumb"
                       aria-label={`选择 ${name}`} aria-pressed={selected} disabled={deleting}
                       onClick={() => toggleSelected(asset.id)}>
-                      <img src={asset.url} alt="" />
+                      <img src={asset.thumb_url || asset.url} alt="" loading="lazy" decoding="async" />
                       <span className={`asset-select${selected ? ' is-on' : ''}`} aria-hidden="true">{selected ? '✓' : ''}</span>
                     </button>
                   ) : (
                     <>
-                      <ZoomableImage className="asset-thumb-preview" src={asset.url} alt={name} title={name} />
+                      <ZoomableImage className="asset-thumb-preview" src={asset.url} previewSrc={asset.thumb_url || undefined} alt={name} title={name} />
                       <button
                         type="button"
                         className="asset-delete-fab"

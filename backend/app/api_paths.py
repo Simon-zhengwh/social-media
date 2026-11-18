@@ -14,6 +14,15 @@ def asset_url(merchant_id: str, asset_id: str, *, version: int | None = None) ->
     return f"{merchant_base(merchant_id)}/assets/{quote(str(asset_id), safe='')}/file{suffix}"
 
 
+def asset_thumb_url(merchant_id: str, asset_id: str, *, width: int = 480) -> str:
+    """Lightweight preview of one asset; list screens use it instead of the full file."""
+    if not merchant_id:
+        base = f"/api/assets/{quote(str(asset_id), safe='')}/thumb"
+    else:
+        base = f"{merchant_base(merchant_id)}/assets/{quote(str(asset_id), safe='')}/thumb"
+    return f"{base}?w={int(width)}"
+
+
 def brand_cover_url(merchant_id: str, brand_id: str) -> str:
     if not merchant_id:
         return f"/api/brands/{quote(str(brand_id), safe='')}/cover"

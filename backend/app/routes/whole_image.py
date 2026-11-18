@@ -12,7 +12,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app.api_paths import asset_url, whole_download_url, merchant_base
+from app.api_paths import asset_thumb_url, asset_url, whole_download_url, merchant_base
 from app.request_context import request_db, request_merchant_id, request_store, request_profile
 from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageWorkspaceTitle, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest)
@@ -107,6 +107,9 @@ def _candidate_summary(doc: dict[str, Any]) -> dict[str, Any]:
         "progress": int(doc.get("progress") or 0),
         "current_version": version,
         "preview_url": asset_url(merchant_id, str(output_id), version=version) if output_id else None,
+        # List screens draw a ~200 px card; the thumbnail keeps a 1080x1350 poster from
+        # downloading as a multi-megabyte PNG just to fill it.
+        "thumb_url": asset_thumb_url(merchant_id, str(output_id)) if output_id else None,
         "download_url": (
             whole_download_url(merchant_id, str(doc["_id"]), str(version_id))
             if output_id and version_id
@@ -205,6 +208,7 @@ def _task_group_summary(group_id: str, tasks: list[dict[str, Any]], first_candid
         "retryable_count": retryable_count,
         "representative_task_id": str(representative["_id"]),
         "preview_url": representative_candidate["preview_url"],
+        "thumb_url": representative_candidate.get("thumb_url"),
         "download_url": representative_candidate["download_url"],
         "error_message": error_message,
         "candidates": candidates,
@@ -294,6 +298,7 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
             "name": str(image.get("name") or "参考图片"),
             "role": str(image.get("role") or image.get("kind") or "reference"),
             "preview_url": asset_url(str(asset.get("merchant_id") or ""), asset_id) if asset else None,
+            "thumb_url": asset_thumb_url(str(asset.get("merchant_id") or ""), asset_id) if asset else None,
         }
         if image.get("kind"):
             item["kind"] = image.get("kind")
@@ -332,6 +337,8 @@ def _output_out(
         "height": int(output.get("height") or (asset or {}).get("height") or 0),
         "selectable": bool(output.get("selectable")),
         "preview_url": asset_url(merchant_id, asset_id, version=version_number) if asset_id and asset else None,
+        # Small WebP for candidate strips and output grids; downloads keep using preview_url.
+        "thumb_url": asset_thumb_url(merchant_id, asset_id) if asset_id and asset else None,
         "download_url": (
             whole_download_url(merchant_id, task_id, version_id, output_id)
             if asset_id and asset and version_id and output_id
@@ -457,6 +464,7 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
         "current_version_id": version_id,
         "current_version": version_number,
         "preview_url": selected_output.get("preview_url") if selected_output else None,
+        "thumb_url": selected_output.get("thumb_url") if selected_output else None,
         "download_url": selected_output.get("download_url") if selected_output else None,
         "messages": [
             {**message, "created_at": utc_iso(message.get("created_at"))}
@@ -498,6 +506,7 @@ def _version_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
         "height": int(doc.get("height") or (primary or {}).get("height") or 0),
         "output_asset_id": primary.get("asset_id") if primary else None,
         "preview_url": primary.get("preview_url") if primary else None,
+        "thumb_url": primary.get("thumb_url") if primary else None,
         "download_url": primary.get("download_url") if primary else None,
         "outputs": outputs,
         "model_input": _model_input_out(db, doc.get("model_input")),

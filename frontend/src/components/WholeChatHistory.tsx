@@ -30,7 +30,7 @@ function MessageItem({ message }: { message: WholeImageMessage }) {
             {message.attachments.map((attachment) => (
               <img
                 key={attachment.asset_id}
-                src={attachment.url}
+                src={attachment.thumb_url || attachment.url}
                 alt={attachment.name}
                 title={attachment.name}
                 loading="lazy"

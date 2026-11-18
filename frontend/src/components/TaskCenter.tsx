@@ -89,7 +89,12 @@ function TaskCard({
             onClick={open}
             aria-label={`打开海报任务 ${title}`}
           >
-            <img src={group.preview_url} alt={group.prompt || '生成的海报'} />
+            <img
+              src={group.thumb_url || group.preview_url}
+              alt={group.prompt || '生成的海报'}
+              loading="lazy"
+              decoding="async"
+            />
           </button>
         ) : (
           <button
@@ -234,7 +239,13 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, newDesignHre
         // Keep the current list while a polling refresh fails.
       }
     }
-    const interval = window.setInterval(() => void tick(), 2000)
+    const interval = window.setInterval(() => {
+      // A background tab keeps no reason to hold the line: the list refreshes on return.
+      if (document.hidden) {
+        return
+      }
+      void tick()
+    }, 4000)
     return () => {
       cancelled = true
       window.clearInterval(interval)

@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 import httpx
 
-from app.api_paths import asset_url
+from app.api_paths import asset_thumb_url, asset_url
 from app.services import asset_records, storage
 from app.services.am_client import AMClient, AMClientError, MEDIA_FORMAT_BY_MIME
 from app.services.object_store import ObjectStore
@@ -129,6 +129,9 @@ def _am_item(media: dict[str, Any], local: dict[str, Any] | None = None) -> dict
         "height": 0,
         "mime_type": _mime_type(media),
         "url": str(media.get("thumbnail_image_url") or media.get("url") or ""),
+        # Set below once the row resolves to one of our own assets: only then do we have the
+        # stored object the thumbnail endpoint can read.
+        "thumb_url": None,
         "created_at": media.get("updated_time"),
         "source": "am",
         # Deleting an AM media-library record is not an operation this app was granted.
@@ -138,6 +141,7 @@ def _am_item(media: dict[str, Any], local: dict[str, Any] | None = None) -> dict
     if local is not None:
         # Our own upload: keep the internal id so tasks referencing it still resolve, and prefer
         # the local preview that the poster renderer already knows how to read.
+        local_merchant_id = str(local.get("merchant_id") or "")
         item.update(
             {
                 "id": str(local["_id"]),
@@ -146,6 +150,9 @@ def _am_item(media: dict[str, Any], local: dict[str, Any] | None = None) -> dict
                 "height": int(local.get("height") or 0),
                 "mime_type": str(local.get("mime_type") or item["mime_type"]),
                 "source": "upload",
+                "thumb_url": asset_thumb_url(local_merchant_id, str(local["_id"]))
+                if local_merchant_id
+                else None,
             }
         )
     return item
@@ -202,6 +209,7 @@ def _local_item(merchant_id: str, document: dict[str, Any]) -> dict[str, Any]:
         "url": document.get("prepared_url")
         or document.get("url")
         or asset_url(merchant_id, str(document["_id"])),
+        "thumb_url": asset_thumb_url(merchant_id, str(document["_id"])),
         "created_at": document.get("created_at"),
         "source": "upload",
         "read_only": False,

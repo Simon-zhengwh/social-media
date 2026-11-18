@@ -34,7 +34,7 @@ export default function ModelCandidateGroup({ model, candidates, selectedTaskId,
                 aria-haspopup="dialog" aria-expanded={expandedTaskId === candidate.id}
                 aria-controls={expandedTaskId === candidate.id ? 'candidate-version-picker' : undefined}
                 aria-pressed={candidate.id === selectedTaskId} aria-label={`查看 ${label}`} title={label}>
-                {candidate.preview_url ? <img src={candidate.preview_url} alt="" /> : <span>{candidate.status === 'failed' ? '失败' : '生成中'}</span>}
+                {candidate.preview_url ? <img src={candidate.thumb_url || candidate.preview_url} alt="" loading="lazy" decoding="async" /> : <span>{candidate.status === 'failed' ? '失败' : '生成中'}</span>}
               </button>
               <button type="button" className="candidate-delete" aria-label={`删除 ${label}`}
                 disabled={running || deletingCandidateId !== null} title={running ? '生成或改图中不能删除' : '删除这张候选'}

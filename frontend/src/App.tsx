@@ -246,7 +246,13 @@ export default function App() {
       return
     }
     finishedIndexRef.current = runningIndexId
-    const timer = window.setInterval(() => { void refreshAssetIndex() }, 2000)
+    const timer = window.setInterval(() => {
+      // Polling an in-flight index from a hidden tab only burns the link.
+      if (document.hidden) {
+        return
+      }
+      void refreshAssetIndex()
+    }, 5000)
     return () => window.clearInterval(timer)
   }, [runningIndexId, refreshAssetIndex, loadAssets, assetQuery, assetTagQuery, assetSearch?.id])
 

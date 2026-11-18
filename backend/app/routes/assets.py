@@ -16,9 +16,11 @@ from app.services import (
     asset_deletion,
     asset_index_runner,
     asset_records,
+    asset_thumbs,
     poster_finalizations,
 )
 from app.services.am_client import AMClientError
+from app.services.object_store import ObjectStoreError
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 logger = logging.getLogger(__name__)
@@ -235,6 +237,33 @@ def get_asset_file(asset_id: str, request: Request) -> FileResponse:
         expires=settings.cos_presign_expiry_seconds,
     )
     return RedirectResponse(url, status_code=302)
+
+
+THUMB_CACHE_CONTROL = "public, max-age=604800, immutable"
+
+
+@router.get("/{asset_id}/thumb")
+def get_asset_thumb(
+    asset_id: str,
+    request: Request,
+    w: int = asset_thumbs.DEFAULT_WIDTH,
+) -> Response:
+    """Serve a small WebP preview so list screens stop downloading full-size posters."""
+    store = request_store(request)
+    asset = request_db(request).assets.find_one({"_id": asset_id})
+    if asset is None:
+        raise HTTPException(status_code=404, detail="素材不存在")
+    try:
+        data = asset_thumbs.thumb_bytes(request.app.state.settings, store, asset, w)
+    except asset_thumbs.ThumbError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except ObjectStoreError as exc:
+        raise HTTPException(status_code=502, detail="素材文件读取失败") from exc
+    return Response(
+        content=data,
+        media_type="image/webp",
+        headers={"Cache-Control": THUMB_CACHE_CONTROL},
+    )
 
 
 def _delete(request: Request, asset_ids: list[str], *, force: bool) -> dict[str, Any]:

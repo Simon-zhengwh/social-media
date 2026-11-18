@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from app.api_paths import asset_url
+from app.api_paths import asset_thumb_url, asset_url
 from app.services.scoped_db import ScopedCollection
 
 # The brand logo belongs to the merchant, not to one platform style: every style shares it.
@@ -78,6 +78,8 @@ def images(db: Any, merchant_id: str) -> list[dict[str, Any]]:
                 "asset_id": asset_id,
                 "original_name": asset.get("original_name") or "",
                 "url": asset.get("prepared_url") or asset.get("url") or asset_url(merchant_id, asset_id),
+                # Logos render at 16~56 px; without this the sidebar downloads a 512 px PNG.
+                "thumb_url": asset_thumb_url(merchant_id, asset_id),
                 "width": int(asset.get("width") or 0),
                 "height": int(asset.get("height") or 0),
             }

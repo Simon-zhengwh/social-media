@@ -56,6 +56,7 @@ export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo
                 <ZoomableImage
                   className="logo-selector-preview"
                   src={logo.url}
+                  previewSrc={logo.thumb_url || undefined}
                   alt={name}
                   title={name}
                 />

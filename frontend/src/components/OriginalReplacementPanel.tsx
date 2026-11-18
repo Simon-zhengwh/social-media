@@ -189,7 +189,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
           <div className="replacement-rows">
             {logo ? <div className="replacement-row original-replacement-row original-replacement-logo is-checked">
               <div className="original-replacement-choice">
-                <img src={logo.url} alt="Logo" />
+                <img src={logo.thumb_url || logo.url} alt="Logo" />
                 <span className="original-replacement-name">Logo</span>
               </div>
             </div> : null}
@@ -197,7 +197,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
               const asset = assets.find((candidate) => candidate.id === item.asset.id) ?? item.asset
               return <div key={item.id} className="replacement-row original-replacement-row is-checked">
                 <div className="original-replacement-choice">
-                  <img src={asset.url} alt="" />
+                  <img src={asset.thumb_url || asset.url} alt="" loading="lazy" decoding="async" />
                   <input id={`original-target-${item.id}`} aria-label={`替换位置：${assetDisplayName(asset.original_name)}`} className="replacement-target" value={item.target} maxLength={1000} disabled={Boolean(operation)} placeholder="留空自动识别，如：右下角牛肉、背景" onChange={(event) => updateRow(item.id, { target: event.target.value })} />
                   <button type="button" className="mp-btn-ghost mp-btn-small original-replacement-remove" aria-label={`移除原照：${assetDisplayName(asset.original_name)}`} disabled={Boolean(operation)} onClick={() => setRows((previous) => previous.filter((candidate) => candidate.id !== item.id))}>移除</button>
                 </div>

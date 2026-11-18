@@ -158,6 +158,8 @@ export function ImageLightboxProvider({ children }: { children: ReactNode }) {
 
 type ZoomableImageProps = {
   src: string
+  /** Grid-sized version of `src`; the lightbox always opens the full image. */
+  previewSrc?: string
   alt: string
   title?: string
   className?: string
@@ -166,6 +168,7 @@ type ZoomableImageProps = {
 
 export function ZoomableImage({
   src,
+  previewSrc,
   alt,
   title,
   className = '',
@@ -187,7 +190,7 @@ export function ZoomableImage({
       aria-label={`放大查看：${title || alt}`}
       title="点击查看大图"
     >
-      <img className={imageClassName || undefined} src={src} alt={alt} />
+      <img className={imageClassName || undefined} src={previewSrc || src} alt={alt} loading="lazy" decoding="async" />
       <span className="zoomable-image-indicator" aria-hidden="true">
         <MagnifierIcon />
       </span>

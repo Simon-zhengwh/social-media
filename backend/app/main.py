@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -248,6 +249,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Social Media Design Agent", version="0.4.0", lifespan=lifespan)
 app.middleware("http")(merchant_context_middleware)
+
+# uvicorn's access log has no duration column, so a slow page could not be told apart from a
+# slow query on UAT. Anything above this threshold gets its own line.
+SLOW_REQUEST_MS = 1000
+
+
+@app.middleware("http")
+async def request_timing_middleware(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    if elapsed_ms >= SLOW_REQUEST_MS:
+        logger.warning(
+            "slow request %s %s -> %s %.0fms",
+            request.method,
+            request.url.path,
+            response.status_code,
+            elapsed_ms,
+        )
+    response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.0f}"
+    return response
 
 app.include_router(merchant_context.merchant_list_router)
 
