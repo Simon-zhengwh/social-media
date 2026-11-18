@@ -157,3 +157,36 @@ def test_registration_aligns_only_stable_regions(tmp_path):
     r=register_background(tmp_path/'poster.png',tmp_path/'generated.png',tmp_path/'exclude.png',tmp_path/'registered')
     assert r['repair_coverage_complete'] and r['inliers']>=20
     assert Image.open(tmp_path/'registered/aligned-background.png').size==(480,400)
+
+
+def test_dish_tone_changes_pixels_but_keeps_export_alpha(case):
+    playwright_api = pytest.importorskip('playwright.sync_api')
+
+    manifest, base = case
+    output = base / 'tone-dish'
+    dishes.build_dish_editor(manifest, output, base)
+    with playwright_api.sync_playwright() as playwright:
+        chrome = Path('C:/Program Files/Google/Chrome/Application/chrome.exe')
+        browser = playwright.chromium.launch(headless=True, executable_path=str(chrome) if chrome.exists() else None)
+        page = browser.new_page(accept_downloads=True)
+        page.goto((output / 'editor.html').as_uri() + '?selftest=1')
+        page.wait_for_selector('#stage[aria-busy=false]')
+        assert page.locator('#photo-tone').is_visible()
+
+        def exported_dish():
+            with page.expect_download() as download:
+                page.locator('#download-element').click()
+            with Image.open(download.value.path()) as png:
+                return png.convert('RGBA')
+
+        original = exported_dish()
+        page.locator('#brightness').fill('20')
+        changed = exported_dish()
+        assert changed.getpixel((20,20))[0] > original.getpixel((20,20))[0]
+        assert changed.getchannel('A').tobytes() == original.getchannel('A').tobytes()
+        page.select_option('#dish-background', 'original')
+        assert page.locator('#brightness').input_value() == '20'
+        page.select_option('#dish-background', 'cutout')
+        page.get_by_role('button', name='恢复原色').click()
+        assert exported_dish().tobytes() == original.tobytes()
+        browser.close()
