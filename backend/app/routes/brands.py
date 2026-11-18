@@ -35,14 +35,46 @@ def _brand_document(db: Any, brand_id: str) -> dict[str, Any]:
     return document
 
 
-def _reference_images(db: Any, merchant_id: str, brand: brand_style.BrandStyle) -> list[dict[str, Any]]:
+def _live_asset_ids(db: Any, asset_ids: Any) -> list[str]:
+    """Keep the ids that still have an asset document, in the caller's order."""
+    wanted = list(dict.fromkeys(str(item) for item in (asset_ids or []) if str(item).strip()))
+    if not wanted:
+        return []
+    existing = {
+        document["_id"]
+        for document in db.assets.find({"_id": {"$in": wanted}}, {"_id": 1})
+    }
+    return [asset_id for asset_id in wanted if asset_id in existing]
+
+
+def _reference_state(db: Any, document: dict[str, Any]) -> tuple[list[str], str | None]:
+    """The live references of a style and the cover that still points at one of them.
+
+    Assets disappear after the fact (a forced delete in the library, an AM resync, a stale
+    merchant id), and a dangling id must neither count against the limit nor stand in as the
+    cover. Without this the page shows one image while the guard believes the style has five,
+    so the second upload is rejected and generation is blocked by an id nobody can see.
+    """
+    reference_ids = _live_asset_ids(db, document.get("reference_asset_ids"))[
+        : brand_style.MAX_BRAND_REFERENCES
+    ]
+    cover_asset_id = str(document.get("cover_asset_id") or "")
+    if cover_asset_id not in reference_ids:
+        cover_asset_id = reference_ids[0] if reference_ids else ""
+    return reference_ids, cover_asset_id or None
+
+
+def _reference_images(
+    db: Any,
+    merchant_id: str,
+    reference_ids: list[str],
+    cover_asset_id: str | None,
+) -> list[dict[str, Any]]:
     """Every reference of a style, in the order the operator arranged them.
 
     The list endpoint and the detail endpoint share this shape, because the style picker shows
     all references and the detail page manages them.
     """
-    reference_ids = list(brand.reference_asset_ids)[: brand_style.MAX_BRAND_REFERENCES]
-    cover_asset_id = brand.cover_asset_id or (reference_ids[0] if reference_ids else None)
     images: list[dict[str, Any]] = []
     for asset_id in reference_ids:
         asset = db.assets.find_one({"_id": asset_id})
@@ -62,9 +94,8 @@ def _reference_images(db: Any, merchant_id: str, brand: brand_style.BrandStyle) 
 def _brand_detail(request: Request, db: Any, document: dict[str, Any]) -> dict[str, Any]:
     merchant_id = str(document.get("merchant_id") or request_merchant_id(request))
     brand = brand_style.brand_from_document(document)
-    reference_ids = list(brand.reference_asset_ids)
-    cover_asset_id = brand.cover_asset_id or (reference_ids[0] if reference_ids else None)
-    references = _reference_images(db, merchant_id, brand)
+    reference_ids, cover_asset_id = _reference_state(db, document)
+    references = _reference_images(db, merchant_id, reference_ids, cover_asset_id)
     logo_images = merchant_logos.images(db, merchant_id)
     return {
         "id": brand.id,
@@ -131,17 +162,22 @@ def list_brands(request: Request) -> list[dict[str, Any]]:
     logo_images = merchant_logos.images(db, merchant_id)
     items: list[dict[str, Any]] = []
     for brand in brand_style.list_brands(db):
+        reference_ids, cover_asset_id = _reference_state(
+            db,
+            {
+                "reference_asset_ids": list(brand.reference_asset_ids),
+                "cover_asset_id": brand.cover_asset_id,
+            },
+        )
         item = brand.public_dict(
-            cover_url=(
-                brand_cover_url(merchant_id, brand.id)
-                if brand.cover_asset_id or brand.reference_asset_ids
-                else None
-            )
+            cover_url=brand_cover_url(merchant_id, brand.id) if cover_asset_id else None
         )
         item["logo_images"] = [dict(image) for image in logo_images]
         item["logo_asset_ids"] = [image["asset_id"] for image in logo_images]
         # The style picker previews every reference, not just the cover, so the list carries them.
-        item["reference_images"] = _reference_images(db, merchant_id, brand)
+        item["reference_images"] = _reference_images(
+            db, merchant_id, reference_ids, cover_asset_id
+        )
         items.append(item)
     return items
 
@@ -211,7 +247,7 @@ def update_brand(
 ) -> dict[str, Any]:
     db = request_db(request)
     document = _brand_document(db, brand_id)
-    reference_ids = list(document.get("reference_asset_ids") or [])[:brand_style.MAX_BRAND_REFERENCES]
+    reference_ids, _ = _reference_state(db, document)
     if payload.cover_asset_id and payload.cover_asset_id not in reference_ids:
         raise HTTPException(status_code=422, detail="封面必须来自当前品牌的参考图")
     requested_platform = (
@@ -277,6 +313,8 @@ def update_brand(
                 "background_guide": background_guide,
                 "logo_keywords": payload.logo_keywords,
                 "is_default": payload.is_default,
+                # Saving also drops references whose asset is gone, so the limit counts reality.
+                "reference_asset_ids": reference_ids,
                 "cover_asset_id": cover_asset_id,
                 "updated_at": datetime.now(timezone.utc),
             },
@@ -372,14 +410,14 @@ def upload_reference(
     settings = request.app.state.settings
     store = request_store(request)
     document = _brand_document(db, brand_id)
-    reference_ids = list(document.get("reference_asset_ids") or [])[:brand_style.MAX_BRAND_REFERENCES]
+    reference_ids, cover_asset_id = _reference_state(db, document)
     if len(reference_ids) >= brand_style.MAX_BRAND_REFERENCES:
         raise HTTPException(status_code=422, detail=f"品牌参考图最多 {brand_style.MAX_BRAND_REFERENCES} 张")
     asset = _persist_uploaded_asset(db, settings, store, file)
     asset_id = str(asset["_id"])
     if asset_id not in reference_ids:
         reference_ids.append(asset_id)
-    cover_asset_id = document.get("cover_asset_id") or reference_ids[0]
+    cover_asset_id = cover_asset_id or reference_ids[0]
     db.brands.update_one(
         {"_id": brand_id},
         {
@@ -397,11 +435,10 @@ def upload_reference(
 def delete_reference(brand_id: str, asset_id: str, request: Request) -> dict[str, Any]:
     db = request_db(request)
     document = _brand_document(db, brand_id)
-    reference_ids = list(document.get("reference_asset_ids") or [])
+    reference_ids, cover_asset_id = _reference_state(db, document)
     if asset_id not in reference_ids:
         raise HTTPException(status_code=404, detail="参考图不存在")
     remaining = [item for item in reference_ids if item != asset_id]
-    cover_asset_id = document.get("cover_asset_id")
     if cover_asset_id == asset_id:
         cover_asset_id = remaining[0] if remaining else None
     db.brands.update_one(
@@ -426,9 +463,13 @@ def brand_cover(brand_id: str, request: Request) -> Response:
     except brand_style.BrandError as exc:
         raise HTTPException(status_code=404, detail=exc.message) from exc
 
-    asset_id = brand.cover_asset_id
-    if not asset_id and brand.reference_asset_ids:
-        asset_id = brand.reference_asset_ids[0]
+    _, asset_id = _reference_state(
+        db,
+        {
+            "reference_asset_ids": list(brand.reference_asset_ids),
+            "cover_asset_id": brand.cover_asset_id,
+        },
+    )
     if not asset_id:
         raise HTTPException(status_code=404, detail="品牌封面不存在")
 

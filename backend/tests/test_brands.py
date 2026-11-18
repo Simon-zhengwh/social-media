@@ -472,6 +472,56 @@ def test_upload_and_delete_brand_reference(tmp_path, settings, store):
     assert db.assets.find_one({"_id": new_asset_id}) is not None
 
 
+def test_dangling_reference_ids_do_not_block_upload_or_cover(tmp_path, settings, store):
+    """A deleted asset must stop counting: the page and the 5-image guard have to agree."""
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    kept_id = brand_routes.get_brand("custom", request)["reference_images"][0]["asset_id"]
+
+    # Five references whose assets were all removed later, plus one live reference.
+    gone_ids = [f"asset_gone{index}" for index in range(5)]
+    db.brands.update_one(
+        {"_id": "custom"},
+        {"$set": {"reference_asset_ids": gone_ids + [kept_id], "cover_asset_id": gone_ids[0]}},
+    )
+
+    detail = brand_routes.get_brand("custom", request)
+    assert [item["asset_id"] for item in detail["reference_images"]] == [kept_id]
+    assert detail["reference_images"][0]["is_cover"] is True
+    assert detail["cover_asset_id"] == kept_id
+
+    uploaded = brand_routes.upload_reference("custom", request, _upload_png())
+    assert len(uploaded["reference_images"]) == 2
+    stored = db.brands.find_one({"_id": "custom"})
+    assert stored["reference_asset_ids"][0] == kept_id
+    assert len(stored["reference_asset_ids"]) == 2
+    assert stored["cover_asset_id"] == kept_id
+
+
+def test_snapshot_skips_a_reference_asset_that_was_deleted(tmp_path, settings, store, product_png):
+    db = mongomock.MongoClient().db
+    _write_skill(tmp_path, "custom", "custom", is_default=True)
+    _import(db, settings, store, tmp_path)
+    request = _brand_request(db, settings, store)
+    detail = brand_routes.get_brand("custom", request)
+    kept_id = detail["reference_images"][0]["asset_id"]
+    db.brands.update_one(
+        {"_id": "custom"},
+        {"$set": {"reference_asset_ids": ["asset_gone", kept_id]}},
+    )
+
+    snapshot = brand_style.snapshot_brand(
+        brand_style.get_brand(db, "custom"),
+        db,
+        store,
+        settings,
+    )
+
+    assert [item["asset_id"] for item in snapshot["references"]] == [kept_id]
+
+
 def test_upload_and_delete_brand_logos(tmp_path, settings, store):
     db = mongomock.MongoClient().db
     _write_skill(tmp_path, "custom", "custom", is_default=True)

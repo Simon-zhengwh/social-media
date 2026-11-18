@@ -30,6 +30,25 @@ class AssetDeleteError(Exception):
         self.status_code = status_code
 
 
+def _forget_brand_references(db: Any, asset_id: str) -> None:
+    """Drop a deleted asset from the brand configs that still list it.
+
+    A forced delete is allowed to invalidate a reference, but leaving the id behind makes the
+    style count an image nobody can see: the limit then rejects new uploads and generation is
+    blocked by a reference that no longer exists.
+    """
+    brands = list(db.brands.find({"$or": [{"reference_asset_ids": asset_id}, {"cover_asset_id": asset_id}]}))
+    for brand in brands:
+        remaining = [item for item in brand.get("reference_asset_ids") or [] if item != asset_id]
+        cover_asset_id = brand.get("cover_asset_id")
+        if cover_asset_id == asset_id:
+            cover_asset_id = remaining[0] if remaining else None
+        db.brands.update_one(
+            {"_id": brand["_id"]},
+            {"$set": {"reference_asset_ids": remaining, "cover_asset_id": cover_asset_id}},
+        )
+
+
 def delete_assets(
     db: Any,
     store: ObjectStore,
@@ -81,6 +100,7 @@ def delete_assets(
             if key:
                 store.delete(key)
         db.assets.delete_one({"_id": asset_id})
+        _forget_brand_references(db, asset_id)
 
     # A deleted asset must leave the search index too, otherwise a stale card answers
     # later searches and a queued description would recreate the record.

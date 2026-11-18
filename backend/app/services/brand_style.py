@@ -533,11 +533,16 @@ def snapshot_brand(
         for asset_id in brand.reference_asset_ids[:MAX_BRAND_REFERENCES]:
             asset = db.assets.find_one({"_id": asset_id})
             if asset is None:
-                raise BrandError(
-                    "brand_reference_missing",
-                    f"品牌参考图不存在：{asset_id}",
-                )
+                # One deleted asset must not block a generation the operator can see no reason
+                # for; the remaining references still describe the look.
+                logger.warning("brand reference asset missing, skipped: %s", asset_id)
+                continue
             references.append(_reference_entry(asset))
+        if not references:
+            raise BrandError(
+                "brand_reference_missing",
+                "品牌参考图已被删除，请重新上传参考图后再生成",
+            )
     elif brand.reference_paths:
         # Compatibility path for old code/tests that construct BrandStyle from files.
         for path in brand.reference_paths[:MAX_BRAND_REFERENCES]:

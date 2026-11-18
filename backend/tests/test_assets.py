@@ -330,3 +330,35 @@ def test_delete_asset_is_blocked_when_brand_logo_uses_it(settings, store, logo_p
         delete_asset(prepared.id, request)
 
     assert exc.value.status_code == 409
+
+
+def test_force_delete_moves_brand_references_off_the_removed_asset(settings, store, product_png):
+    """A forced delete must not leave an id behind that keeps counting as a reference."""
+    removed = storage.prepare_upload(settings, store, product_png, "removed.png")
+    kept = storage.prepare_upload(settings, store, product_png, "kept.png")
+    db = mongomock.MongoClient().db
+    for prepared in (removed, kept):
+        db.assets.insert_one(
+            {
+                "_id": prepared.id,
+                "source": "upload",
+                "path": prepared.path,
+                "prepared_path": prepared.prepared_path,
+            }
+        )
+    db.brands.insert_one(
+        {
+            "_id": "brand",
+            "reference_asset_ids": [removed.id, kept.id],
+            "cover_asset_id": removed.id,
+        }
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(db=db, store=store))
+    )
+
+    assert delete_asset(removed.id, request, force=True).status_code == 204
+
+    stored = db.brands.find_one({"_id": "brand"})
+    assert stored["reference_asset_ids"] == [kept.id]
+    assert stored["cover_asset_id"] == kept.id
