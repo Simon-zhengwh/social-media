@@ -14,13 +14,18 @@ from app.services import original_replacement_runner, storage, whole_image
 from app.services.core_ai import AgentArtifact
 from tests.conftest import png_bytes
 from tests.test_original_replacement_runner import FakeAgent
-from tests.test_whole_image import FakeCoreAI, _generate, _request
+from tests.test_whole_image import FakeCoreAI, _request
 
 
 @pytest.fixture
-def env(settings, store):
+def env(settings, store, request):
     db = mongomock.MongoClient().db
-    task_id, task = _generate(db, settings, store, FakeCoreAI())
+    generator = FakeCoreAI()
+    created = routes.create_task(schemas.WholeImageTaskCreate(prompt="夏日冰美式海报", ratio=getattr(request, "param", "1:1")),
+                                 _request(db, settings, store, generator), BackgroundTasks())
+    task_id = created["id"]
+    whole_image.run_generation(db, settings, store, generator, task_id)
+    task = db.whole_tasks.find_one({"_id": task_id})
     for asset_id in ("beef", "environment", "logo"):
         image = storage.prepare_upload(settings, store, png_bytes(), asset_id + ".png")
         db.assets.insert_one({"_id": asset_id, "original_name": asset_id + ".png",
@@ -102,6 +107,42 @@ def test_model_replacement_runs_three_independent_candidates_with_shared_input(e
         assert "右下角牛肉" in call["prompt"]
         assert "食物本身" in call["prompt"] and "透视" in call["prompt"] and "等比" in call["prompt"]
     assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_model_replacement_skips_candidates_that_cannot_keep_the_source_ratio(env):
+    task, background = model_batch(env)
+    edit = env.client.edit_image
+
+    def edit_image(prompt, refs, *, size, model):
+        edit(prompt, refs, size=size, model=model)
+        return png_bytes(1088, 1360)
+
+    env.client.edit_image = edit_image
+    assert (task["source"]["width"], task["source"]["height"]) == (1080, 1350)
+    run_background(background)
+    assert [call["model"] for call in env.client.edit_calls] == ["minimax-h3-image-edit"]
+    assert [(candidate["status"], candidate["error"]) for candidate in task["candidates"]] == [
+        ("unsupported", "不支持此格式"), ("unsupported", "不支持此格式"), ("queued", None),
+    ]
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert restored["status"] == "succeeded"
+    assert [candidate["status"] for candidate in restored["candidates"]] == ["unsupported", "unsupported", "succeeded"]
+    assert restored["candidates"][2]["output"]["height"] == 1350
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_historical_candidate_with_an_unsupported_ratio_cannot_be_retried(env):
+    task, _ = model_batch(env)
+    env.db.background_replace_tasks.update_one({"_id": task["id"]},
+        {"$set": {"status": "failed", "candidates.0.status": "failed", "candidates.0.error": "模型返回的画布比例与底稿不符"}})
+    retry = BackgroundTasks()
+    with pytest.raises(HTTPException) as unsupported:
+        routes.retry_original_replacement_candidate(env.task_id, task["id"], "seedream-5-pro-image-to-image",
+                                                    env.request, retry)
+    assert unsupported.value.status_code == 422
+    assert unsupported.value.detail == "不支持此格式"
+    assert not retry.tasks
 
 
 def test_model_feedback_uses_original_source_and_applies_chosen_candidate(env):

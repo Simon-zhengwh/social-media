@@ -258,10 +258,13 @@ def run(vite_url, output_dir):
             check('floating close button remains clickable and the panel reopens')
             records[:] = [dict(id='model-batch', kind='model', status='running', stage='model_running', source_version=1,
                                source=dict(preview_url=output['preview_url']), replacements=[], created_at=now, updated_at=now,
-                               candidates=[dict(model='seedream-5-pro-image-to-image', status='running'),
+                               candidates=[dict(model='seedream-5-pro-image-to-image', status='unsupported', error='不支持此格式'),
                                            dict(model=retry_model, status='failed', error='Image fetch failed'),
                                            dict(model='minimax-h3-image-edit', status='succeeded', output=output)])]
             page.reload()
+            expect(panel.get_by_text('不支持此格式', exact=True)).to_be_visible()
+            expect(panel.get_by_role('button', name='重试 Seedream 5 Pro', exact=True)).to_have_count(0)
+            check('an unsupported candidate explains the format limit and has no retry button')
             retry = panel.get_by_role('button', name='重试 Seedream 5.5', exact=True)
             expect(retry).to_be_enabled()
             expect(panel.locator('.replacement-status')).to_have_count(0)

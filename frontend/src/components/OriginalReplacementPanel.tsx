@@ -237,7 +237,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
                             }
                             await onRefreshTask()
                           })}>{versionId ? `切换到 v${candidate.applied_version}` : '应用'}</button>}
-                  </> : candidate.status === 'failed' ? <>
+                  </> : candidate.status === 'unsupported' ? <span>{candidate.error}</span> : candidate.status === 'failed' ? <>
                     <span>替换失败</span>
                     <button type="button" className="mp-btn-secondary mp-btn-small" aria-label={`重试 ${label}`}
                       disabled={Boolean(operation)} onClick={() => void perform('retry', async () => {

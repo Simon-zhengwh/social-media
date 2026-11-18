@@ -7,6 +7,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from math import gcd
 from typing import Any
 
 import httpx
@@ -23,6 +24,15 @@ from app.time_utils import utc_iso
 
 logger = logging.getLogger(__name__)
 ACTIVE = ["queued", "running"]
+_UNSUPPORTED_FORMAT_MESSAGE = "不支持此格式"
+
+# The current Core AI KIE routes select from explicit aspect ratios.
+_SEEDREAM_RATIOS = {(1, 1), (4, 3), (3, 4), (16, 9), (9, 16), (2, 3), (3, 2), (21, 9)}
+_MODEL_REPLACEMENT_RATIOS = {
+    "seedream-5-pro-image-to-image": _SEEDREAM_RATIOS,
+    "seedream-5.5-image-to-image": _SEEDREAM_RATIOS,
+    "minimax-h3-image-edit": _SEEDREAM_RATIOS | {(5, 4), (4, 5)},
+}
 
 
 class OriginalReplacementError(CoreAIError):
@@ -48,6 +58,15 @@ def _asset(db: Any, asset_id: str) -> dict[str, Any]:
             "width": int(asset.get("width") or 0), "height": int(asset.get("height") or 0)}
 
 
+def model_candidate(model: str, source: dict[str, Any]) -> dict[str, Any]:
+    width, height = source["width"], source["height"]
+    divisor = gcd(width, height)
+    ratios = _MODEL_REPLACEMENT_RATIOS.get(model)
+    if ratios is not None and (width // divisor, height // divisor) not in ratios:
+        return {"model": model, "status": "unsupported", "error": _UNSUPPORTED_FORMAT_MESSAGE}
+    return {"model": model, "status": "queued"}
+
+
 def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacements: list[dict[str, str]],
                 split_all_elements: bool = False, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     from pydantic import ValidationError
@@ -67,6 +86,12 @@ def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacemen
            "output": None, "agent_id": None, "run_id": None, "agent_input": None, "agent_output": None,
            "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now,
            **(metadata or {})}
+    if doc.get("kind") == "model":
+        doc["candidates"] = [model_candidate(model, source) for model in _MODEL_REPLACEMENT_RATIOS]
+        if all(candidate["status"] == "unsupported" for candidate in doc["candidates"]):
+            doc.update(status="failed", stage="failed", error={
+                "code": "unsupported_format", "message": _UNSUPPORTED_FORMAT_MESSAGE,
+            })
     # Keep the existing collection so linked replacement history survives retirement.
     db.background_replace_tasks.insert_one(doc)
     return db.background_replace_tasks.find_one({"_id": doc["_id"]})

@@ -14,9 +14,6 @@ from app.services.image_ref import cleanup_image_refs, image_ref_from_asset
 from app.services.object_store import ObjectStore
 from app.services.whole_image import StudioError
 
-REPLACEMENT_MODELS = ("seedream-5-pro-image-to-image", "seedream-5.5-image-to-image", "minimax-h3-image-edit")
-
-
 def _task(db: Any, task_id: str) -> dict[str, Any]:
     task = db.whole_tasks.find_one({"_id": task_id})
     if task is None:
@@ -40,8 +37,7 @@ def create(db: Any, task_id: str, *, source_version_id: str, source_output_id: s
     association = {"whole_task_id": task_id, "source_version_id": source_version_id,
                    "source_output_id": source_output_id, "source_version": version["version"]}
     if kind == "model":
-        association.update(kind=kind, retry_of=retry_of, feedback=feedback, candidates=[
-            {"model": model, "status": "queued"} for model in REPLACEMENT_MODELS])
+        association.update(kind=kind, retry_of=retry_of, feedback=feedback)
     return original_replacement_runner.create_task(
         db, source_asset_id=output["asset_id"], whole_task_id=task_id, replacements=replacements,
         split_all_elements=kind == "agent" and split_all_elements, metadata=association)
@@ -62,6 +58,9 @@ def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, mode
     index = next((i for i, item in enumerate(candidates) if item["model"] == model), None)
     if batch.get("kind") != "model" or index is None:
         raise StudioError("candidate_missing", "找不到这张模型候选", 404)
+    candidate = original_replacement_runner.model_candidate(model, batch["source"])
+    if candidate["status"] == "unsupported":
+        raise StudioError("unsupported_format", candidate["error"], 422)
     field = f"candidates.{index}"
     current = candidates[index]["status"]
     terminal_failure = batch["status"] in {"failed", "interrupted"}
@@ -79,7 +78,7 @@ def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, mode
             if i != index and item["status"] in original_replacement_runner.ACTIVE:
                 values[f"candidates.{i}.status"] = "failed"
                 values[f"candidates.{i}.error"] = error
-    values[field] = {"model": model, "status": "queued"}
+    values[field] = candidate
     claimed = db.background_replace_tasks.find_one_and_update(query, {"$set": values}, return_document=ReturnDocument.AFTER)
     if claimed is None:
         raise StudioError("candidate_changed", "候选状态已变化，请稍后重试", 409)
