@@ -162,7 +162,7 @@ export default function WholeChatPanel({
               {downloadHref ? (
                 <a className="mp-btn-secondary mp-btn-small chat-download" href={downloadHref} download title="下载当前海报 PNG">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m0 0 3.5-3.5M10 12 6.5 8.5M4 15.5h12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                  下载 PNG
+                  下载
                 </a>
               ) : null}
               {finalizationActions}

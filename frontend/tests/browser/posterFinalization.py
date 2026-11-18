@@ -67,7 +67,7 @@ def run(vite_url, out_dir):
                 page.locator('.studio-preview').wait_for()
                 finalize = page.get_by_role('button', name='定稿', exact=True)
                 finalize.wait_for(timeout=8000)
-                download = page.get_by_role('link', name='下载 PNG', exact=True)
+                download = page.get_by_role('link', name='下载', exact=True)
                 button_style = '''element => {
                     const style = getComputedStyle(element);
                     return [style.border, style.borderRadius, style.backgroundColor, style.color,
