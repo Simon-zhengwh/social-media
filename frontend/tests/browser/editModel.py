@@ -11,12 +11,13 @@ from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, expect
 
-from posterSession import Fixture
+from posterSession import Fixture, SVG
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:5173"
 GPT = "gpt-image-2.5-sunburst"
 SEEDREAM = "seedream-5.5-image-to-image"
 MINIMAX = "minimax-h3-image-edit"
+ASSET_NAMES = ["first", "second", "third", "fourth", *[f"reference-{index}" for index in range(5, 17)]]
 
 
 def output(task_id, model, version=1):
@@ -45,6 +46,7 @@ class EditFixture(Fixture):
     def __init__(self):
         super().__init__()
         self.tasks = {key: task(key, model) for key, model in [("wtask_test_a", GPT), ("wtask_test_b", SEEDREAM)]}
+        self.tasks["wtask_test_a"]["input"]["reference_asset_ids"] = ["original"]
         self.versions = {key: [self.version(current, "generate", "测试海报")] for key, current in self.tasks.items()}
         self.edits = []
 
@@ -60,6 +62,19 @@ class EditFixture(Fixture):
     async def route(self, route):
         request = route.request
         path = re.sub(r"^/api/merchants/[^/]+", "/api", urlparse(request.url).path)
+        if path == "/api/assets" and request.method == "POST":
+            return await route.fulfill(status=201, json={
+                "id": "uploaded", "original_name": "uploaded.svg", "url": "/fixture/uploaded",
+                "mime_type": "image/svg+xml", "width": 100, "height": 100,
+                "created_at": "2026-11-13T00:00:00Z",
+            })
+        if path in ("/api/assets", "/api/am-assets") and request.method == "GET":
+            items = [{
+                "id": name, "original_name": f"{name}.svg", "url": f"/fixture/{name}",
+                "mime_type": "image/svg+xml", "width": 100, "height": 100,
+                "created_at": "2026-11-13T00:00:00Z",
+            } for name in ASSET_NAMES]
+            return await route.fulfill(json={"items": items, "total": len(items), "skip": 0, "limit": 36})
         match = re.fullmatch(r"/api/whole-image/tasks/([^/]+)/(edits|versions)", path)
         if not match:
             return await super().route(route)
@@ -76,7 +91,7 @@ class EditFixture(Fixture):
         current["messages"].append({
             "id": f'request-{len(self.edits)}', "role": "user", "content": data["instruction"],
             "image_model": data["image_model"], "created_at": current["updated_at"],
-            "attachments": [{"asset_id": "reference", "name": "参考图片", "url": "/fixture/poster"}],
+            "attachments": [{"asset_id": ref, "name": ref, "url": f"/fixture/{ref}"} for ref in data["reference_asset_ids"]],
         })
         await route.fulfill(status=202, json=current)
 
@@ -115,10 +130,39 @@ async def main():
             models = page.get_by_role("combobox", name="改图模型", exact=True)
             await expect(models).to_be_enabled()
             await expect(models).to_have_value(GPT)
+            chat = page.get_by_role("region", name="对话改图", exact=True)
+            editor = chat.get_by_role("textbox", name="修改要求", exact=True)
+            tiles = chat.locator(".image-reference-tile:visible")
+            add = chat.get_by_role("button", name="添加参考图", exact=True)
+            mentions = page.get_by_role("listbox", name="选择引用图片")
+            await expect(page.locator(".form-card .image-reference-tile")).to_have_count(1)
+            await expect(tiles).to_have_count(0)
+            await expect(add).to_contain_text("0/15")
+            await editor.press_sequentially("@")
+            await expect(mentions.get_by_role("option")).to_have_count(1)
+            await expect(mentions.get_by_role("option", name="海报 当前海报")).to_be_visible()
+            await editor.press("Escape")
+            await add.click()
+            await chat.get_by_role("button", name="从资产库选择").click()
+            picker = page.get_by_role("dialog", name="选择改图参考图")
+            await picker.get_by_text("first", exact=True).click()
+            await picker.get_by_role("button", name="确定").click()
+            await add.click()
+            await chat.get_by_label("上传参考图").set_input_files({
+                "name": "uploaded.svg", "mimeType": "image/svg+xml", "buffer": SVG.encode(),
+            })
+            await expect(tiles).to_have_count(2)
+            await expect(add).to_contain_text("2/15")
+
             assert await models.locator("option").all_text_contents() == ["GPT Image 2.5", "Seedream 5 Pro", "Seedream 5.5", "MiniMax H3"]
             await models.select_option(SEEDREAM)
             await expect(page.get_by_role("button", name="切换到 GPT Image 2.5", exact=True)).to_have_attribute("aria-pressed", "true")
-            await page.get_by_role("textbox", name="修改要求", exact=True).fill("只改标题")
+            await editor.fill("只改标题，参考")
+            await editor.press("End")
+            await editor.press_sequentially("@")
+            await mentions.get_by_role("option", name="图1 first").click()
+            await editor.press_sequentially("和 @")
+            await mentions.get_by_role("option", name="图2 uploaded").click()
             await page.get_by_role("button", name="发送修改", exact=True).click()
             await expect(models).to_be_disabled()
             await expect(page.get_by_role("button", name="发送修改", exact=True)).to_be_disabled()
@@ -127,6 +171,8 @@ async def main():
             assert fixture.edits[-1]["source_version_id"] == "wtask_test_a-v1"
             assert fixture.edits[-1]["source_output_id"] == "gateway_result"
             assert fixture.edits[-1]["reference_mode"] == "unified"
+            assert fixture.edits[-1]["reference_asset_ids"] == ["first", "uploaded"]
+            assert fixture.edits[-1]["instruction"] == "只改标题，参考@图1 和 @图2"
             assert fixture.tasks["wtask_test_a"]["input"]["image_model"] == GPT
             history = page.locator(".chat-history-panel")
             if not await history.is_visible():
@@ -135,12 +181,13 @@ async def main():
             first_model = first_request.get_by_text("Seedream 5.5", exact=True)
             await expect(first_model).to_be_visible()
             label = await first_model.bounding_box()
-            thumbnail = await first_request.get_by_role("img", name="参考图片").bounding_box()
+            thumbnail = await first_request.get_by_role("img", name="uploaded", exact=True).bounding_box()
             assert label["x"] >= thumbnail["x"] + thumbnail["width"], (label, thumbnail)
             assert abs(label["y"] + label["height"] - thumbnail["y"] - thumbnail["height"]) <= 1, (label, thumbnail)
             fixture.finish("wtask_test_a")
             await expect(models).to_be_enabled()
             await expect(models).to_have_value(SEEDREAM)
+            await expect(tiles).to_have_count(2)
             print("PASS: dropdown selection reaches the edit request independently; in-flight controls are disabled")
 
             # Older requests have no stored model, but their result versions retain the actual model.
@@ -148,12 +195,17 @@ async def main():
             await page.reload()
             await expect(models).to_be_enabled()
             await expect(models).to_have_value(SEEDREAM)
+            await expect(tiles).to_have_count(0)
+            if await history.is_visible():
+                await page.get_by_role("button", name="收起辅助工具").click()
             await models.select_option(MINIMAX)
-            await page.get_by_role("textbox", name="修改要求", exact=True).fill("背景改为暖色")
+            await editor.fill("背景改为暖色")
             await page.get_by_role("button", name="发送修改", exact=True).click()
             await expect(page.get_by_text("修改中", exact=True)).to_be_visible()
             assert fixture.edits[-1]["image_model"] == MINIMAX
             assert fixture.edits[-1]["source_version_id"] == "wtask_test_a-v2"
+            assert fixture.edits[-1]["reference_asset_ids"] == []
+            print("PASS: only uploaded and picked images can be referenced as 图1/图2; reload starts with zero references")
             if not await history.is_visible():
                 await page.get_by_role("button", name=re.compile("修改记录")).click()
             second_request = history.locator(".chat-user").filter(has_text="背景改为暖色")
@@ -173,24 +225,79 @@ async def main():
 
             if await history.is_visible():
                 await page.get_by_role("button", name="收起辅助工具").click()
+            await add.click()
+            await chat.get_by_role("button", name="从资产库选择").click()
+            for name in ASSET_NAMES[:4]:
+                await picker.get_by_text(name, exact=True).click()
+            await picker.get_by_role("button", name="确定").click()
+            await expect(tiles).to_have_count(4)
+            await expect(add).to_contain_text("4/15")
             diagnostics = Path(__file__).resolve().parents[3] / "storage/diagnostics/edit-model-dropdown"
             diagnostics.mkdir(parents=True, exist_ok=True)
-            for width in [1440, 1024, 768, 390]:
+            for width in (1440, 1280, 1024, 768, 390, 320):
+                if width == 1280:
+                    await page.get_by_role("button", name=re.compile("修改记录")).click()
+                    await expect(history).to_be_visible()
                 await page.set_viewport_size({"width": width, "height": 1000})
                 composer = page.locator(".chat-composer .image-prompt-composer")
                 await expect(models).to_be_visible()
-                box = await composer.bounding_box()
-                selector = await models.bounding_box()
-                send = await page.get_by_role("button", name="发送修改", exact=True).bounding_box()
-                assert selector["x"] >= box["x"] and send["x"] + send["width"] <= box["x"] + box["width"] + 1, (width, box, selector, send)
-                assert (
-                    selector["x"] + selector["width"] <= send["x"]
-                    or selector["y"] + selector["height"] <= send["y"]
-                ), (width, selector, send)
+                layout = await composer.evaluate('''element => {
+                    const bounds = item => item.getBoundingClientRect().toJSON();
+                    return {
+                        composer: bounds(element),
+                        tiles: Array.from(element.querySelectorAll('.image-reference-tile'), bounds),
+                        strip: bounds(element.querySelector('.image-reference-scroll')),
+                        add: bounds(element.querySelector('.image-reference-add')),
+                        actions: Array.from(element.querySelectorAll('.chat-composer-actions a, .chat-composer-actions button, .chat-composer-actions select'), bounds),
+                    };
+                }''')
+                row = layout["tiles"]
+                actions = layout["actions"]
+                assert len(row) == 4
+                assert all(left["right"] <= right["left"] + 1 for left, right in zip(row, row[1:])), (width, layout)
+                assert all(tile["top"] == row[0]["top"] for tile in row), (width, layout)
+                assert layout["strip"]["right"] <= layout["add"]["left"], (width, layout)
+                assert all(
+                    layout["composer"]["left"] <= control["left"] < control["right"] <= layout["composer"]["right"] + 1
+                    for control in [layout["strip"], layout["add"], *actions]
+                ), (width, layout)
+                assert all(
+                    min(action["right"], other["right"]) - max(action["left"], other["left"]) <= 1
+                    or min(action["bottom"], other["bottom"]) - max(action["top"], other["top"]) <= 1
+                    for index, action in enumerate(actions) for other in actions[index + 1:]
+                ), (width, layout)
+                if width == 1440:
+                    assert layout["add"]["right"] < actions[0]["left"], (width, layout)
+                else:
+                    assert layout["strip"]["bottom"] <= min(action["top"] for action in actions), (width, layout)
                 await composer.screenshot(path=str(diagnostics / f"composer-{width}.png"))
+            await add.click()
+            await chat.get_by_role("button", name="从资产库选择").click()
+            for name in ASSET_NAMES[4:]:
+                await picker.get_by_text(name, exact=True).click()
+            await picker.get_by_role("button", name="确定").click()
+            await expect(tiles).to_have_count(15)
+            await expect(add).to_contain_text("15/15")
+            await expect(add).to_be_disabled()
+            await expect(chat.get_by_role("alert")).to_have_count(0)
+            strip = chat.locator(".image-reference-scroll")
+            assert await strip.evaluate("element => element.scrollWidth > element.clientWidth")
+            add_position = (await add.bounding_box())["x"]
+            await strip.evaluate("element => element.scrollLeft = element.scrollWidth")
+            await tiles.last.scroll_into_view_if_needed()
+            await expect(tiles.last).to_be_in_viewport()
+            assert (await add.bounding_box())["x"] == add_position
+            await editor.fill("")
+            await editor.press_sequentially("@")
+            await mentions.get_by_role("option", name="图15 reference-15", exact=True).click()
+            await expect(editor.locator(".image-mention-chip")).to_have_text("图15")
+            await page.get_by_role("button", name="发送修改", exact=True).click()
+            await expect(page.get_by_text("修改中", exact=True)).to_be_visible()
+            assert fixture.edits[-1]["reference_asset_ids"] == ASSET_NAMES[:15]
+            assert fixture.edits[-1]["instruction"] == "@图15"
             assert not fixture.unhandled, fixture.unhandled
             assert not errors, errors
-            print("PASS: dropdown and send button fit at 1440/1024/768/390px with no overlapping controls or browser errors")
+            print("PASS: attachments stay in one row from 1440px to 320px and 15 references submit with @图15")
         finally:
             await context.close()
             await browser.close()

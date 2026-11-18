@@ -461,7 +461,7 @@ export default function App() {
         merchantId={initialMerchantId}
         merchantName={context?.merchant.merchant_name ?? '商家工作区'}
       />
-      <div className="app-main">
+      <div className={visibleView === 'whole' ? 'app-main is-poster-workspace' : 'app-main'}>
         {/* Keep pending uploads/submissions alive when another menu is open. */}
         <div hidden={visibleView !== 'whole'}>
           <WholeImageStudio

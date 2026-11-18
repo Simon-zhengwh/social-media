@@ -263,7 +263,7 @@ class WholeImageEditRequest(BaseModel):
     image_model: ImageModel | None = None
     source_version_id: str = Field(min_length=1, max_length=128)
     source_output_id: str | None = Field(default=None, max_length=128)
-    reference_asset_ids: list[str] = Field(default_factory=list, max_length=5)
+    reference_asset_ids: list[str] = Field(default_factory=list, max_length=MAX_REFERENCE_ASSETS)
     reference_mode: Literal["legacy", "unified"] = "legacy"
 
     @model_validator(mode="before")

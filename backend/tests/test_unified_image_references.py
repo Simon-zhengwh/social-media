@@ -40,7 +40,7 @@ def test_unified_reference_schema_is_opt_in_and_validates_ids(schema):
         WholeImageEditRequest(instruction="test", source_version_id="version", reference_mode="other")
 
 
-@pytest.mark.parametrize("ids", [["same", " same "], [""], [f"image-{i}" for i in range(6)]])
+@pytest.mark.parametrize("ids", [["same", " same "], [""], [f"image-{i}" for i in range(16)]])
 def test_unified_edit_rejects_invalid_reference_numbering(ids):
     with pytest.raises(ValidationError):
         WholeImageEditRequest(
@@ -158,38 +158,51 @@ def test_unified_refs_are_validated_in_current_merchant(settings, store, product
     assert exc.value.status_code == 422
 
 
-def test_unified_edit_starts_with_current_poster_then_added_refs_and_preserves_mode_on_retry(settings, store, product_png):
+@pytest.mark.parametrize("reference_count", [0, 2, 15])
+def test_unified_edit_sends_only_current_poster_and_added_references(
+    settings, store, product_png, logo_png, reference_count,
+):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
     original = asset(db, settings, store, product_png, "original.png")
-    added = asset(db, settings, store, fake._image((10, 30, 50)), "this-turn.png")
+    logo = asset(db, settings, store, logo_png, "original-logo.png")
+    added_names = [f"this-turn-{index}.png" for index in range(reference_count, 0, -1)]
+    added_ids = [asset(db, settings, store, product_png, name) for name in added_names]
+    instruction = f"在 @海报 中用 @图{reference_count} 替换 @图1" if reference_count else "只修改标题"
     req = _request(db, settings, store, fake)
     created = routes.create_task(WholeImageTaskCreate(
-        prompt="test", reference_asset_ids=[original], image_model="seedream-5.5-image-to-image",
+        prompt="test", reference_asset_ids=[original], logo_asset_id=logo,
+        image_model="seedream-5.5-image-to-image",
     ), req, BackgroundTasks())
     service.run_generation(db, settings, store, fake, created["id"])
+    assert fake.edit_calls[-1]["reference_names"] == ["original.png", "original-logo.png"]
     source = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
     source_asset = db.assets.find_one({"_id": source["output_asset_id"]})
     background = BackgroundTasks()
     response = routes.create_edit(created["id"], WholeImageEditRequest(
-        instruction="把 @图片1 的背景换成 @图片2", source_version_id=source["_id"],
-        reference_asset_ids=[added], reference_mode="unified",
+        instruction=instruction, source_version_id=source["_id"],
+        reference_asset_ids=added_ids, reference_mode="unified",
     ), req, background)
     assert response["edit"]["reference_mode"] == "unified"
     background.tasks[0].func(*background.tasks[0].args, **background.tasks[0].kwargs)
     call = fake.edit_calls[-1]
     assert call["model"] == "seedream-5.5-image-to-image"
-    assert call["reference_names"] == [source_asset["original_name"], "this-turn.png", "original.png"]
-    assert "图片1" in call["prompt"] and "当前海报" in call["prompt"]
-    # The edit composer names the poster @海报 and numbers references from @图1.
+    assert call["reference_names"] == [source_asset["original_name"], *added_names]
     assert "图片1（@海报）" in call["prompt"]
-    assert "图片2（@图1）" in call["prompt"]
+    for index in range(1, reference_count + 1):
+        assert f"图片{index + 1}（@图{index}）" in call["prompt"]
+    assert "历史任务参考图" not in call["prompt"]
+    assert "原任务 Logo" not in call["prompt"]
+    assert call["prompt"].endswith(instruction)
     latest = db.whole_tasks.find_one({"_id": created["id"]})
-    assert [image["asset_id"] for image in latest["model_input_latest"]["images"]] == [source_asset["_id"], added, original]
+    images = latest["model_input_latest"]["images"]
+    assert [image["asset_id"] for image in images] == [source_asset["_id"], *added_ids]
+    assert [image["role"] for image in images] == ["current_design"] + ["edit_reference"] * reference_count
     db.whole_tasks.update_one({"_id": created["id"]}, {"$set": {"edit.status": "failed"}})
     retry = BackgroundTasks()
     routes.retry_task(created["id"], req, retry)
-    assert retry.tasks[0].kwargs.get("reference_mode") == "unified" or retry.tasks[0].args[-1] == "unified"
+    retry.tasks[0].func(*retry.tasks[0].args, **retry.tasks[0].kwargs)
+    assert fake.edit_calls[-1] == call
 
 
 def test_optimizer_numbers_unclassified_manual_references(settings, store, product_png):
