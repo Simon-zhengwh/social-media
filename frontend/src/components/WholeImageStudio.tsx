@@ -1117,7 +1117,7 @@ export default function WholeImageStudio({
             </div>
             <div className="studio-tab-body">
               {activeTab === 'chat_history' ? (
-                <WholeChatHistory messages={chatMessages} edit={task?.edit ?? { status: 'idle' }} />
+                <WholeChatHistory messages={chatMessages} versions={versions} edit={task?.edit ?? { status: 'idle' }} />
               ) : null}
               {activeTab === 'original_replace' && task ? (
                 <OriginalReplacementPanel key={task.id} task={task} assets={assets}

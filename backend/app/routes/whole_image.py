@@ -1019,6 +1019,7 @@ def create_edit(
         role="user",
         content=payload.instruction,
         attachments=reference_attachments,
+        image_model=claimed["edit"]["image_model"],
     )
     background_tasks.add_task(
         whole_image.run_edit,

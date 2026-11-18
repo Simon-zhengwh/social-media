@@ -188,6 +188,7 @@ export type WholeImageMessage = {
   role: 'user' | 'assistant' | 'system'
   content: string
   created_at: string
+  image_model?: string
   version_id?: string | null
   version?: number | null
   status?: 'done' | 'failed'

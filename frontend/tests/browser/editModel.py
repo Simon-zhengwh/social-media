@@ -45,7 +45,17 @@ class EditFixture(Fixture):
     def __init__(self):
         super().__init__()
         self.tasks = {key: task(key, model) for key, model in [("wtask_test_a", GPT), ("wtask_test_b", SEEDREAM)]}
+        self.versions = {key: [self.version(current, "generate", "测试海报")] for key, current in self.tasks.items()}
         self.edits = []
+
+    @staticmethod
+    def version(current, operation, instruction):
+        return {
+            "id": current["current_version_id"], "version": current["current_version"], "operation": operation,
+            "width": 640, "height": 640, "outputs": current["outputs"], "instruction": instruction,
+            "model_input": current["model_input"],
+            "preview_url": "/fixture/poster", "download_url": "/fixture/poster",
+        }
 
     async def route(self, route):
         request = route.request
@@ -56,17 +66,18 @@ class EditFixture(Fixture):
         task_id, action = match.groups()
         current = self.tasks[task_id]
         if action == "versions":
-            return await route.fulfill(json=[{
-                "id": current["current_version_id"], "version": current["current_version"], "operation": "generate",
-                "width": 640, "height": 640, "outputs": current["outputs"], "instruction": "test",
-                "preview_url": "/fixture/poster", "download_url": "/fixture/poster",
-            }])
+            return await route.fulfill(json=self.versions[task_id])
         assert request.method == "POST"
         data = request.post_data_json
         self.edits.append(copy.deepcopy(data))
         await asyncio.sleep(0.2)
         current["edit"] = {**data, "status": "running"}
         current["stage"] = "editing"
+        current["messages"].append({
+            "id": f'request-{len(self.edits)}', "role": "user", "content": data["instruction"],
+            "image_model": data["image_model"], "created_at": current["updated_at"],
+            "attachments": [{"asset_id": "reference", "name": "参考图片", "url": "/fixture/poster"}],
+        })
         await route.fulfill(status=202, json=current)
 
     def finish(self, task_id):
@@ -80,6 +91,12 @@ class EditFixture(Fixture):
         current["edit"]["status"] = "idle"
         current["stage"] = "done"
         current["updated_at"] = "2026-11-13T00:01:00Z"
+        self.versions[task_id].append(self.version(current, "edit", current["edit"]["instruction"]))
+        current["messages"].append({
+            "id": f'result-{len(self.edits)}', "role": "assistant", "content": '已完成',
+            "version_id": current["current_version_id"], "version": current["current_version"],
+            "created_at": current["updated_at"],
+        })
 
 
 async def main():
@@ -111,11 +128,23 @@ async def main():
             assert fixture.edits[-1]["source_output_id"] == "gateway_result"
             assert fixture.edits[-1]["reference_mode"] == "unified"
             assert fixture.tasks["wtask_test_a"]["input"]["image_model"] == GPT
+            history = page.locator(".chat-history-panel")
+            if not await history.is_visible():
+                await page.get_by_role("button", name=re.compile("修改记录")).click()
+            first_request = history.locator(".chat-user").filter(has_text="只改标题")
+            first_model = first_request.get_by_text("Seedream 5.5", exact=True)
+            await expect(first_model).to_be_visible()
+            label = await first_model.bounding_box()
+            thumbnail = await first_request.get_by_role("img", name="参考图片").bounding_box()
+            assert label["x"] >= thumbnail["x"] + thumbnail["width"], (label, thumbnail)
+            assert abs(label["y"] + label["height"] - thumbnail["y"] - thumbnail["height"]) <= 1, (label, thumbnail)
             fixture.finish("wtask_test_a")
             await expect(models).to_be_enabled()
             await expect(models).to_have_value(SEEDREAM)
             print("PASS: dropdown selection reaches the edit request independently; in-flight controls are disabled")
 
+            # Older requests have no stored model, but their result versions retain the actual model.
+            del fixture.tasks["wtask_test_a"]["messages"][0]["image_model"]
             await page.reload()
             await expect(models).to_be_enabled()
             await expect(models).to_have_value(SEEDREAM)
@@ -125,6 +154,12 @@ async def main():
             await expect(page.get_by_text("修改中", exact=True)).to_be_visible()
             assert fixture.edits[-1]["image_model"] == MINIMAX
             assert fixture.edits[-1]["source_version_id"] == "wtask_test_a-v2"
+            if not await history.is_visible():
+                await page.get_by_role("button", name=re.compile("修改记录")).click()
+            second_request = history.locator(".chat-user").filter(has_text="背景改为暖色")
+            await expect(first_request.get_by_text("Seedream 5.5", exact=True)).to_be_visible()
+            await expect(second_request.get_by_text("MiniMax H3", exact=True)).to_be_visible()
+            print("PASS: request bubbles show their own models beside attachments, including legacy records after reload")
             fixture.finish("wtask_test_a")
             await expect(models).to_be_enabled()
             await expect(models).to_have_value(MINIMAX)
@@ -136,6 +171,8 @@ async def main():
             await expect(models).to_have_value(MINIMAX)
             print("PASS: switching generation candidates preserves independent saved edit models")
 
+            if await history.is_visible():
+                await page.get_by_role("button", name="收起辅助工具").click()
             diagnostics = Path(__file__).resolve().parents[3] / "storage/diagnostics/edit-model-dropdown"
             diagnostics.mkdir(parents=True, exist_ok=True)
             for width in [1440, 1024, 768, 390]:
@@ -146,7 +183,10 @@ async def main():
                 selector = await models.bounding_box()
                 send = await page.get_by_role("button", name="发送修改", exact=True).bounding_box()
                 assert selector["x"] >= box["x"] and send["x"] + send["width"] <= box["x"] + box["width"] + 1, (width, box, selector, send)
-                assert selector["x"] + selector["width"] <= send["x"], (width, selector, send)
+                assert (
+                    selector["x"] + selector["width"] <= send["x"]
+                    or selector["y"] + selector["height"] <= send["y"]
+                ), (width, selector, send)
                 await composer.screenshot(path=str(diagnostics / f"composer-{width}.png"))
             assert not fixture.unhandled, fixture.unhandled
             assert not errors, errors

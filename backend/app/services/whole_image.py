@@ -76,6 +76,7 @@ def _append_message(
     version: int | None = None,
     status: str = "done",
     attachments: list[dict[str, str]] | None = None,
+    image_model: str | None = None,
 ) -> dict[str, Any]:
     message = {
         "id": f"msg_{uuid.uuid4().hex}",
@@ -88,6 +89,8 @@ def _append_message(
         "status": status,
         "attachments": attachments or [],
     }
+    if image_model:
+        message["image_model"] = image_model
     db.whole_tasks.update_one({"_id": task_id}, {"$push": {"messages": message}})
     return message
 
@@ -114,13 +117,22 @@ def _save_output_asset(
             if image.mode not in {"RGB", "RGBA"}:
                 image = image.convert("RGB")
             if target_size is not None:
-                image = ImageOps.pad(
-                    image,
-                    target_size,
-                    method=Image.Resampling.LANCZOS,
-                    color=(0, 0, 0, 0) if image.mode == "RGBA" else "white",
-                    centering=(0.5, 0.5),
+                target_width, target_height = target_size
+                cover_scale = max(target_width / image.width, target_height / image.height)
+                crop_pixels = max(
+                    image.width * cover_scale - target_width,
+                    image.height * cover_scale - target_height,
                 )
+                # Fix small size mismatches without cutting into a substantially different composition.
+                if crop_pixels <= 16:
+                    image = ImageOps.fit(image, target_size, method=Image.Resampling.LANCZOS)
+                else:
+                    image = ImageOps.pad(
+                        image,
+                        target_size,
+                        method=Image.Resampling.LANCZOS,
+                        color=(0, 0, 0, 0) if image.mode == "RGBA" else "white",
+                    )
             buffer = io.BytesIO()
             image.save(buffer, format="PNG", optimize=True)
             png = buffer.getvalue()

@@ -32,14 +32,22 @@ def resolution_for(ratio: str) -> str:
 
 
 def gateway_image_size(width: int, height: int, max_side: int = 3840) -> str:
-    """Return an OpenAI-style WxH size with both edges divisible by 16.
+    """Preserve the aspect ratio when it fits the gateway's size limits.
 
-    The image provider rejects tiny edits (e.g. a 176x128 logo crop) with
-    "Requested resolution is below the current minimum pixel budget", so small
-    regions are scaled up while keeping the aspect ratio close to the source.
+    Both edges must be divisible by 16. If no exact multiple fits, approximate
+    the original ratio with independently aligned edges.
     """
     width = max(16, int(width))
     height = max(16, int(height))
+    divisor = math.gcd(width, height)
+    step_width = width // divisor * 16
+    step_height = height // divisor * 16
+    min_steps = math.ceil(math.sqrt(MIN_GATEWAY_PIXELS / (step_width * step_height)))
+    max_steps = max_side // max(step_width, step_height)
+    if min_steps <= max_steps:
+        steps = min(max_steps, max(min_steps, round(divisor / 16)))
+        return f"{step_width * steps}x{step_height * steps}"
+
     scale = min(1.0, max_side / max(width, height))
     if width * height * scale * scale < MIN_GATEWAY_PIXELS:
         scale = min(

@@ -9,8 +9,9 @@ def parse(size: str) -> tuple[int, int]:
 
 
 def test_gateway_size_matches_canvas_examples():
-    assert gateway_image_size(1080, 1920) == "1072x1920"
-    assert gateway_image_size(1080, 1350) == "1072x1344"
+    assert gateway_image_size(1080, 1920) == "1152x2048"
+    assert gateway_image_size(1920, 1080) == "2048x1152"
+    assert gateway_image_size(1080, 1350) == "1088x1360"
     assert gateway_image_size(1024, 1024) == "1024x1024"
 
 
@@ -32,5 +33,5 @@ def test_large_crop_is_capped_at_max_side():
 def test_platform_ratios_have_export_canvases_and_aligned_gateway_sizes():
     assert canvas_size("3:4") == (1080, 1440)
     assert canvas_size("4:3") == (1440, 1080)
-    assert gateway_image_size(1080, 1440) == "1072x1440"
-    assert gateway_image_size(1440, 1080) == "1440x1072"
+    assert gateway_image_size(1080, 1440) == "1056x1408"
+    assert gateway_image_size(1440, 1080) == "1408x1056"
