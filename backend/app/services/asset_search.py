@@ -3,7 +3,7 @@
 The model is only asked to translate/extend the operator's words: simplified,
 traditional and English equivalents count as the original condition, extra words count
 as expansions that rank lower. Matching itself is plain substring matching over the
-indexed name, tags and both descriptions, so paging never re-runs a model and no local
+indexed name, tags and bilingual keywords, so paging never re-runs a model and no local
 language conversion happens here.
 """
 
@@ -16,12 +16,14 @@ from typing import Any
 from app.services import asset_index
 from app.api_paths import asset_url
 from app.services.asset_index import AssetIndexError
+from app.services.asset_recognition import KEYWORD_NAMING_RULES
 from app.services.core_ai import CoreAIError
 
-PROMPT_VERSION = "asset-query-v1"
+PROMPT_VERSION = "asset-query-v4"
 MODE_LITERAL = "literal"
 MODE_SEMANTIC = "semantic"
-MAX_EXPANSIONS = 8
+MAX_EXPANSIONS_PER_GROUP = 8
+MAX_EXPANSIONS = 16
 MAX_TERM_LENGTH = 40
 MAX_QUERY_LENGTH = 200
 TIER_ORIGINAL = "original"
@@ -32,9 +34,11 @@ QUERY_PROMPT = """你是餐饮素材库的搜索词助手。用户输入一组�
 - 按用户的意思分组：同一个对象分词时保持一组的直接表达（例如英文短语「dan dan noodles」是一组），不同条件各成一组。
 - 每个分组必须有 input 字段，内容是用户原输入里连续的一段文字，不要改写。
 - equivalents：该条件在简体中文 simplified、繁体中文 traditional、英文 english 的等价表达，必须指同一个对象。无法翻译时重复原词，不要用相关词代替。
-- expansions：0-3个同义表达或更具体的品类（例如牛肉可扩牛排、肥牛），不要写宽泛类别、关联食材或用途。
-- 所有分组的 expansions 合计最多 8 个。
-严格JSON：{"groups":[{"input":"...","equivalents":{"simplified":"...","traditional":"...","english":"..."},"expansions":["..."]}]}"""
+- expansions：有足够合适表达时尽量返回4-8个，每组最多8个；优先常用别名、同义表达，也可以给出更具体的品类（例如牛肉可扩牛排、肥牛）。表达较少时少给，不要凑数。
+- 扩展词要兼顾常用中文与英文检索表达，保留完整短语；不要只靠简繁转换、大小写变化重复凑数，也不要重复 equivalents 中已有的表达。
+- 扩展必须保留原条件明确指定的食材、部位、菜品形态和其他限定，不能退回宽泛食材或大类，不能换成其他菜品；不要加入关联食材或用途。
+- 所有分组的 expansions 合计最多16个；有多个条件时兼顾各组，不要把名额全部用在第一组。
+严格JSON：{"groups":[{"input":"...","equivalents":{"simplified":"...","traditional":"...","english":"..."},"expansions":["..."]}]}""" + "\n" + KEYWORD_NAMING_RULES
 
 
 def split_tokens(query: str) -> list[str]:
@@ -163,7 +167,7 @@ def validate_vocabulary(payload: dict[str, Any], query: str) -> list[dict[str, A
         raise AssetIndexError("invalid_vocabulary", "模型遗漏了部分搜索条件")
     budget = MAX_EXPANSIONS
     for group in groups:
-        allowed = group["expansion_terms"][:budget]
+        allowed = group["expansion_terms"][:min(MAX_EXPANSIONS_PER_GROUP, budget)]
         budget -= len(allowed)
         group["expansion_terms"] = allowed
         group["expansions"] = allowed
@@ -199,7 +203,7 @@ def resolve_query(
     query: str,
     semantic: bool,
 ) -> dict[str, Any]:
-    """Build and remember the vocabulary of one submitted search."""
+    """Generate vocabulary for each submission; matching always reads live assets."""
     text = query.strip()
     if not semantic or not text:
         return asset_index.save_query(
@@ -242,8 +246,9 @@ def resolve_query(
 def _haystack(record: dict[str, Any]) -> list[str]:
     values = [str(record.get("name") or "")]
     values.extend(str(tag) for tag in record.get("tags") or [])
-    values.append(str(record.get("description_zh") or ""))
-    values.append(str(record.get("description_en") or ""))
+    keywords = record.get("keywords") or {}
+    for language in ("zh", "en"):
+        values.extend(keywords.get(language) or [])
     return [value.casefold() for value in values if value]
 
 
@@ -342,8 +347,10 @@ def _item(db: Any, record: dict[str, Any], merchant_id: str = "") -> dict[str, A
         "source": str(record.get("source") or "upload"),
         "read_only": asset is None,
         "tags": [str(tag) for tag in record.get("tags") or []],
-        "description_zh": str(record.get("description_zh") or ""),
-        "description_en": str(record.get("description_en") or ""),
+        "keywords": {
+            language: list((record.get("keywords") or {}).get(language) or [])
+            for language in ("zh", "en")
+        },
         "description_status": str(record.get("description_status") or ""),
         "match_tier": record.get("match_tier"),
         "matched_terms": list(record.get("matched_terms") or []),

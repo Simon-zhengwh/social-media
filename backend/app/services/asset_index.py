@@ -3,8 +3,7 @@
 Three collections keep the library searchable without calling a model on every
 keystroke:
 
-- ``asset_search_records`` mirrors one asset's searchable metadata (name, tags and both
-  descriptions) and owns the description lifecycle.
+- ``asset_search_records`` mirrors searchable names, tags and bilingual keywords.
 - ``asset_index_runs`` records one background pass over a fixed list of asset ids.
 - ``asset_search_queries`` stores the vocabulary a semantic search produced, so paging
   never calls the model again.
@@ -24,15 +23,14 @@ RECORD_COLLECTION = "asset_search_records"
 RUN_COLLECTION = "asset_index_runs"
 QUERY_COLLECTION = "asset_search_queries"
 
-# Description lifecycle of one record.
+# Keyword lifecycle; persisted status/version names remain compatible with older runs.
 PENDING = "pending"
 RUNNING = "running"
 READY = "ready"
 FAILED = "failed"
 
 # `initialize` is the one-off bootstrap that also writes names and tags. Everything the
-# operator can trigger later only refreshes descriptions; `retry` re-queues the rows a
-# previous pass left unfinished and keeps the same description-only behaviour.
+# operator can trigger later only refreshes keywords; `retry` re-queues unfinished rows.
 RUN_INITIALIZE = "initialize"
 RUN_REINDEX = "reindex"
 RUN_RETRY = "retry"
@@ -107,7 +105,7 @@ def record_for_asset(db: Any, asset_id: str) -> dict[str, Any] | None:
 
 
 def sync_catalog(db: Any, entries: Iterable[dict[str, Any]]) -> dict[str, int]:
-    """Mirror names, tags and ordering into the records, keeping existing descriptions.
+    """Mirror names, tags and ordering into the records, keeping existing keywords.
 
     Stale records are only removed once a full catalog has been read successfully, so a
     failed sync can never empty the index.
@@ -135,8 +133,7 @@ def sync_catalog(db: Any, entries: Iterable[dict[str, Any]]) -> dict[str, int]:
                 {
                     "_id": asset_id,
                     **mirror,
-                    "description_zh": "",
-                    "description_en": "",
+                    "keywords": {"zh": [], "en": []},
                     "description_status": PENDING,
                     "description_error": "",
                     "description_version": 0,
@@ -167,7 +164,7 @@ def deleted_record_ids(db: Any, asset_ids: Iterable[str]) -> int:
 
 
 def request_description(db: Any, asset: dict[str, Any]) -> dict[str, Any]:
-    """Queue one description regeneration and bump the version older results must not beat."""
+    """Queue keyword regeneration and bump the version older results must not beat."""
     entry = catalog_entry(asset)
     stamp = now()
     record = db[RECORD_COLLECTION].find_one_and_update(
@@ -187,8 +184,7 @@ def request_description(db: Any, asset: dict[str, Any]) -> dict[str, Any]:
             },
             "$inc": {"description_version": 1},
             "$setOnInsert": {
-                "description_zh": "",
-                "description_en": "",
+                "keywords": {"zh": [], "en": []},
                 "description_updated_at": None,
                 "created_record_at": stamp,
             },
@@ -220,33 +216,30 @@ def release_record(db: Any, asset_id: str, run_id: str) -> None:
     )
 
 
-def save_description(
+def save_keywords(
     db: Any,
     asset_id: str,
     *,
     version: int,
-    description_zh: str,
-    description_en: str,
+    keywords: dict[str, list[str]],
 ) -> bool:
-    """Apply a description only while its request is still the newest one."""
+    """Apply keywords only while this request is still newest."""
+    values = {
+        "keywords": keywords,
+        "description_status": READY,
+        "description_error": "",
+        "description_updated_at": now(),
+        "claim_run_id": None,
+    }
     result = db[RECORD_COLLECTION].update_one(
         {"_id": asset_id, "description_version": version},
-        {
-            "$set": {
-                "description_zh": description_zh,
-                "description_en": description_en,
-                "description_status": READY,
-                "description_error": "",
-                "description_updated_at": now(),
-                "claim_run_id": None,
-            }
-        },
+        {"$set": values},
     )
     return bool(result.matched_count)
 
 
 def fail_record(
-    db: Any, asset_id: str, *, version: int | None, error: str, keep_description: bool = True
+    db: Any, asset_id: str, *, version: int | None, error: str, keep_keywords: bool = True
 ) -> None:
     query: dict[str, Any] = {"_id": asset_id}
     if version is not None:
@@ -258,9 +251,8 @@ def fail_record(
             "claim_run_id": None,
         }
     }
-    if not keep_description:
-        update["$set"]["description_zh"] = ""
-        update["$set"]["description_en"] = ""
+    if not keep_keywords:
+        update["$set"]["keywords"] = {"zh": [], "en": []}
     db[RECORD_COLLECTION].update_one(query, update)
 
 

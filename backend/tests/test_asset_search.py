@@ -62,6 +62,7 @@ def seed(db, *rows):
                 "mime_type": "image/png",
                 "description_zh": zh,
                 "description_en": en,
+                "keywords": {"zh": [zh] if zh else [], "en": [en] if en else []},
                 "description_status": asset_index.READY,
                 "description_version": 1,
             }
@@ -88,6 +89,69 @@ def test_literal_query_has_no_vocabulary_and_no_model_call():
     assert document["groups"][0]["input"] == "牛肉 火锅"
 
 
+def test_each_semantic_submission_calls_agent_even_for_identical_input(db):
+    seed(db, ("whole", "整鸡.png", [], "整鸡", "whole chicken", datetime.now(timezone.utc)))
+    client = FakeClient(
+        vocabulary(group("鸡肉", simplified="鸡肉", traditional="雞肉", english="chicken")),
+        vocabulary(group("鸡肉", simplified="鸡肉", traditional="雞肉", english="chicken meat")),
+    )
+    first = asset_search.resolve_query(db, client=client, settings=FakeSettings(), query="鸡肉", semantic=True)
+    second = asset_search.resolve_query(db, client=client, settings=FakeSettings(), query="鸡肉", semantic=True)
+
+    assert first["_id"] != second["_id"]
+    assert client.calls == 2
+    assert second["groups"][0]["equivalents"]["english"] == "chicken meat"
+
+
+def test_repeated_search_reads_latest_assets_and_calls_agent_again(db):
+    response = vocabulary(group("鸡肉", simplified="鸡肉", english="chicken"))
+    client = FakeClient(response, response)
+    first = asset_search.resolve_query(db, client=client, settings=FakeSettings(), query="鸡肉", semantic=True)
+    assert asset_search.search_records(db, first["groups"]) == []
+    seed(db, ("new", "炸鸡.png", [], "炸鸡", "fried chicken", datetime.now(timezone.utc)))
+
+    second = asset_search.resolve_query(db, client=client, settings=FakeSettings(), query="鸡肉", semantic=True)
+
+    assert second["_id"] != first["_id"]
+    assert client.calls == 2
+    assert [row["_id"] for row in asset_search.search_records(db, second["groups"])] == ["new"]
+
+
+def test_semantic_vocabulary_is_not_reused_across_merchants(db):
+    response = vocabulary(group("鸡肉", simplified="鸡肉", english="chicken"))
+    client = FakeClient(response, response)
+    first = asset_search.resolve_query(db, client=client, settings=FakeSettings(), query="鸡肉", semantic=True)
+    other = ScopedDatabase(db.raw, "other-merchant")
+
+    second = asset_search.resolve_query(other, client=client, settings=FakeSettings(), query="鸡肉", semantic=True)
+
+    assert first["_id"] != second["_id"]
+    assert client.calls == 2
+
+
+def test_query_and_keyword_generation_share_standard_ingredient_names():
+    from app.services import asset_recognition
+    rules = asset_recognition.KEYWORD_NAMING_RULES
+    assert "完整" in rules
+    assert "chicken meat" not in rules
+    assert "鸡肉用 chicken" not in rules
+    assert rules in asset_search.QUERY_PROMPT
+    assert rules in asset_recognition.KEYWORDS_PROMPT
+    assert rules in asset_recognition.RECOGNITION_PROMPT
+
+
+def test_paging_keeps_this_submission_without_another_agent_call(db):
+    seed(db, ("whole", "整鸡.png", [], "整鸡", "whole chicken", datetime.now(timezone.utc)))
+    client = FakeClient(vocabulary(group("鸡肉", simplified="鸡肉", english="chicken")))
+    query = asset_search.resolve_query(db, client=client, settings=FakeSettings(), query="鸡肉", semantic=True)
+
+    first = asset_search.search_page(db, query["_id"], skip=0, limit=1)
+    second = asset_search.search_page(db, query["_id"], skip=1, limit=1)
+
+    assert first["total"] == second["total"] == 1
+    assert client.calls == 1
+
+
 def test_literal_search_does_not_convert_scripts(db):
     seed(db, ("a", "擔擔麵.png", [], "", "", datetime.now(timezone.utc)))
     document = asset_index.save_query(
@@ -95,6 +159,61 @@ def test_literal_search_does_not_convert_scripts(db):
     )
 
     assert asset_search.search_records(db, document["groups"]) == []
+
+
+@pytest.mark.parametrize("language, term", [("zh", "白盘"), ("en", "white plate")])
+def test_literal_search_matches_keywords_without_translation_or_model_call(db, language, term):
+    seed(db, ("a", "dish.png", [], "", "", datetime.now(timezone.utc)))
+    db[asset_index.RECORD_COLLECTION].update_one(
+        {"_id": "a"}, {"$set": {"keywords": {"zh": [], "en": [], language: [term]}}}
+    )
+    client = FakeClient()
+    document = asset_search.resolve_query(db, client=client, settings=FakeSettings(), query=term, semantic=False)
+
+    ranked = asset_search.search_records(db, document["groups"])
+
+    assert [record["_id"] for record in ranked] == ["a"]
+    assert client.calls == 0
+
+
+def test_semantic_search_ands_keyword_conditions_and_ranks_equivalents_first(db):
+    stamp = datetime.now(timezone.utc)
+    seed(db, *((asset_id, "dish.png", [], "", "", stamp) for asset_id in ("exact", "expanded", "missing")))
+    for asset_id, keywords in {
+        "exact": {"zh": ["白盘"], "en": ["beef"]},
+        "expanded": {"zh": ["白色盘子"], "en": ["steak"]},
+        "missing": {"zh": [], "en": ["beef"]},
+    }.items():
+        db[asset_index.RECORD_COLLECTION].update_one({"_id": asset_id}, {"$set": {"keywords": keywords}})
+    groups = asset_search.validate_vocabulary(
+        vocabulary(
+            group("牛肉", simplified="牛肉", english="beef", expansions=["steak"]),
+            group("白盘", simplified="白盘", english="white plate", expansions=["白色盘子"]),
+        ), "牛肉 白盘",
+    )
+    ranked = asset_search.search_records(db, groups)
+
+    assert [record["_id"] for record in ranked] == ["exact", "expanded"]
+    assert [record["match_tier"] for record in ranked] == ["original", "expanded"]
+
+
+def test_legacy_search_result_has_empty_bilingual_keywords(db):
+    seed(db, ("old", "dish.png", [], "", "", datetime.now(timezone.utc)))
+    db[asset_index.RECORD_COLLECTION].update_one({"_id": "old"}, {"$unset": {"keywords": ""}})
+    query = asset_index.save_query(db, query="", mode="literal", groups=[])
+
+    page = asset_search.search_page(db, query["_id"], skip=0, limit=10)
+
+    assert page["items"][0]["keywords"] == {"zh": [], "en": []}
+
+
+def test_legacy_descriptions_do_not_participate_in_search(db):
+    seed(db, ("old", "牛排.png", ["牛排"], "旧猪排描述", "Old pork chop description", datetime.now(timezone.utc)))
+    db[asset_index.RECORD_COLLECTION].update_one(
+        {"_id": "old"}, {"$set": {"keywords": {"zh": ["牛排"], "en": ["beef steak"]}}}
+    )
+    assert asset_search.search_records(db, asset_search.literal_groups("猪排")) == []
+    assert asset_search.search_records(db, asset_search.literal_groups("pork chop")) == []
 
 
 def test_semantic_vocabulary_marks_equivalents_as_original_and_expansions_as_lower(db):
@@ -171,16 +290,47 @@ def test_missing_or_unknown_group_is_rejected(db):
 def test_expansions_are_deduped_and_limited_across_groups(db):
     groups = asset_search.validate_vocabulary(
         vocabulary(
-            group("牛肉", simplified="牛肉", english="beef", expansions=["牛排", "Beef", "肥牛", "牛腩", "牛舌"]),
-            group("火锅", simplified="火锅", traditional="火鍋", english="hot pot", expansions=["番茄锅", "麻辣锅", "清汤锅", "鸳鸯锅"]),
+            group("牛肉", simplified="牛肉", english="beef", expansions=[
+                "牛排", "Beef", "肥牛", "牛腩", "牛舌", "牛柳", "牛腱", "牛尾", "beef brisket", "beef shank",
+            ]),
+            group("火锅", simplified="火锅", traditional="火鍋", english="hot pot", expansions=[
+                "番茄锅", "麻辣锅", "清汤锅", "鸳鸯锅", "菌菇火锅", "牛油火锅", "tomato hot pot", "clear broth hot pot", "mushroom hot pot",
+            ]),
+            group("白盘", simplified="白盘", english="white plate", expansions=["白色盘子"]),
         ),
-        "牛肉 火锅",
+        "牛肉 火锅 白盘",
     )
     expansions = [term for item in groups for term in item["expansion_terms"]]
     assert "Beef" not in expansions  # already an equivalent of the same condition
-    assert len(expansions) == asset_search.MAX_EXPANSIONS
-    assert groups[0]["input"] == "牛肉"
-    assert groups[1]["input"] == "火锅"
+    assert len(expansions) == 16
+    assert [len(item["expansions"]) for item in groups] == [8, 8, 0]
+    assert groups[0]["expansions"][-1] == "beef brisket"
+    assert groups[1]["expansions"][-1] == "clear broth hot pot"
+    assert all(item["expansions"] == item["expansion_terms"] for item in groups)
+
+
+def test_more_expansions_match_full_phrases_without_losing_other_conditions(db):
+    now = datetime.now(timezone.utc)
+    seed(
+        db,
+        ("exact", "火锅白盘.png", [], "", "", now),
+        ("expanded", "dish.png", ["白盘"], "", "clear broth hot pot", now),
+        ("wrong-phrase", "dish.png", ["白盘"], "", "clear broth soup", now),
+        ("missing-condition", "dish.png", [], "", "clear broth hot pot", now),
+    )
+    groups = asset_search.validate_vocabulary(
+        vocabulary(
+            group("火锅", simplified="火锅", traditional="火鍋", english="hot pot", expansions=[
+                "番茄锅", "麻辣锅", "清汤锅", "鸳鸯锅", "菌菇火锅", "牛油火锅", "tomato hot pot", "clear broth hot pot",
+            ]),
+            group("白盘", simplified="白盘", english="white plate", expansions=["白色盘子"]),
+        ),
+        "火锅 白盘",
+    )
+
+    ranked = asset_search.search_records(db, groups)
+
+    assert [record["_id"] for record in ranked] == ["exact", "expanded"]
 
 
 def test_agent_failure_degrades_to_the_typed_words(db):

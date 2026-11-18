@@ -52,7 +52,7 @@ export default function AssetPicker({
   const [query, setQuery] = useState('')
   // The submitted search owns the vocabulary; a page never asks the model for it again.
   const [search, setSearch] = useState<AssetSearch | null>(null)
-  const [semantic, setSemantic] = useState(false)
+  const [semantic, setSemantic] = useState(true)
   const [items, setItems] = useState<Asset[]>([])
   // `loaded` counts rows the server returned, which is also the next skip.
   const [loaded, setLoaded] = useState(0)
@@ -194,8 +194,8 @@ export default function AssetPicker({
               className="mp-input asset-search-input"
               type="search"
               value={draft}
-              aria-label="搜索素材名称、Tag 或描述"
-              placeholder="搜索名称、Tag 或描述"
+              aria-label="搜索素材名称、Tag 或关键词"
+              placeholder="搜索名称、Tag 或关键词"
               onChange={(event) => setDraft(event.target.value)}
             />
             <button type="submit" className="mp-btn-secondary mp-btn-small" disabled={listLoading} aria-busy={listLoading}>

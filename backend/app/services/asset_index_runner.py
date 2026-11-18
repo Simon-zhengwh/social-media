@@ -307,10 +307,11 @@ def _process(
                     model=settings.asset_index_model_name,
                     image_url=image_url,
                     original_name=name,
+                    original_tags=tags,
                     timeout_seconds=settings.asset_index_timeout_seconds,
                 )
             else:
-                result = asset_recognition.describe(
+                result = asset_recognition.generate_keywords(
                     client,
                     model=settings.asset_index_model_name,
                     image_url=image_url,
@@ -331,12 +332,11 @@ def _process(
             _write_name_and_tags(db, asset, result, am=am, cookie=cookie, merchant_id=merchant_id)
             name = asset_recognition.name_with_extension(result.name, asset.get("original_name") or "")
             tags = list(result.tags)
-        applied = asset_index.save_description(
+        applied = asset_index.save_keywords(
             db,
             asset_id,
             version=version,
-            description_zh=result.description_zh,
-            description_en=result.description_en,
+            keywords=result.keywords,
         )
     except (ValueError, OSError) as exc:
         asset_index.fail_record(db, asset_id, version=version, error=str(exc))

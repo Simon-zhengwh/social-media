@@ -28,6 +28,7 @@ def recognition(name="红烧肉砂锅", tags=("红烧肉", "砂锅", "浓汁"), 
         "tags": list(tags),
         "description_zh": zh,
         "description_en": en,
+        "keywords": {"zh": ["红烧肉", "砂锅", "浓汁"], "en": ["braised pork", "clay pot", "thick sauce"]},
     }
 
 
@@ -83,7 +84,7 @@ def run(db, store, settings, client, mode, asset_ids):
     )
 
 
-def test_initialize_writes_name_tags_and_both_descriptions(local):
+def test_initialize_writes_name_tags_and_keywords_without_descriptions(local):
     db, store, settings = local
     asset = add_asset(db, store, settings, "dish.png", tags=["11"])
     client = FakeCoreAI(recognition())
@@ -95,8 +96,9 @@ def test_initialize_writes_name_tags_and_both_descriptions(local):
     assert saved["tags"] == ["红烧肉", "砂锅", "浓汁"]
     record = asset_index.record_for_asset(db, str(asset["_id"]))
     assert record["description_status"] == asset_index.READY
-    assert record["description_zh"] == "一只砂锅装着红烧肉。"
-    assert record["description_en"] == "A clay pot of braised pork."
+    assert not record.get("description_zh")
+    assert not record.get("description_en")
+    assert record["keywords"] == recognition()["keywords"]
     assert record["name"] == "红烧肉砂锅.png"
     assert finished["counters"]["succeeded"] == 1
     # One image, one request: nothing extra is queued for the description.
@@ -116,7 +118,7 @@ def test_initialize_keeps_original_values_when_the_model_answer_is_invalid(local
     assert finished["counters"]["failed"] == 1
     record = asset_index.record_for_asset(db, str(asset["_id"]))
     assert record["description_status"] == asset_index.FAILED
-    assert record["description_zh"] == ""
+    assert not record.get("description_zh")
     assert "标签数量" in record["description_error"]
 
 
@@ -133,7 +135,7 @@ def test_retry_scope_only_contains_unfinished_assets(local):
     assert asset_index_runner.scope_for_mode(db, "retry") == [str(second["_id"])]
 
 
-def test_reindex_only_refreshes_descriptions(local):
+def test_reindex_only_refreshes_keywords(local):
     db, store, settings = local
     asset = add_asset(db, store, settings, "dish.png")
     db.assets.update_one({"_id": asset["_id"]}, {"$set": {"original_name": "手工命名.png", "tags": ["人工"]}})
@@ -145,8 +147,72 @@ def test_reindex_only_refreshes_descriptions(local):
     assert saved["original_name"] == "手工命名.png"
     assert saved["tags"] == ["人工"]
     record = asset_index.record_for_asset(db, str(asset["_id"]))
-    assert record["description_zh"] == "新描述"
+    assert not record.get("description_zh")
+    assert record["keywords"] == recognition()["keywords"]
     assert record["description_status"] == asset_index.READY
+
+
+def test_invalid_keywords_keep_previous_keywords(local):
+    db, store, settings = local
+    asset = add_asset(db, store, settings)
+    run(db, store, settings, FakeCoreAI(recognition()), asset_index.RUN_REINDEX, [str(asset["_id"])])
+    previous = asset_index.record_for_asset(db, str(asset["_id"]))
+    broken = recognition(zh="不应写入的新描述", en="Must not replace the old description.")
+    broken["keywords"] = {"zh": ["新词"], "en": "not an array"}
+
+    finished = run(db, store, settings, FakeCoreAI(broken), asset_index.RUN_REINDEX, [str(asset["_id"])])
+
+    assert finished["counters"]["failed"] == 1
+    record = asset_index.record_for_asset(db, str(asset["_id"]))
+    assert record["keywords"] == previous["keywords"]
+
+
+def test_reindex_uses_current_name_tags_and_replaces_old_pork_keywords(local):
+    db, store, settings = local
+    asset = add_asset(db, store, settings, "猪排.png", tags=["猪排", "白盘"])
+    asset_index_runner.sync_catalog(db)
+    db[asset_index.RECORD_COLLECTION].update_one(
+        {"_id": asset["_id"]}, {"$set": {
+            "keywords": {"zh": ["猪排"], "en": ["pork chop"]},
+            "description_zh": "旧猪排描述", "description_en": "Old pork chop description.",
+        }},
+    )
+    db.assets.update_one({"_id": asset["_id"]}, {"$set": {"original_name": "牛排.png", "tags": ["牛肉", "白盘"]}})
+    asset_index_runner.sync_catalog(db)
+    keywords = {"zh": ["牛排", "牛肉", "白盘"], "en": ["beef steak", "beef", "white plate"]}
+    client = FakeCoreAI({"keywords": keywords})
+
+    finished = run(db, store, settings, client, asset_index.RUN_REINDEX, [str(asset["_id"])])
+
+    assert finished["counters"]["succeeded"] == 1
+    assert asset_index.record_for_asset(db, str(asset["_id"]))["keywords"] == keywords
+    messages = client.messages[0]
+    assert "当前名称：牛排.png；当前标签：牛肉、白盘" in messages[1]["content"][0]["text"]
+    assert "旧猪排描述" not in str(messages)
+    assert client.calls == 1
+    from app.services import asset_search
+    assert asset_search.search_records(db, asset_search.literal_groups("猪排")) == []
+    assert asset_search.search_records(db, asset_search.literal_groups("beef steak"))
+
+
+@pytest.mark.parametrize("query", ["白盘", "white plate"])
+def test_routes_match_and_return_keyword_only_hits(monkeypatch, tmp_path, query):
+    client, raw, store, settings, _spawned = _build_web(monkeypatch, tmp_path)
+    db = ScopedDatabase(raw, MERCHANT)
+    asset = add_asset(db, store, settings)
+    asset_index_runner.sync_catalog(db)
+    keywords = {"zh": ["白盘"], "en": ["white plate"]}
+    db[asset_index.RECORD_COLLECTION].update_one({"_id": asset["_id"]}, {"$set": {"keywords": keywords}})
+
+    search = client.post(
+        "/api/merchants/m1/asset-searches", headers=WRITE_HEADERS,
+        json={"query": query, "semantic": False},
+    )
+    assert search.status_code == 201, search.text
+    assert search.json()["total"] == 1
+    page = client.get(f"/api/merchants/m1/am-assets?search_id={search.json()['id']}")
+    assert page.status_code == 200, page.text
+    assert page.json()["items"][0]["keywords"] == keywords
 
 
 def test_concurrent_rename_during_recognition_is_not_overwritten(local, monkeypatch):
@@ -182,24 +248,24 @@ def test_newer_description_request_wins_over_a_slow_result(local):
     # The operator edits the tags while the model is still reading the image.
     asset_index.request_description(db, db.assets.find_one({"_id": asset["_id"]}))
 
-    applied = asset_index.save_description(
-        db, str(asset["_id"]), version=stale_version, description_zh="旧", description_en="Old."
+    applied = asset_index.save_keywords(
+        db, str(asset["_id"]), version=stale_version, keywords={"zh": ["旧"], "en": ["old"]}
     )
 
     assert applied is False
     record = asset_index.record_for_asset(db, str(asset["_id"]))
-    assert record["description_zh"] == ""
+    assert record["keywords"] == {"zh": [], "en": []}
     assert record["description_status"] == asset_index.PENDING
 
 
-def test_failed_description_keeps_the_previous_one(local):
+def test_failed_keyword_generation_keeps_the_previous_keywords(local):
     db, store, settings = local
     asset = add_asset(db, store, settings, "dish.png")
     asset_index.request_description(db, asset)
     record = asset_index.record_for_asset(db, str(asset["_id"]))
-    asset_index.save_description(
+    asset_index.save_keywords(
         db, str(asset["_id"]), version=record["description_version"],
-        description_zh="旧描述", description_en="Old description.",
+        keywords={"zh": ["旧词"], "en": ["old term"]},
     )
     asset_index.request_description(db, db.assets.find_one({"_id": asset["_id"]}))
     newer = asset_index.record_for_asset(db, str(asset["_id"]))
@@ -208,8 +274,7 @@ def test_failed_description_keeps_the_previous_one(local):
 
     record = asset_index.record_for_asset(db, str(asset["_id"]))
     assert record["description_status"] == asset_index.FAILED
-    assert record["description_zh"] == "旧描述"
-    assert record["description_en"] == "Old description."
+    assert record["keywords"] == {"zh": ["旧词"], "en": ["old term"]}
 
 
 def test_deleted_asset_drops_its_record(local):
@@ -308,9 +373,9 @@ def test_routes_report_status_create_a_run_and_search(monkeypatch, tmp_path):
     asset = add_asset(db, store, settings, "dish.png", tags=["火锅"])
     asset_index_runner.sync_catalog(db)
     record = asset_index.record_for_asset(db, str(asset["_id"]))
-    asset_index.save_description(
+    asset_index.save_keywords(
         db, str(asset["_id"]), version=record["description_version"],
-        description_zh="一盘牛肉。", description_en="A plate of beef.",
+        keywords={"zh": ["牛肉"], "en": ["beef"]},
     )
 
     created = client.post(
@@ -336,7 +401,8 @@ def test_routes_report_status_create_a_run_and_search(monkeypatch, tmp_path):
 
     page = client.get(f"/api/merchants/m1/am-assets?search_id={body['id']}&limit=10").json()
     assert [item["id"] for item in page["items"]] == [str(asset["_id"])]
-    assert page["items"][0]["description_en"] == "A plate of beef."
+    assert page["items"][0]["keywords"] == {"zh": ["牛肉"], "en": ["beef"]}
+    assert "description_en" not in page["items"][0]
     assert page["items"][0]["match_tier"] == "original"
 
 
@@ -391,9 +457,9 @@ def test_retry_run_only_covers_failed_assets(monkeypatch, tmp_path):
     broken = add_asset(db, store, settings, "broken.png", color=(70, 80, 90))
     asset_index_runner.sync_catalog(db)
     ready = asset_index.record_for_asset(db, str(good["_id"]))
-    asset_index.save_description(
+    asset_index.save_keywords(
         db, str(good["_id"]), version=ready["description_version"],
-        description_zh="已完成", description_en="Already done.",
+        keywords={"zh": ["已完成"], "en": ["completed"]},
     )
     failed = asset_index.record_for_asset(db, str(broken["_id"]))
     asset_index.fail_record(db, str(broken["_id"]), version=failed["description_version"], error="超时")

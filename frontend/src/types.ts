@@ -136,9 +136,8 @@ export type Asset = {
   /** AM media library tags; older assets may not carry the field yet. */
   tags?: string[]
   usage_count?: number
-  /** Search-index metadata: descriptions are generated from the image itself. */
-  description_zh?: string
-  description_en?: string
+  /** Search keywords use current names/tags and visible image details. */
+  keywords?: { zh: string[]; en: string[] }
   description_status?: 'pending' | 'running' | 'ready' | 'failed'
   /** Which half of the submitted vocabulary matched: originals rank above expansions. */
   match_tier?: 'original' | 'expanded'

@@ -1,4 +1,4 @@
-"""One-off local initialization of asset names, tags and descriptions.
+"""One-off local initialization of asset names, tags and bilingual keywords.
 
 Writes a restorable backup first, then runs the same background index pass the page
 uses, so every image gets exactly one model call and the browser reflects the same
@@ -84,6 +84,7 @@ def backup(db, store: Any, asset_ids: list[str] | None = None) -> list[dict[str,
                 "has_tags_field": "tags" in asset,
                 "description_zh": record.get("description_zh") or "",
                 "description_en": record.get("description_en") or "",
+                "keywords": record.get("keywords") or {"zh": [], "en": []},
                 "description_status": record.get("description_status"),
                 "sha256": asset.get("sha256"),
                 "path": relative,
@@ -209,8 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                     "asset_id": asset_id,
                     "original_name": asset.get("original_name"),
                     "applied": {"name": asset.get("original_name"), "tags": list(asset.get("tags") or [])},
-                    "description_zh": record.get("description_zh") or "",
-                    "description_en": record.get("description_en") or "",
+                    "keywords": record.get("keywords") or {"zh": [], "en": []},
                     "description_status": record.get("description_status"),
                     "description_error": record.get("description_error") or "",
                 }
