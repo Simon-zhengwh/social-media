@@ -35,7 +35,8 @@ def run(vite_url, output_dir):
                      title='原照编辑器', preview_url='/fixture/editor.html', download_url='/fixture/editor-download.html')
     bundle_file = dict(id='bundle', kind='bundle', file_name='result.zip', content_type='application/zip', size=20,
                        title='完整结果包', preview_url=None, download_url='/fixture/result.zip')
-    restores = []
+    restores, candidate_retries = [], []
+    retry_model = 'seedream-5.5-image-to-image'
 
     def check(name, ok=True):
         assert ok, name
@@ -78,6 +79,14 @@ def run(vite_url, output_dir):
                         records.insert(0, data)
                     else:
                         data = records
+                elif path.endswith(f'/original-replacements/model-batch/candidates/{retry_model}/retry'):
+                    assert request.method == 'POST'
+                    candidate_retries.append(path)
+                    record = records[0]
+                    retry_candidate = record['candidates'][1]
+                    queued = dict(record, candidates=[record['candidates'][0], dict(model=retry_model, status='queued'), record['candidates'][2]])
+                    retry_candidate.update(status='succeeded', output=output, error=None)
+                    return route.fulfill(status=202, json=queued)
                 elif path.endswith('/artifacts/restore'):
                     restores.append(path)
                     records[0]['artifacts'] = [html_file, bundle_file]
@@ -247,6 +256,23 @@ def run(vite_url, output_dir):
             page.get_by_role('button', name='原照替换', exact=True).click()
             expect(panel.locator('.original-replacement-logo')).to_have_count(1)
             check('floating close button remains clickable and the panel reopens')
+            records[:] = [dict(id='model-batch', kind='model', status='running', stage='model_running', source_version=1,
+                               source=dict(preview_url=output['preview_url']), replacements=[], created_at=now, updated_at=now,
+                               candidates=[dict(model='seedream-5-pro-image-to-image', status='running'),
+                                           dict(model=retry_model, status='failed', error='Image fetch failed'),
+                                           dict(model='minimax-h3-image-edit', status='succeeded', output=output)])]
+            page.reload()
+            retry = panel.get_by_role('button', name='重试 Seedream 5.5', exact=True)
+            expect(retry).to_be_enabled()
+            expect(panel.locator('.replacement-status')).to_have_count(0)
+            expect(panel).not_to_contain_text('Image fetch failed')
+            expect(panel.get_by_role('button', name='应用 MiniMax H3')).to_be_enabled()
+            retry.click()
+            expect(retry).to_have_count(0)
+            expect(panel.get_by_role('button', name='应用 Seedream 5.5')).to_be_enabled(timeout=8000)
+            expect(panel.get_by_role('button', name='应用 MiniMax H3')).to_be_enabled()
+            expect(panel.locator('select')).to_have_value('model-batch')
+            check('the failed candidate retries in place while the other candidates keep their states', len(candidate_retries) == 1)
             check('no browser errors or unexpected API calls', not errors and not unexpected)
         finally:
             browser.close()

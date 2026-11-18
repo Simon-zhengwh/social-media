@@ -313,6 +313,13 @@ export async function retryModelReplacement(taskId: string, replacementId: strin
   ))
 }
 
+export async function retryOriginalReplacementCandidate(taskId: string, replacementId: string, model: ImageModel): Promise<OriginalReplacementTask> {
+  return parseResponse<OriginalReplacementTask>(await apiFetch(
+    `/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements/${encodeURIComponent(replacementId)}/candidates/${encodeURIComponent(model)}/retry`,
+    { method: 'POST' },
+  ))
+}
+
 export async function applyOriginalReplacement(task: WholeImageTask, replacementId: string, candidateModel?: ImageModel): Promise<WholeImageTask> {
   return parseResponse<WholeImageTask>(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(task.id)}/original-replacements/${encodeURIComponent(replacementId)}/apply`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

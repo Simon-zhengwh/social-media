@@ -1073,6 +1073,22 @@ def retry_model_replacement(task_id: str, replacement_id: str, payload: WholeIma
     return original_replacement_runner.task_out(doc)
 
 
+@router.post("/tasks/{task_id}/original-replacements/{replacement_id}/candidates/{candidate_model}/retry", status_code=202)
+def retry_original_replacement_candidate(task_id: str, replacement_id: str, candidate_model: str,
+                                         request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    _require_configured(request)
+    state = request.app.state
+    db = request_db(request)
+    _get_task_or_404(db, task_id)
+    try:
+        doc = original_replacement.queue_model_candidate_retry(db, task_id, replacement_id, candidate_model)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    background_tasks.add_task(original_replacement.run_model_batch, db, state.settings,
+                              request_store(request), state.core_ai, doc["_id"], candidate_model)
+    return original_replacement_runner.task_out(doc)
+
+
 @router.get("/tasks/{task_id}/original-replacements")
 def list_original_replacements(task_id: str, request: Request) -> list[dict[str, Any]]:
     try:

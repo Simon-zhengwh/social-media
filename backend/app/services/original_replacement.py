@@ -56,6 +56,36 @@ def retry_model_batch(db: Any, task_id: str, replacement_id: str, feedback: str)
                   kind="model", retry_of=replacement_id, feedback=feedback)
 
 
+def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, model: str) -> dict[str, Any]:
+    batch = get_task(db, task_id, replacement_id)
+    candidates = batch.get("candidates", [])
+    index = next((i for i, item in enumerate(candidates) if item["model"] == model), None)
+    if batch.get("kind") != "model" or index is None:
+        raise StudioError("candidate_missing", "找不到这张模型候选", 404)
+    field = f"candidates.{index}"
+    current = candidates[index]["status"]
+    terminal_failure = batch["status"] in {"failed", "interrupted"}
+    if current != "failed" and not (terminal_failure and current in original_replacement_runner.ACTIVE):
+        raise StudioError("candidate_not_retryable", "只能重试失败的候选", 409)
+
+    query = {"_id": replacement_id, f"{field}.status": current}
+    values: dict[str, Any] = {"status": "running", "stage": "model_running", "progress": 0,
+                              "error": None, "updated_at": whole_image.utcnow()}
+    if terminal_failure:
+        # Older failed or interrupted records may still have unfinished candidate states.
+        query["status"] = batch["status"]
+        error = (batch.get("error") or {}).get("message") or "模型结果未保存"
+        for i, item in enumerate(candidates):
+            if i != index and item["status"] in original_replacement_runner.ACTIVE:
+                values[f"candidates.{i}.status"] = "failed"
+                values[f"candidates.{i}.error"] = error
+    values[field] = {"model": model, "status": "queued"}
+    claimed = db.background_replace_tasks.find_one_and_update(query, {"$set": values}, return_document=ReturnDocument.AFTER)
+    if claimed is None:
+        raise StudioError("candidate_changed", "候选状态已变化，请稍后重试", 409)
+    return claimed
+
+
 def _model_prompt(task: dict[str, Any]) -> str:
     lines = ["图片 1 是唯一的海报底稿。保持原画布比例、取景、标题、文字、排版、装饰和未指定区域。"
              "只对下列素材对应的目标做局部替换。输出完整海报。"]
@@ -79,13 +109,39 @@ def _model_prompt(task: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient, batch_id: str) -> None:
+def _finish_model_batch(db: Any, batch_id: str) -> None:
     tasks = db.background_replace_tasks
-    batch = tasks.find_one_and_update(
-        {"_id": batch_id, "kind": "model", "status": "queued"},
-        {"$set": {"status": "running", "stage": "model_running", "started_at": whole_image.utcnow(),
-                  "updated_at": whole_image.utcnow()}}, return_document=ReturnDocument.AFTER)
+    finished = {"$not": {"$elemMatch": {"status": {"$in": original_replacement_runner.ACTIVE}}}}
+    filter_base = {"_id": batch_id, "status": "running"}
+    time = whole_image.utcnow()
+    updated = tasks.update_one(
+        {**filter_base, "candidates": {**finished, "$elemMatch": {"status": "succeeded"}}},
+        {"$set": {"status": "succeeded", "stage": "done", "progress": 100, "error": None, "updated_at": time}},
+    )
+    if not updated.matched_count:
+        tasks.update_one(
+            {**filter_base, "candidates": {"$not": {"$elemMatch": {"status": {"$in": [*original_replacement_runner.ACTIVE, "succeeded"]}}}}},
+            {"$set": {"status": "failed", "stage": "failed", "progress": 0, "updated_at": time,
+                      "error": {"code": "all_models_failed", "message": "本批没有成功的候选"}}},
+        )
+
+
+def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
+                    batch_id: str, candidate_model: str | None = None) -> None:
+    tasks = db.background_replace_tasks
+    batch_query = {"_id": batch_id, "kind": "model"}
+    if candidate_model is None:
+        batch = tasks.find_one_and_update(
+            {**batch_query, "status": "queued"},
+            {"$set": {"status": "running", "stage": "model_running", "started_at": whole_image.utcnow(),
+                      "updated_at": whole_image.utcnow()}}, return_document=ReturnDocument.AFTER)
+    else:
+        batch = tasks.find_one({**batch_query, "status": "running"})
     if not batch:
+        return
+    candidates = [(index, item["model"]) for index, item in enumerate(batch["candidates"])
+                  if item["status"] == "queued" and (candidate_model is None or candidate_model == item["model"])]
+    if not candidates:
         return
 
     references = []
@@ -103,7 +159,9 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
         candidate = {"model": model, "status": "running", "model_input": model_input,
                      "started_at": whole_image.utcnow()}
         field = f"candidates.{index}"
-        tasks.update_one({"_id": batch_id}, {"$set": {field: candidate}})
+        claimed = tasks.update_one({"_id": batch_id, f"{field}.status": "queued"}, {"$set": {field: candidate}})
+        if not claimed.matched_count:
+            return
         try:
             data = client.edit_image(prompt, references, size=size, model=model)
             output = whole_image._save_output_asset(
@@ -119,20 +177,20 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
     try:
         for item in images:
             references.append(image_ref_from_asset(db, store, item["asset_id"]))
-        with ThreadPoolExecutor(max_workers=len(REPLACEMENT_MODELS)) as pool:
-            futures = [pool.submit(run_candidate, index, model) for index, model in enumerate(REPLACEMENT_MODELS)]
+    except Exception as exc:  # noqa: BLE001 - report errors loading shared inputs
+        error = whole_image._error_text(exc)
+        for index, model in candidates:
+            field = f"candidates.{index}"
+            tasks.update_one({"_id": batch_id, f"{field}.status": "queued"},
+                             {"$set": {field: {"model": model, "status": "failed", "error": error}}})
+    else:
+        with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+            futures = [pool.submit(run_candidate, index, model) for index, model in candidates]
             for future in futures:
                 future.result()
-    except Exception as exc:  # noqa: BLE001 - report errors loading shared inputs
-        original_replacement_runner._fail(db, batch_id, exc)
-        return
     finally:
         cleanup_image_refs(references)
-
-    if any(item["status"] == "succeeded" for item in tasks.find_one({"_id": batch_id})["candidates"]):
-        original_replacement_runner._update(db, batch_id, status="succeeded", stage="done", progress=100)
-    else:
-        original_replacement_runner._fail(db, batch_id, StudioError("all_models_failed", "三个模型均未生成候选"))
+        _finish_model_batch(db, batch_id)
 
 
 def list_tasks(db: Any, task_id: str) -> list[dict[str, Any]]:

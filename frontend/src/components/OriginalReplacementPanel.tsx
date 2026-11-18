@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, applyOriginalReplacement, createOriginalReplacement, listOriginalReplacements, merchantPath, refreshOriginalReplacement, restoreOriginalReplacementArtifacts, retryModelReplacement, selectWholeImageVersion } from '../api'
+import { ApiError, applyOriginalReplacement, createOriginalReplacement, listOriginalReplacements, merchantPath, refreshOriginalReplacement, restoreOriginalReplacementArtifacts, retryModelReplacement, retryOriginalReplacementCandidate, selectWholeImageVersion } from '../api'
 import type { Asset, BrandLogoImage, OriginalReplacementTask, WholeImageTask } from '../types'
 import { parseServerDate } from '../time'
 import { assetDisplayName } from '../assetNames'
@@ -51,7 +51,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
   const [records, setRecords] = useState<OriginalReplacementTask[]>([])
   const [selectedId, setSelectedId] = useState<string | null>()
   const [loading, setLoading] = useState(true)
-  const [operation, setOperation] = useState<'agent' | 'model' | 'feedback' | 'apply' | 'refresh' | 'restore' | null>(null)
+  const [operation, setOperation] = useState<'agent' | 'model' | 'feedback' | 'apply' | 'refresh' | 'restore' | 'retry' | null>(null)
   const [feedback, setFeedback] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -137,6 +137,12 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
     setFeedback('')
   }
 
+  const updateRecord = (next: OriginalReplacementTask) => {
+    if (!mounted.current) return
+    listRequest.current++
+    setRecords((previous) => previous.map((item) => item.id === next.id ? next : item))
+  }
+
   const submit = (kind: 'agent' | 'model') => {
     if (!canSubmit || lock.current) return
     if (replacements.length < 1) { setError('请添加原照或选择 Logo'); return }
@@ -202,14 +208,10 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
             </div>
           )}
           {selected.split_all_elements ? <p className="original-replacement-mode">全部拆分元素（含艺术字）</p> : null}
-          {active(selected) ? <div className="replacement-status" role="status">{stages[selected.stage] || selected.stage} · 已等待 {Math.floor(elapsed / 60)} 分 {elapsed % 60} 秒<p>可继续修改海报或关闭页面，结果仍基于提交时的 v{selected.source_version}。</p></div> : null}
-          {selected.error ? <div className="asset-notice asset-notice-error" role="alert"><p>{selected.error.message}</p>
+          {active(selected) && selected.kind !== 'model' ? <div className="replacement-status" role="status">{stages[selected.stage] || selected.stage} · 已等待 {Math.floor(elapsed / 60)} 分 {elapsed % 60} 秒<p>可继续修改海报或关闭页面，结果仍基于提交时的 v{selected.source_version}。</p></div> : null}
+          {selected.error && selected.kind !== 'model' ? <div className="asset-notice asset-notice-error" role="alert"><p>{selected.error.message}</p>
             {selected.run_id ? <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation)} onClick={() => void perform('refresh', async () => {
-              const next = await refreshOriginalReplacement(task.id, selected.id)
-              if (mounted.current) {
-                listRequest.current++
-                setRecords((previous) => previous.map((item) => item.id === next.id ? next : item))
-              }
+              updateRecord(await refreshOriginalReplacement(task.id, selected.id))
             })}>查询已有结果</button> : null}
           </div> : null}
           {selected.kind === 'model' ? <>
@@ -235,8 +237,14 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
                             }
                             await onRefreshTask()
                           })}>{versionId ? `切换到 v${candidate.applied_version}` : '应用'}</button>}
-                  </> : <span className="original-model-status" title={candidate.error || undefined}>
-                    {candidate.status === 'failed' ? candidate.error || '替换失败' : candidate.status === 'queued' ? '等待处理' : '正在替换'}
+                  </> : candidate.status === 'failed' ? <>
+                    <span>替换失败</span>
+                    <button type="button" className="mp-btn-secondary mp-btn-small" aria-label={`重试 ${label}`}
+                      disabled={Boolean(operation)} onClick={() => void perform('retry', async () => {
+                        updateRecord(await retryOriginalReplacementCandidate(task.id, selected.id, candidate.model))
+                      })}>重试</button>
+                  </> : <span className="original-model-status">
+                    {candidate.status === 'queued' ? '等待处理' : '正在替换'}
                   </span>}
                 </div>
               })}

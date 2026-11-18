@@ -129,6 +129,66 @@ def test_model_feedback_uses_original_source_and_applies_chosen_candidate(env):
         assert "底稿上的 Logo" in second["prompt"]
 
 
+@pytest.mark.parametrize("sibling_running", [False, True])
+def test_retry_only_queues_the_failed_candidate_in_the_same_batch(env, sibling_running):
+    task, background = model_batch(env)
+    failed_model = "seedream-5.5-image-to-image"
+    edit = env.client.edit_image
+
+    def fail_one(prompt, refs, *, size, model):
+        if model == failed_model:
+            raise RuntimeError("Image fetch failed")
+        return edit(prompt, refs, size=size, model=model)
+
+    env.client.edit_image = fail_one
+    run_background(background)
+    batches = env.db.background_replace_tasks
+    baseline = batches.find_one({"_id": task["id"]})
+    if sibling_running:
+        batches.update_one({"_id": task["id"]}, {"$set": {"status": "running", "candidates.0.status": "running"}})
+    env.client.edit_image = edit
+    env.client.edit_calls.clear()
+    retry = BackgroundTasks()
+    response = routes.retry_original_replacement_candidate(env.task_id, task["id"], failed_model, env.request, retry)
+    assert response["id"] == task["id"]
+    assert response["status"] == "running"
+    assert response["candidates"][1]["status"] == "queued"
+    with pytest.raises(HTTPException) as duplicate:
+        routes.retry_original_replacement_candidate(env.task_id, task["id"], failed_model, env.request, BackgroundTasks())
+    assert duplicate.value.status_code == 409
+
+    run_background(retry)
+    assert [call["model"] for call in env.client.edit_calls] == [failed_model]
+    assert env.client.edit_calls[0]["reference_names"][1:] == ["beef.png"]
+    assert env.client.edit_calls[0]["prompt"] == baseline["candidates"][1]["model_input"]["prompt"]
+    restored = batches.find_one({"_id": task["id"]})
+    assert restored["status"] == ("running" if sibling_running else "succeeded")
+    assert restored["candidates"][1]["status"] == "succeeded"
+    assert restored["candidates"][2] == baseline["candidates"][2]
+    assert batches.count_documents({}) == 1
+    with pytest.raises(HTTPException) as already_succeeded:
+        routes.retry_original_replacement_candidate(env.task_id, task["id"], failed_model, env.request, BackgroundTasks())
+    assert already_succeeded.value.status_code == 409
+
+
+def test_retry_recovers_an_interrupted_candidate_in_a_historical_batch(env):
+    task, _ = model_batch(env)
+    batches = env.db.background_replace_tasks
+    batches.update_one({"_id": task["id"]}, {"$set": {"status": "interrupted", "candidates.1.status": "running"}})
+    before = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert [candidate["status"] for candidate in before["candidates"]] == ["failed", "failed", "failed"]
+
+    model = before["candidates"][1]["model"]
+    retry = BackgroundTasks()
+    routes.retry_original_replacement_candidate(env.task_id, task["id"], model, env.request, retry)
+    run_background(retry)
+
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert restored["status"] == "succeeded"
+    assert [candidate["status"] for candidate in restored["candidates"]] == ["failed", "succeeded", "failed"]
+    assert [call["model"] for call in env.client.edit_calls] == [model]
+
+
 def test_successful_candidates_apply_independently_and_keep_legacy_versions(env):
     task, background = model_batch(env)
     run_background(background)
