@@ -1,9 +1,11 @@
 """Exercise the real studio with isolated API fixtures; never calls a remote model."""
 import argparse
 import json
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from PIL import Image
 from playwright.sync_api import expect, sync_playwright
 
 
@@ -37,6 +39,10 @@ def run(vite_url, output_dir):
                        title='完整结果包', preview_url=None, download_url='/fixture/result.zip')
     restores, candidate_retries = [], []
     retry_model = 'seedream-5.5-image-to-image'
+    raw_candidate = Image.new('RGB', (300, 400), '#12835a')
+    raw_candidate.paste('#702b8e', (0, 200, 300, 400))
+    raw_png = BytesIO()
+    raw_candidate.save(raw_png, format='PNG')
 
     def check(name, ok=True):
         assert ok, name
@@ -58,6 +64,8 @@ def run(vite_url, output_dir):
                 path = urlsplit(request.url).path
                 if path.startswith('/fixture/') and path.endswith('.svg'):
                     return route.fulfill(content_type='image/svg+xml', body='<svg xmlns="http://www.w3.org/2000/svg" width="320" height="400"><rect width="320" height="400" fill="#e4dcff"/></svg>')
+                if path.endswith('/candidates/seedream-5-pro-image-to-image/crop-source'):
+                    return route.fulfill(content_type='image/png', body=raw_png.getvalue())
                 if path == '/fixture/editor.html':
                     return route.fulfill(content_type='text/html', body='<button onclick="this.textContent=\'Edited\'">Drag photo</button>')
                 if path == '/fixture/data':
@@ -87,6 +95,13 @@ def run(vite_url, output_dir):
                     queued = dict(record, candidates=[record['candidates'][0], dict(model=retry_model, status='queued'), record['candidates'][2]])
                     retry_candidate.update(status='succeeded', output=output, error=None)
                     return route.fulfill(status=202, json=queued)
+                elif path.endswith('/original-replacements/model-batch/candidates/seedream-5-pro-image-to-image/retry'):
+                    assert request.method == 'POST' and urlsplit(request.url).query == 'for_crop=true'
+                    candidate_retries.append(path)
+                    candidate = records[0]['candidates'][0]
+                    candidate.update(status='succeeded', output=dict(preview_url='/fixture/raw-seedream.svg', width=300, height=400),
+                                     for_crop=True, error=None)
+                    return route.fulfill(status=202, json=records[0])
                 elif path.endswith('/artifacts/restore'):
                     restores.append(path)
                     records[0]['artifacts'] = [html_file, bundle_file]
@@ -257,7 +272,7 @@ def run(vite_url, output_dir):
             expect(panel.locator('.original-replacement-logo')).to_have_count(1)
             check('floating close button remains clickable and the panel reopens')
             records[:] = [dict(id='model-batch', kind='model', status='running', stage='model_running', source_version=1,
-                               source=dict(preview_url=output['preview_url']), replacements=[], created_at=now, updated_at=now,
+                               source=dict(preview_url=output['preview_url'], width=1080, height=1350), replacements=[], created_at=now, updated_at=now,
                                candidates=[dict(model='seedream-5-pro-image-to-image', status='unsupported', error='不支持此格式'),
                                            dict(model=retry_model, status='failed', error='Image fetch failed'),
                                            dict(model='minimax-h3-image-edit', status='succeeded', output=output)])]
@@ -276,6 +291,32 @@ def run(vite_url, output_dir):
             expect(panel.get_by_role('button', name='应用 MiniMax H3')).to_be_enabled()
             expect(panel.locator('select')).to_have_value('model-batch')
             check('the failed candidate retries in place while the other candidates keep their states', len(candidate_retries) == 1)
+            panel.get_by_role('button', name='生成 Seedream 5 Pro 后裁剪').click()
+            panel.get_by_role('button', name='裁剪 Seedream 5 Pro').click()
+            crop = page.get_by_role('dialog', name='裁剪画面')
+            canvas = crop.locator('canvas')
+            export = crop.get_by_role('button', name='导出 PNG')
+            expect(export).to_be_enabled()
+            frame = canvas.bounding_box()
+            check('the preview displays the source poster aspect ratio', abs(frame['width'] / frame['height'] - 0.8) < 0.01)
+            with page.expect_download() as initial:
+                export.click()
+            crop.get_by_role('slider', name='缩放').fill('160')
+            expect(crop.locator('output')).to_have_text('160%')
+            page.mouse.move(frame['x'] + frame['width'] / 2, frame['y'] + frame['height'] / 2)
+            page.mouse.down()
+            page.mouse.move(frame['x'] + frame['width'] / 2, frame['y'] + 4, steps=5)
+            page.mouse.up()
+            with page.expect_download() as adjusted:
+                export.click()
+            initial.value.save_as(output_dir / 'crop-centered.png')
+            adjusted.value.save_as(output_dir / 'crop-adjusted.png')
+            with Image.open(output_dir / 'crop-centered.png') as centered, Image.open(output_dir / 'crop-adjusted.png') as changed:
+                check('manual crop exports the exact target PNG dimensions', changed.format == 'PNG' and changed.size == (1080, 1350))
+                check('drag and zoom change the exported crop',
+                      centered.getpixel((540, 337))[:3] == (18, 131, 90) and changed.getpixel((540, 337))[:3] == (112, 43, 142))
+                check('the exported crop has no uncovered edges', changed.convert('RGBA').getchannel('A').getextrema() == (255, 255))
+            expect(panel.get_by_role('button', name='应用 Seedream 5 Pro')).to_have_count(0)
             check('no browser errors or unexpected API calls', not errors and not unexpected)
         finally:
             browser.close()

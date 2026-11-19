@@ -425,6 +425,7 @@ export type OriginalReplacementItem = { target: string; asset_id: string }
 export type OriginalReplacementCandidate = {
   model: ImageModel
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'unsupported'
+  for_crop?: boolean
   output: { width: number; height: number; preview_url: string } | null
   error: string | null
   applied_version_id?: string | null

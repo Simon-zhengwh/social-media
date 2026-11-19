@@ -420,11 +420,17 @@ def task_out(doc: dict[str, Any]) -> dict[str, Any]:
     candidates = []
     for candidate in doc.get("candidates", []):
         item = {key: candidate.get(key) for key in ("model", "status", "error")}
+        if candidate.get("for_crop"):
+            item["for_crop"] = True
         for key in ("applied_version_id", "applied_version"):
             item[key] = candidate.get(key) or (doc.get(key) if item["model"] == doc.get("applied_candidate_model") else None)
         candidate_output = candidate.get("output")
         if doc["status"] in {"interrupted", "failed"} and item["status"] in ACTIVE:
             item.update(status="failed", error=(doc.get("error") or {}).get("message") or "模型结果未保存")
+        if item["status"] == "failed" and not item.get("for_crop"):
+            preflight = model_candidate(item["model"], doc["source"])
+            if preflight["status"] == "unsupported":
+                item.update(preflight)
         item["output"] = {
             "width": candidate_output["width"], "height": candidate_output["height"],
             "preview_url": asset_url(merchant_id, candidate_output["asset_id"]),

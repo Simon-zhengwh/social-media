@@ -1075,18 +1075,32 @@ def retry_model_replacement(task_id: str, replacement_id: str, payload: WholeIma
 
 @router.post("/tasks/{task_id}/original-replacements/{replacement_id}/candidates/{candidate_model}/retry", status_code=202)
 def retry_original_replacement_candidate(task_id: str, replacement_id: str, candidate_model: str,
-                                         request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+                                         request: Request, background_tasks: BackgroundTasks, for_crop: bool = False) -> dict[str, Any]:
     _require_configured(request)
     state = request.app.state
     db = request_db(request)
     _get_task_or_404(db, task_id)
     try:
-        doc = original_replacement.queue_model_candidate_retry(db, task_id, replacement_id, candidate_model)
+        doc = original_replacement.queue_model_candidate_retry(db, task_id, replacement_id, candidate_model, for_crop=for_crop)
     except whole_image.StudioError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     background_tasks.add_task(original_replacement.run_model_batch, db, state.settings,
                               request_store(request), state.core_ai, doc["_id"], candidate_model)
     return original_replacement_runner.task_out(doc)
+
+
+@router.get("/tasks/{task_id}/original-replacements/{replacement_id}/candidates/{candidate_model}/crop-source")
+def get_original_replacement_crop_source(task_id: str, replacement_id: str, candidate_model: str, request: Request) -> Response:
+    try:
+        batch = original_replacement.get_task(request_db(request), task_id, replacement_id)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    output = next((item.get("output") for item in batch.get("candidates", [])
+                   if item["model"] == candidate_model and item.get("for_crop") and item["status"] == "succeeded"), None)
+    if not output:
+        raise HTTPException(status_code=404, detail="裁剪图片尚未就绪")
+    data = _artifact_bytes(request_store(request), output)
+    return Response(data, media_type="image/png", headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/tasks/{task_id}/original-replacements")

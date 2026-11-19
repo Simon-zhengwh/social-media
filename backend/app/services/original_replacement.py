@@ -52,19 +52,21 @@ def retry_model_batch(db: Any, task_id: str, replacement_id: str, feedback: str)
                   kind="model", retry_of=replacement_id, feedback=feedback)
 
 
-def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, model: str) -> dict[str, Any]:
+def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, model: str, *, for_crop: bool = False) -> dict[str, Any]:
     batch = get_task(db, task_id, replacement_id)
     candidates = batch.get("candidates", [])
     index = next((i for i, item in enumerate(candidates) if item["model"] == model), None)
     if batch.get("kind") != "model" or index is None:
         raise StudioError("candidate_missing", "找不到这张模型候选", 404)
     candidate = original_replacement_runner.model_candidate(model, batch["source"])
-    if candidate["status"] == "unsupported":
+    if candidate["status"] == "unsupported" and not for_crop:
         raise StudioError("unsupported_format", candidate["error"], 422)
+    if batch["status"] == "queued":
+        raise StudioError("batch_not_ready", "请等待本批模型开始处理", 409)
     field = f"candidates.{index}"
     current = candidates[index]["status"]
     terminal_failure = batch["status"] in {"failed", "interrupted"}
-    if current != "failed" and not (terminal_failure and current in original_replacement_runner.ACTIVE):
+    if current not in {"failed", "unsupported"} and not (terminal_failure and current in original_replacement_runner.ACTIVE):
         raise StudioError("candidate_not_retryable", "只能重试失败的候选", 409)
 
     query = {"_id": replacement_id, f"{field}.status": current}
@@ -78,7 +80,7 @@ def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, mode
             if i != index and item["status"] in original_replacement_runner.ACTIVE:
                 values[f"candidates.{i}.status"] = "failed"
                 values[f"candidates.{i}.error"] = error
-    values[field] = candidate
+    values[field] = {"model": model, "status": "queued", **({"for_crop": True} if for_crop else {})}
     claimed = db.background_replace_tasks.find_one_and_update(query, {"$set": values}, return_document=ReturnDocument.AFTER)
     if claimed is None:
         raise StudioError("candidate_changed", "候选状态已变化，请稍后重试", 409)
@@ -151,12 +153,15 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
     size = gateway_image_size(width, height)
 
     def run_candidate(index: int, model: str) -> None:
+        for_crop = batch["candidates"][index].get("for_crop", False)
         model_input = {"channel": "gateway", "provider": "core-ai", "endpoint": "/images/edits",
                        "model": model, "prompt": prompt, "images": images,
                        "parameters": {"size": size, "quality": settings.core_ai_image_quality,
                                       "n": 1, "output_format": "png"}}
         candidate = {"model": model, "status": "running", "model_input": model_input,
                      "started_at": whole_image.utcnow()}
+        if for_crop:
+            candidate["for_crop"] = True
         field = f"candidates.{index}"
         claimed = tasks.update_one({"_id": batch_id, f"{field}.status": "queued"}, {"$set": {field: candidate}})
         if not claimed.matched_count:
@@ -165,7 +170,7 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
             data = client.edit_image(prompt, references, size=size, model=model)
             output = whole_image._save_output_asset(
                 db, settings, store, task_id=batch_id, version=1, role=model,
-                data=data, target_size=(width, height), allow_letterbox=False)
+                data=data, target_size=None if for_crop else (width, height), allow_letterbox=False)
             candidate.update(status="succeeded", output=output)
         except Exception as exc:  # noqa: BLE001 - the other candidates keep running
             candidate.update(status="failed", error=whole_image._error_text(exc))
@@ -178,10 +183,10 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
             references.append(image_ref_from_asset(db, store, item["asset_id"]))
     except Exception as exc:  # noqa: BLE001 - report errors loading shared inputs
         error = whole_image._error_text(exc)
-        for index, model in candidates:
+        for index, _ in candidates:
             field = f"candidates.{index}"
             tasks.update_one({"_id": batch_id, f"{field}.status": "queued"},
-                             {"$set": {field: {"model": model, "status": "failed", "error": error}}})
+                             {"$set": {f"{field}.status": "failed", f"{field}.error": error}})
     else:
         with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
             futures = [pool.submit(run_candidate, index, model) for index, model in candidates]
@@ -217,6 +222,8 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
         candidate = next((item for item in replacement["candidates"] if item["model"] == candidate_model), None)
         if candidate is None:
             raise StudioError("candidate_required", "请选择本批次的模型候选", 422)
+        if candidate.get("for_crop"):
+            raise StudioError("crop_required", "请裁剪后导出此候选", 409)
         application_key = f"{replacement_id}_{candidate['model'].replace('.', '_')}"
         output = candidate.get("output") if candidate["status"] == "succeeded" else None
     else:

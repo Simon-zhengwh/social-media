@@ -313,9 +313,9 @@ export async function retryModelReplacement(taskId: string, replacementId: strin
   ))
 }
 
-export async function retryOriginalReplacementCandidate(taskId: string, replacementId: string, model: ImageModel): Promise<OriginalReplacementTask> {
+export async function retryOriginalReplacementCandidate(taskId: string, replacementId: string, model: ImageModel, forCrop = false): Promise<OriginalReplacementTask> {
   return parseResponse<OriginalReplacementTask>(await apiFetch(
-    `/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements/${encodeURIComponent(replacementId)}/candidates/${encodeURIComponent(model)}/retry`,
+    `/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements/${encodeURIComponent(replacementId)}/candidates/${encodeURIComponent(model)}/retry${forCrop ? '?for_crop=true' : ''}`,
     { method: 'POST' },
   ))
 }

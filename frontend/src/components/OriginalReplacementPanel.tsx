@@ -5,6 +5,7 @@ import { parseServerDate } from '../time'
 import { assetDisplayName } from '../assetNames'
 import { imageModelLabel } from '../modelGeneration'
 import { ZoomableImage } from './ImageLightbox'
+import PosterCropDialog from './PosterCropDialog'
 
 type Props = {
   task: WholeImageTask
@@ -49,6 +50,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
   const [rows, setRows] = useState<Row[]>(() => carried(task, assets))
   const [splitAllElements, setSplitAllElements] = useState(false)
   const [records, setRecords] = useState<OriginalReplacementTask[]>([])
+  const [crop, setCrop] = useState<{ src: string; width: number; height: number } | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>()
   const [loading, setLoading] = useState(true)
   const [operation, setOperation] = useState<'agent' | 'model' | 'feedback' | 'apply' | 'refresh' | 'restore' | 'retry' | null>(null)
@@ -224,7 +226,11 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
                   <strong title={label}>{label}</strong>
                   {candidate.output ? <>
                     <ZoomableImage src={candidate.output.preview_url} alt={label} />
-                    {versionId && versionId === task.current_version_id ? <span>当前 v{candidate.applied_version}</span>
+                    {candidate.for_crop ? <button type="button" className="mp-btn-secondary mp-btn-small" aria-label={`裁剪 ${label}`}
+                      onClick={() => setCrop({
+                        src: merchantPath(`/api/whole-image/tasks/${encodeURIComponent(task.id)}/original-replacements/${encodeURIComponent(selected.id)}/candidates/${encodeURIComponent(candidate.model)}/crop-source`),
+                        width: selected.source.width, height: selected.source.height,
+                      })}>裁剪导出</button> : versionId && versionId === task.current_version_id ? <span>当前 v{candidate.applied_version}</span>
                       : <button type="button" className="mp-btn-secondary mp-btn-small"
                           aria-label={versionId ? `切换到 ${label} v${candidate.applied_version}` : `应用 ${label}`}
                           disabled={Boolean(operation) || !canSubmit}
@@ -237,12 +243,14 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
                             }
                             await onRefreshTask()
                           })}>{versionId ? `切换到 v${candidate.applied_version}` : '应用'}</button>}
-                  </> : candidate.status === 'unsupported' ? <span>{candidate.error}</span> : candidate.status === 'failed' ? <>
-                    <span>替换失败</span>
-                    <button type="button" className="mp-btn-secondary mp-btn-small" aria-label={`重试 ${label}`}
-                      disabled={Boolean(operation)} onClick={() => void perform('retry', async () => {
-                        updateRecord(await retryOriginalReplacementCandidate(task.id, selected.id, candidate.model))
-                      })}>重试</button>
+                  </> : candidate.status === 'unsupported' || candidate.status === 'failed' ? <>
+                    <span>{candidate.status === 'unsupported' ? candidate.error : '替换失败'}</span>
+                    <button type="button" className="mp-btn-secondary mp-btn-small"
+                      aria-label={candidate.status === 'unsupported' ? `生成 ${label} 后裁剪` : `重试 ${label}`}
+                      disabled={Boolean(operation) || selected.status === 'queued'} onClick={() => void perform('retry', async () => {
+                        updateRecord(await retryOriginalReplacementCandidate(task.id, selected.id, candidate.model,
+                          candidate.status === 'unsupported' || candidate.for_crop))
+                      })}>{candidate.status === 'unsupported' ? '生成后裁剪' : '重试'}</button>
                   </> : <span className="original-model-status">
                     {candidate.status === 'queued' ? '等待处理' : '正在替换'}
                   </span>}
@@ -304,6 +312,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
         </>
       )}
       {error || loadError ? <div className="asset-notice asset-notice-error" role="alert"><p>{error || loadError}</p><button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation)} onClick={() => void load()}>刷新替换记录</button></div> : null}
+      {crop ? <PosterCropDialog {...crop} onClose={() => setCrop(null)} /> : null}
     </div>
   )
 }

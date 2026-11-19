@@ -1,10 +1,12 @@
 from datetime import timedelta
+from io import BytesIO
 from threading import Barrier
 from types import SimpleNamespace
 
 import mongomock
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from PIL import Image
 from pydantic import ValidationError
 
 from app import schemas
@@ -143,6 +145,52 @@ def test_historical_candidate_with_an_unsupported_ratio_cannot_be_retried(env):
     assert unsupported.value.status_code == 422
     assert unsupported.value.detail == "不支持此格式"
     assert not retry.tasks
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_explicit_crop_request_keeps_full_model_output_without_applying_it(env):
+    task, background = model_batch(env)
+    edit = env.client.edit_image
+    model = "seedream-5.5-image-to-image"
+
+    def edit_image(prompt, refs, *, size, model):
+        edit(prompt, refs, size=size, model=model)
+        return png_bytes(768, 1024) if model.startswith("seedream") else png_bytes(1088, 1360)
+
+    env.client.edit_image = edit_image
+    run_background(background)
+    crop_job = BackgroundTasks()
+    pending = routes.retry_original_replacement_candidate(env.task_id, task["id"], model, env.request, crop_job, for_crop=True)
+    assert pending["candidates"][1]["status"] == "queued"
+    assert pending["candidates"][1]["for_crop"] is True
+    run_background(crop_job)
+
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    candidate = restored["candidates"][1]
+    assert candidate["for_crop"] is True and candidate["status"] == "succeeded"
+    assert (candidate["output"]["width"], candidate["output"]["height"]) == (768, 1024)
+    assert [call["model"] for call in env.client.edit_calls] == ["minimax-h3-image-edit", model]
+    source = routes.get_original_replacement_crop_source(env.task_id, task["id"], model, env.request)
+    assert source.media_type == "image/png"
+    with Image.open(BytesIO(source.body)) as image:
+        assert image.size == (768, 1024)
+    with pytest.raises(HTTPException) as cannot_apply:
+        apply(env, task, candidate_model=model)
+    assert cannot_apply.value.status_code == 409
+    assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_crop_request_cannot_take_over_a_batch_before_its_worker_starts(env):
+    task, background = model_batch(env)
+    crop_job = BackgroundTasks()
+    with pytest.raises(HTTPException) as queued:
+        routes.retry_original_replacement_candidate(env.task_id, task["id"], "seedream-5.5-image-to-image",
+                                                    env.request, crop_job, for_crop=True)
+    assert queued.value.status_code == 409
+    assert not crop_job.tasks
+    run_background(background)
+    assert [call["model"] for call in env.client.edit_calls] == ["minimax-h3-image-edit"]
 
 
 def test_model_feedback_uses_original_source_and_applies_chosen_candidate(env):
