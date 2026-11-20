@@ -15,6 +15,7 @@ export type ImageModelOption = {
 
 export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
   { value: 'gpt-image-2.5-sunburst', label: 'GPT Image 2.5' },
+  { value: 'gemini-3-pro-image', label: 'Gemini 3 Pro Image' },
   { value: 'seedream-5-pro-image-to-image', label: 'Seedream 5 Pro' },
   { value: 'seedream-5.5-image-to-image', label: 'Seedream 5.5' },
   // MiniMax H3 also goes through the core-ai gateway; only the model id differs.

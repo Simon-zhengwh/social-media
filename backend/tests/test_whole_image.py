@@ -356,8 +356,9 @@ def test_generation_and_edit_keep_canvas_ratio_without_alignment_borders(setting
     assert fake.generation_calls[0]["size"] == "1088x1360"
     assert fake.edit_calls[0]["size"] == "1088x1360"
 
+@pytest.mark.parametrize("model", ["gpt-image-2.5-sunburst", "gemini-3-pro-image"])
 def test_generation_exposes_model_input_snapshot_with_reference_preview(
-    settings, store, product_png
+    settings, store, product_png, model
 ):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
@@ -369,16 +370,18 @@ def test_generation_exposes_model_input_snapshot_with_reference_preview(
         fake,
         prompt="展示新品",
         product_asset_ids=[product.id],
+        image_model=model,
     )
 
     whole_service.run_generation(db, settings, store, fake, created["id"])
 
     version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
     snapshot = version["model_input"]
+    assert fake.edit_calls[0]["model"] == model
     assert snapshot == {
         "provider": "core-ai",
         "endpoint": "/images/edits",
-        "model": "gpt-image-2.5-sunburst",
+        "model": model,
         "prompt": fake.edit_calls[0]["prompt"],
         "parameters": {
             "size": fake.edit_calls[0]["size"],
@@ -2129,6 +2132,20 @@ def test_outputs_without_artifacts_serialize_as_empty_list(settings, store):
         {"status": "completed", "outputs": [{"role": "gateway_result"}]},
     )
     assert branch["outputs"][0]["artifacts"] == []
+
+
+def test_gemini_generation_rejects_missing_reference_before_calling_gateway(settings, store):
+    db = mongomock.MongoClient().db
+    fake = FakeCoreAI()
+    created = _create(db, settings, store, fake, image_model="gemini-3-pro-image")
+
+    whole_service.run_generation(db, settings, store, fake, created["id"])
+
+    task = db.whole_tasks.find_one({"_id": created["id"]})
+    assert task["status"] == "failed"
+    assert "参考图" in task["error"]["message"]
+    assert not fake.generation_calls
+    assert not fake.edit_calls
 
 
 def test_minimax_model_runs_through_the_core_ai_gateway(settings, store):

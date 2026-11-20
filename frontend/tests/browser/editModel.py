@@ -154,7 +154,9 @@ async def main():
             await expect(tiles).to_have_count(2)
             await expect(add).to_contain_text("2/15")
 
-            assert await models.locator("option").all_text_contents() == ["GPT Image 2.5", "Seedream 5 Pro", "Seedream 5.5", "MiniMax H3"]
+            assert await models.locator("option").all_text_contents() == [
+                "GPT Image 2.5", "Gemini 3 Pro Image", "Seedream 5 Pro", "Seedream 5.5", "MiniMax H3",
+            ]
             await models.select_option(SEEDREAM)
             await expect(page.get_by_role("button", name="切换到 GPT Image 2.5", exact=True)).to_have_attribute("aria-pressed", "true")
             await editor.fill("只改标题，参考")

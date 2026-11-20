@@ -20,6 +20,7 @@ def _normalize_unified_reference_ids(value: Any) -> Any:
 
 ImageModel = Literal[
     "gpt-image-2.5-sunburst",
+    "gemini-3-pro-image",
     "gemini-3.1-flash-image",
     "seedream-5-pro-image-to-image",
     "seedream-5.5-image-to-image",

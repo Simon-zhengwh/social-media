@@ -71,6 +71,7 @@ test('defaults and restored latest rounds respect the three-per-model limit', ()
   const counts = defaultModelCounts()
   assert.equal(counts[gpt], 0)
   assert.equal(counts[seed], 0)
+  assert.equal(counts['gemini-3-pro-image'], 0)
   assert.ok(Object.values(counts).every(count => count === 0))
   const restored = restoreModelCounts([
     candidate('old', gpt, 'old', 'succeeded', 6),
