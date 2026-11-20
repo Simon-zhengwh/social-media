@@ -93,6 +93,7 @@ export default function OriginalReplacementPanel({
 }: Props) {
   const [rows, setRows] = useState<Row[]>(() =>
     initialPhotos ? carriedFrom(initialPhotos, task, assets) : carried(task, assets))
+  const [removedPool, setRemovedPool] = useState<Array<{ asset: Asset; target: string }>>([])
   const [splitAllElements, setSplitAllElements] = useState(false)
   const [records, setRecords] = useState<OriginalReplacementTask[]>([])
   const [crop, setCrop] = useState<{ src: string; width: number; height: number } | null>(null)
@@ -120,7 +121,10 @@ export default function OriginalReplacementPanel({
     ...(logo && !seriesCanvas ? [{ target: 'Logo', asset_id: logo.asset_id }] : []),
     ...photos.map((item) => ({ target: item.target.trim(), asset_id: item.asset.id })),
   ]
-  const poolOptions = poolAssets.filter((asset) =>
+  const poolOptions = [...new Map([
+    ...poolAssets,
+    ...removedPool.map((item) => item.asset),
+  ].map((asset) => [asset.id, asset])).values()].filter((asset) =>
     asset.id !== logo?.asset_id && !rows.some((item) => item.asset.id === asset.id))
   const currentOutput = task.outputs.find((item) => item.id === task.current_output_id)
   const canSubmit = Boolean(task.status === 'succeeded' && task.current_version_id && currentOutput?.selectable && task.edit.status !== 'running')
@@ -164,10 +168,22 @@ export default function OriginalReplacementPanel({
 
   const defaultRows = () => initialPhotos ? carriedFrom(initialPhotos, task, assets) : carried(task, assets)
   const updateRow = (id: string, values: Partial<Row>) => setRows((previous) => previous.map((item) => item.id === id ? { ...item, ...values } : item))
+  const removeRow = (item: Row) => {
+    const resolved = assets.find((candidate) => candidate.id === item.asset.id) ?? item.asset
+    setRows((previous) => previous.filter((candidate) => candidate.id !== item.id))
+    setRemovedPool((previous) => [
+      ...previous.filter((entry) => entry.asset.id !== resolved.id),
+      { asset: resolved, target: item.target },
+    ])
+  }
   const addPoolRow = (assetId: string) => {
-    const asset = poolAssets.find((item) => item.id === assetId) ?? assets.find((item) => item.id === assetId)
+    const remembered = removedPool.find((entry) => entry.asset.id === assetId)
+    const asset = remembered?.asset
+      ?? poolAssets.find((item) => item.id === assetId)
+      ?? assets.find((item) => item.id === assetId)
     if (!asset || rows.some((item) => item.asset.id === assetId)) return
-    setRows((previous) => [...previous, row(asset)])
+    setRemovedPool((previous) => previous.filter((entry) => entry.asset.id !== assetId))
+    setRows((previous) => [...previous, { id: crypto.randomUUID(), target: remembered?.target ?? '', asset }])
   }
   const perform = async (kind: NonNullable<typeof operation>, action: () => Promise<void>) => {
     if (lock.current) return
@@ -214,6 +230,7 @@ export default function OriginalReplacementPanel({
       if (!mounted.current) return
       openNewRecord(next)
       setRows(defaultRows())
+      setRemovedPool([])
       setSplitAllElements(false)
     })
   }
@@ -384,7 +401,7 @@ export default function OriginalReplacementPanel({
                 <div className="original-replacement-choice">
                   <img src={asset.thumb_url || asset.url} alt="" loading="lazy" decoding="async" />
                   <input id={`original-target-${item.id}`} aria-label={`替换位置：${assetDisplayName(asset.original_name)}`} className="replacement-target" value={item.target} maxLength={1000} disabled={Boolean(operation)} placeholder="留空自动识别，如：右下角牛肉、背景" onChange={(event) => updateRow(item.id, { target: event.target.value })} />
-                  <button type="button" className="mp-btn-ghost mp-btn-small original-replacement-remove" aria-label={`移除原照：${assetDisplayName(asset.original_name)}`} disabled={Boolean(operation)} onClick={() => setRows((previous) => previous.filter((candidate) => candidate.id !== item.id))}>移除</button>
+                  <button type="button" className="mp-btn-ghost mp-btn-small original-replacement-remove" aria-label={`移除原照：${assetDisplayName(asset.original_name)}`} disabled={Boolean(operation)} onClick={() => removeRow(item)}>移除</button>
                 </div>
               </div>
             })}

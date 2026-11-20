@@ -946,11 +946,35 @@ export default function WholeImageStudio({
     Original-photo replacement on a series page defaults to the current version's content
     references, and offers the rest of this task's uploaded pool as alternative sources.
   */
-  const seriesPoolAssets = seriesMode && seriesSelection
-    ? assets.filter((asset) => replacementPool(
+  const seriesPoolAssets: Asset[] = seriesMode && seriesSelection
+    ? (() => {
+      const poolMeta = new Map(
+        seriesContentPool(seriesSelection.group).map((item) => [item.asset_id, item]),
+      )
+      const taskImages = task?.model_input?.images ?? []
+      const fallbackCreatedAt = task?.created_at ?? ''
+      return replacementPool(
         seriesSelection.page,
         taskAssetPool(series, seriesSelection.group, products.map((item) => item.id)),
-      ).includes(asset.id))
+      ).map((id) => {
+        const existing = products.find((item) => item.id === id)
+          ?? assets.find((item) => item.id === id)
+        if (existing) return existing
+        const entry = poolMeta.get(id)
+        const meta = taskImages.find((item) => item.asset_id === id)
+        const fallbackUrl = merchantPath(`/api/assets/${encodeURIComponent(id)}/file`)
+        return {
+          id,
+          original_name: (entry && 'name' in entry ? entry.name : undefined) || meta?.name || '原照',
+          url: (entry && 'preview_url' in entry ? entry.preview_url : undefined) || meta?.url || meta?.preview_url || fallbackUrl,
+          thumb_url: (entry && 'thumb_url' in entry ? entry.thumb_url : undefined) || meta?.preview_url || undefined,
+          width: 0,
+          height: 0,
+          mime_type: 'image/png',
+          created_at: fallbackCreatedAt,
+        }
+      })
+    })()
     : []
 
   const lockWorkspaceMode = (savedMode: PosterSeriesMode) => {
