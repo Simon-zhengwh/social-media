@@ -20,7 +20,7 @@ export default function CandidateVersionPicker({ anchor, versions, loading, curr
   const ordered = [...versions].sort((a, b) => b.version - a.version)
   const updatePosition = useCallback(() => {
     const bounds = anchor.getBoundingClientRect()
-    const rail = anchor.closest('.candidate-model-groups')?.getBoundingClientRect()
+    const rail = anchor.closest('.poster-rail-scroll')?.getBoundingClientRect()
     if (!anchor.isConnected || bounds.bottom <= Math.max(0, rail?.top ?? 0) ||
       bounds.top >= Math.min(window.innerHeight, rail?.bottom ?? window.innerHeight)) {
       onClose()

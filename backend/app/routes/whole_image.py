@@ -16,7 +16,7 @@ from app.api_paths import asset_thumb_url, asset_url, whole_download_url, mercha
 from app.request_context import request_db, request_merchant_id, request_store, request_profile
 from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageWorkspaceTitle, WholeImageOriginalReplacementRequest,
                          WholeImageOriginalReplacementApplyRequest, WholeImageOriginalReplacementFeedbackRequest)
-from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
+from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, poster_costs, poster_series, request_assets, whole_image)
 from app.services.agent_image import artifacts_out as _artifacts_out
 from app.services.core_ai import CoreAIError
 from app.services.object_store import ObjectStoreError
@@ -234,8 +234,9 @@ def _build_task_groups(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
-def _list_task_groups(db: Any) -> list[dict[str, Any]]:
-    groups = _build_task_groups(list(db.whole_tasks.find().sort("created_at", -1)))
+def _list_task_groups(db: Any, *, exclude_series: bool = False) -> list[dict[str, Any]]:
+    query: dict[str, Any] = {"series": {"$exists": False}} if exclude_series else {}
+    groups = _build_task_groups(list(db.whole_tasks.find(query).sort("created_at", -1)))
     titles = {doc["workspace_id"]: doc["title"] for doc in db.whole_workspace_titles.find(
         {"workspace_id": {"$in": [group["id"] for group in groups]}}, {"workspace_id": 1, "title": 1},
     )}
@@ -473,6 +474,7 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
             for message in (doc.get("messages") or [])
         ],
         "edit": edit,
+        "series": doc.get("series"),
         "error": doc.get("error"),
         "created_at": utc_iso(doc["created_at"]),
         "updated_at": utc_iso(doc["updated_at"]),
@@ -532,12 +534,15 @@ def _require_task_image_model(request: Request, doc: dict[str, Any]) -> None:
     _require_configured(request)
 
 
-@router.post("/tasks", status_code=202)
-def create_task(
+def build_task_document(
     payload: WholeImageTaskCreate,
     request: Request,
-    background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
+    """Validate one poster request and return the whole_tasks document to insert.
+
+    Single-poster ``create_task`` and poster-series pages share this builder so brand,
+    platform, logo and asset validation cannot drift between the two modes.
+    """
     _require_configured(request)
     db = request_db(request)
     settings = request.app.state.settings
@@ -686,6 +691,28 @@ def create_task(
     }
     if payload.workspace_title is not None:
         doc["workspace_initial_title"] = payload.workspace_title
+    return doc
+
+
+@router.post("/tasks", status_code=202)
+def create_task(
+    payload: WholeImageTaskCreate,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict[str, Any]:
+    db = request_db(request)
+    settings = request.app.state.settings
+    doc = build_task_document(payload, request)
+    if (
+        getattr(settings, "poster_series_enabled", False)
+        and payload.generation_workspace_id
+    ):
+        # First accepted submission fixes the workspace mode. A series submission in the
+        # same workspace is rejected here, before any task becomes visible.
+        try:
+            poster_series.claim_workspace_mode(db, payload.generation_workspace_id, "single")
+        except poster_series.SeriesError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     db.whole_tasks.insert_one(doc)
     background_tasks.add_task(
         whole_image.run_generation,
@@ -693,7 +720,7 @@ def create_task(
         settings,
         request_store(request),
         request.app.state.core_ai,
-        task_id,
+        doc["_id"],
     )
     return task_out(db, doc)
 
@@ -714,7 +741,10 @@ def list_tasks(
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
     db = request_db(request)
-    items = _list_task_groups(db)
+    settings = getattr(request.app.state, "settings", None)
+    items = _list_task_groups(
+        db, exclude_series=not getattr(settings, "poster_series_enabled", False)
+    )
     if status != "all":
         items = [item for item in items if item["status"] == status]
     total = len(items)
@@ -785,6 +815,16 @@ def _workspace_start(db: Any, workspace_id: str) -> dict[str, Any]:
     if first is None:
         raise HTTPException(status_code=404, detail="生成工作区不存在")
     return first
+
+
+@router.get("/workspaces/{workspace_id}/costs")
+def get_workspace_costs(workspace_id: str, request: Request, background_tasks: BackgroundTasks,
+                        details: bool = False) -> dict[str, Any]:
+    db = request_db(request)
+    result = poster_costs.report(db, workspace_id, details=details)
+    if result["pending_count"]:
+        background_tasks.add_task(poster_costs.refresh_due, db, workspace_id, request.app.state.core_ai)
+    return result
 
 
 @router.get("/workspaces/{workspace_id}/title")
@@ -1101,7 +1141,8 @@ def list_original_replacements(task_id: str, request: Request) -> list[dict[str,
 def apply_original_replacement(task_id: str, replacement_id: str, payload: WholeImageOriginalReplacementApplyRequest,
                                request: Request) -> dict[str, Any]:
     try:
-        doc = original_replacement.apply(request_db(request), task_id, replacement_id, **payload.model_dump())
+        doc = original_replacement.apply(request_db(request), task_id, replacement_id, **payload.model_dump(),
+                                         settings=request.app.state.settings, store=request_store(request))
     except whole_image.StudioError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return task_out(request_db(request), doc)

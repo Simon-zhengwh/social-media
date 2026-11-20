@@ -18,6 +18,11 @@ import type {
   WholeImageTaskGroupPage,
   WholeImageTask,
   WholeImageVersion,
+  PosterSeriesWorkspace,
+  PosterSeriesGroup,
+  PosterSeriesPage,
+  PosterSeriesRunPayload,
+  PosterSeriesHtmlSavePayload,
   PosterEditBatch,
   PosterEditTask,
   MaterialFilterDefaults,
@@ -562,6 +567,40 @@ export async function listWholeImageWorkspace(workspaceId: string): Promise<Whol
 
 type WorkspaceTitle = { title: string | null; created_at: string }
 
+export type PosterCostChild = {
+  id: string
+  kind: 'image' | 'llm' | 'agent'
+  target: string
+  started_at: string | null
+  cost_usd: number | null
+  credits: number | null
+  children?: PosterCostChild[]
+}
+
+export type PosterCostCall = PosterCostChild & {
+  operation: string
+  image_number: number | null
+  status: string
+  children: PosterCostChild[]
+}
+
+export type PosterCostReport = {
+  total_usd: number | null
+  total_credits: number
+  call_count: number
+  pending_count: number
+  unreported_count: number
+  calls?: PosterCostCall[]
+}
+
+export async function getPosterCosts(workspaceId: string, details: boolean, signal: AbortSignal): Promise<PosterCostReport> {
+  const query = details ? '?details=true' : ''
+  return parseResponse(await apiFetch(
+    '/api/whole-image/workspaces/' + encodeURIComponent(workspaceId) + '/costs' + query,
+    { signal, cache: 'no-store' },
+  ))
+}
+
 export async function getWholeImageWorkspaceTitle(workspaceId: string): Promise<WorkspaceTitle> {
   const response = await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/title`)
   return parseResponse<WorkspaceTitle>(response)
@@ -688,6 +727,7 @@ export async function listTaskCenterGroups(options: {
 }
 
 export type PromptOptimizePayload = {
+  workspace_id?: string
   reference_asset_ids?: string[] | null
   prompt: string
   brand_mode: BrandMode
@@ -1080,4 +1120,77 @@ export async function mergeMaterialGroups(schemeId: string, payload: MaterialGro
     `/api/material-filters/schemes/${encodeURIComponent(schemeId)}/groups/merge`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) },
   ))
+}
+
+export type PosterSeriesConfig = { enabled: boolean }
+export type PosterWorkspaceMode = {
+  workspace_id: string
+  mode: 'single' | 'series'
+  locked: boolean
+  series_enabled: boolean
+}
+
+export async function getPosterSeriesConfig(): Promise<PosterSeriesConfig> {
+  return parseResponse(await apiFetch('/api/whole-image/series-config'))
+}
+
+export async function getPosterWorkspaceMode(workspaceId: string): Promise<PosterWorkspaceMode> {
+  return parseResponse(await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/mode`))
+}
+
+export async function getPosterSeriesWorkspace(workspaceId: string): Promise<PosterSeriesWorkspace> {
+  return parseResponse(await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/series-groups`))
+}
+
+export async function createPosterSeriesRun(
+  workspaceId: string,
+  payload: PosterSeriesRunPayload,
+): Promise<PosterSeriesWorkspace> {
+  return parseResponse(await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/series-runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }))
+}
+
+export async function startPosterSeriesInteriors(
+  groupId: string,
+  coverVersionId: string,
+  coverOutputId?: string | null,
+): Promise<PosterSeriesGroup> {
+  return parseResponse(await apiFetch(`/api/whole-image/series-groups/${encodeURIComponent(groupId)}/interiors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cover_version_id: coverVersionId, cover_output_id: coverOutputId ?? null }),
+  }))
+}
+
+export async function retryPosterSeriesPage(groupId: string, pageId: string): Promise<PosterSeriesPage> {
+  return parseResponse(await apiFetch(
+    `/api/whole-image/series-groups/${encodeURIComponent(groupId)}/pages/${encodeURIComponent(pageId)}/retry`,
+    { method: 'POST' },
+  ))
+}
+
+export async function savePosterSeriesHtmlPage(
+  groupId: string,
+  pageId: string,
+  payload: PosterSeriesHtmlSavePayload,
+): Promise<PosterSeriesPage> {
+  return parseResponse(await apiFetch(
+    `/api/whole-image/series-groups/${encodeURIComponent(groupId)}/pages/${encodeURIComponent(pageId)}/html-saves`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  ))
+}
+
+export function posterSeriesPageDownloadPath(groupId: string, pageId: string): string {
+  return merchantPath(`/api/whole-image/series-groups/${encodeURIComponent(groupId)}/pages/${encodeURIComponent(pageId)}/download`)
+}
+
+export function posterSeriesGroupDownloadPath(groupId: string): string {
+  return merchantPath(`/api/whole-image/series-groups/${encodeURIComponent(groupId)}/download`)
 }

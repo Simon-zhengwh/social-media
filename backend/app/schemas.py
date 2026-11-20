@@ -203,6 +203,89 @@ class WholeImageTaskCreate(BaseModel):
         return _normalize_unified_reference_ids(value)
 
 
+class SeriesModelGroup(BaseModel):
+    image_model: ImageModel = "gpt-image-2.5-sunburst"
+    group_count: int = Field(default=1, ge=1, le=6)
+
+
+class PosterSeriesRunCreate(BaseModel):
+    """One submission of a poster-series round.
+
+    ``image_groups`` selects one or more image models and how many independent groups
+    each model should plan. The page count comes from the user requirement unless an
+    operator passes ``pages_per_group`` explicitly in the workbench.
+    """
+
+    submit_id: str = Field(min_length=8, max_length=128)
+    prompt: str = Field(min_length=1, max_length=5000)
+    prompt_optimized: bool = False
+    ratio: Literal["1:1", "9:16", "4:5", "16:9", "3:4", "4:3"] | None = None
+    product_asset_ids: list[str] = Field(default_factory=list, max_length=MAX_REFERENCE_ASSETS)
+    reference_asset_ids: list[str] | None = Field(default=None, max_length=MAX_REFERENCE_ASSETS)
+    brand_id: str | None = Field(default=None, max_length=64)
+    brand_mode: Literal["preset", "reference", "none"] | None = None
+    logo_asset_id: str | None = Field(default=None, max_length=128)
+    style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)
+    image_groups: list[SeriesModelGroup] = Field(min_length=1, max_length=8)
+    pages_per_group: int | None = Field(default=None, ge=2, le=12)
+    auto_generate_interiors: bool = True
+    workspace_title: WorkspaceTitle | None = None
+    platform_id: str | None = Field(default=None, max_length=64)
+    placement_id: str | None = Field(default=None, max_length=64)
+    include_store_address: bool = False
+    include_store_phone: bool = False
+    store_place_id: str | None = Field(default=None, max_length=128)
+
+    @field_validator("brand_id", mode="before")
+    @classmethod
+    def normalize_series_brand_id(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        return text or None
+
+    @field_validator("prompt", mode="before")
+    @classmethod
+    def normalize_series_prompt(cls, value: Any) -> str:
+        return "" if value is None else str(value).strip()
+
+    @field_validator("logo_asset_id", mode="before")
+    @classmethod
+    def normalize_series_logo_asset_id(cls, value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    @field_validator("reference_asset_ids", mode="before")
+    @classmethod
+    def normalize_series_reference_assets(cls, value: Any) -> Any:
+        return _normalize_unified_reference_ids(value)
+
+
+class SeriesInteriorsRequest(BaseModel):
+    cover_version_id: str = Field(min_length=1, max_length=128)
+    cover_output_id: str | None = Field(default=None, max_length=128)
+
+
+class SeriesContentRef(BaseModel):
+    asset_id: str = Field(min_length=1, max_length=128)
+    target: str = Field(default="", max_length=1000)
+
+
+class SeriesHtmlSaveRequest(BaseModel):
+    """One canvas exported by the isolated HTML editor and saved as a page version."""
+
+    source_version_id: str = Field(min_length=1, max_length=128)
+    # Both are required: the version/output pair is the compare-and-set guard and the
+    # artifact proves the editor was opened from this page's replacement result.
+    expected_output_id: str = Field(min_length=1, max_length=128)
+    artifact_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=8, max_length=128)
+    png_base64: str = Field(min_length=1, max_length=40_000_000)
+    width: int = Field(ge=1, le=100_000)
+    height: int = Field(ge=1, le=100_000)
+    content_refs: list[SeriesContentRef] = Field(default_factory=list, max_length=50)
+
+
 class OriginalReplacementItem(BaseModel):
     target: str = Field(default="", max_length=1000)
     asset_id: str = Field(min_length=1, max_length=128)
@@ -317,6 +400,7 @@ class PosterEditBatchRequest(PosterEditRequest):
 
 
 class PromptOptimizeRequest(BaseModel):
+    workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
     prompt: str = Field(default="", max_length=5000)
     brand_mode: Literal["preset", "reference", "none"] = "none"
     brand_id: str | None = Field(default=None, max_length=64)

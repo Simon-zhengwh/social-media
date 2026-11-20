@@ -63,12 +63,13 @@ def image_ref_from_asset(
     *,
     suffix: str = ".png",
     expires: int = 3600,
+    use_original: bool = False,
 ) -> ImageRef:
     asset = db.assets.find_one({"_id": asset_id})
     if asset is None:
         raise FileNotFoundError(f"素材不存在：{asset_id}")
-    public_url = str(asset.get("prepared_url") or asset.get("url") or "").strip()
-    relative = asset.get("prepared_path") or asset.get("path")
+    public_url = "" if use_original else str(asset.get("prepared_url") or asset.get("url") or "").strip()
+    relative = asset.get("path") if use_original else asset.get("prepared_path") or asset.get("path")
     name = str(asset.get("original_name") or Path(relative or "").name)
     digest = str(asset.get("sha256") or "")
     if _is_public_url(public_url):

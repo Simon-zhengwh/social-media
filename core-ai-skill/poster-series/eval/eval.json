@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "skill": "poster-series",
+  "dataset_version": "0.2.4",
+  "cases": [
+    {
+      "id": "agent-decides-images",
+      "dimension": "instruction_following",
+      "input": {
+        "user_request": "用同一个风格做几张甜品图，顺序你决定。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "按用户需求决定张数和内容"
+        },
+        {
+          "kind": "rubric",
+          "description": "整组按可解析的有序 JSON 清单交付，每张图使用注册制品的精确 URL"
+        },
+        {
+          "kind": "rubric",
+          "description": "没有硬性分配封面或内页"
+        }
+      ],
+      "expected": {
+        "checks": [
+          "按用户需求决定张数和内容",
+          "整组按可解析的有序 JSON 清单交付，每张图使用注册制品的精确 URL",
+          "没有硬性分配封面或内页"
+        ]
+      }
+    },
+    {
+      "id": "poster-edit-out-of-scope",
+      "dimension": "trigger_accuracy",
+      "input": {
+        "user_request": "把已有海报里的照片换掉并导出 HTML。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "非系列图操作不触发生成"
+        }
+      ],
+      "expected": {
+        "triggered": false
+      }
+    },
+    {
+      "id": "model-per-group",
+      "dimension": "parameter_accuracy",
+      "input": {
+        "user_request": "为两个组分别用其指定模型，从附带素材中选图。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "每组生图使用对应模型"
+        },
+        {
+          "kind": "rubric",
+          "description": "素材使用实际提供的 URL"
+        },
+        {
+          "kind": "rubric",
+          "description": "不把风格样图当成待展示的食品"
+        }
+      ],
+      "expected": {
+        "checks": [
+          "每组生图使用对应模型",
+          "素材使用实际提供的 URL",
+          "不把风格样图当成待展示的食品"
+        ],
+        "tool": "generate_image",
+        "arguments": {
+          "model": "seedream-5-pro-image-to-image",
+          "output_format": "png"
+        },
+        "match": "subset"
+      }
+    },
+    {
+      "id": "model-rejected-no-fallback",
+      "dimension": "robustness",
+      "input": {
+        "user_request": "如果指定模型调用被拒绝，报告实际原因。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "返回 error 且包含明确原因"
+        },
+        {
+          "kind": "rubric",
+          "description": "未切换模型"
+        }
+      ],
+      "expected": {
+        "checks": [
+          "返回 error 且包含明确原因",
+          "未切换模型"
+        ],
+        "failure_mode": "指定模型被工具拒绝",
+        "expected_behavior": "返回 error 并说明实际原因"
+      }
+    },
+    {
+      "id": "uniform-style-and-logo",
+      "dimension": "scope_accuracy",
+      "input": {
+        "user_request": "做一组三张大小和位置统一的白色 Logo 甜品图。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "同组保持一个视觉风格"
+        },
+        {
+          "kind": "rubric",
+          "description": "同组共用一个 Logo 坐标和尺寸"
+        },
+        {
+          "kind": "rubric",
+          "description": "Logo 区域与周围画面连续，白色 Logo 可直接放在有对比的深色画面上，区域内外无圆印、色块或占位轮廓"
+        },
+        {
+          "kind": "rubric",
+          "description": "大标题允许出现一次品牌名，官方 Logo 自带的文字照常保留"
+        },
+        {
+          "kind": "rubric",
+          "description": "页眉、角标和页脚无重复品牌字样、别名或从风格参考带来的商家文案"
+        }
+      ],
+      "expected": {
+        "checks": [
+          "同组保持一个视觉风格",
+          "同组共用一个 Logo 坐标和尺寸",
+          "Logo 区域与周围画面连续，白色 Logo 可直接放在有对比的深色画面上，区域内外无圆印、色块或占位轮廓",
+          "大标题允许出现一次品牌名，官方 Logo 自带的文字照常保留",
+          "页眉、角标和页脚无重复品牌字样、别名或从风格参考带来的商家文案"
+        ],
+        "in_scope": true,
+        "expected_behavior": "生成整组并统一系列风格及 Logo 位置和大小"
+      }
+    },
+    {
+      "id": "ordered-png-manifest",
+      "dimension": "output_quality",
+      "input": {
+        "user_request": "生成两组，第一组三张，第二组两张，画布按所给尺寸。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "提交五张尺寸正确的 PNG，每张名称唯一"
+        },
+        {
+          "kind": "rubric",
+          "description": "返回两个正确的组 ID"
+        },
+        {
+          "kind": "rubric",
+          "description": "组内图片按指定顺序列出"
+        }
+      ],
+      "expected": {
+        "checks": [
+          "提交五张尺寸正确的 PNG，每张名称唯一",
+          "返回两个正确的组 ID",
+          "组内图片按指定顺序列出"
+        ],
+        "rubric": [
+          "提交五张尺寸正确的 PNG，每张名称唯一",
+          "返回两个正确的组 ID",
+          "组内图片按指定顺序列出"
+        ]
+      }
+    },
+    {
+      "id": "native-tool-only",
+      "dimension": "tool_accuracy",
+      "input": {
+        "user_request": "用同一条 Run 中的原生工具完成整组生图。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "用原生 generate_image 生图"
+        },
+        {
+          "kind": "rubric",
+          "description": "使用单个 Agent Run"
+        },
+        {
+          "kind": "rubric",
+          "description": "只交付最终成图"
+        }
+      ],
+      "expected": {
+        "checks": [
+          "用原生 generate_image 生图",
+          "使用单个 Agent Run",
+          "只交付最终成图"
+        ],
+        "tools": [
+          "generate_image"
+        ]
+      }
+    }
+  ]
+}

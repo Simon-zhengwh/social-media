@@ -12,6 +12,7 @@ import type {
   MerchantStore,
   PlatformPreset,
   Ratio,
+  PosterSeriesMode,
 } from '../types'
 
 type Props = {
@@ -39,6 +40,7 @@ type Props = {
   productsUploading: boolean
   prompt: string
   promptOptimized: boolean
+  workspaceId?: string
   busy: boolean
   onBrandChange: (brandId: string) => void
   onBrandModeChange: (mode: BrandMode) => void
@@ -53,6 +55,10 @@ type Props = {
   onUploadProducts: (files: File[]) => void
   onRemoveProduct: (id: string) => void
   onPromptChange: (value: string, optimized?: boolean) => void
+  seriesEnabled?: boolean
+  mode?: PosterSeriesMode
+  modeLocked?: boolean
+  onModeChange?: (mode: PosterSeriesMode) => void
   children?: ReactNode
 }
 
@@ -81,6 +87,7 @@ export default function WholeImageForm({
   productsUploading,
   prompt,
   promptOptimized,
+  workspaceId,
   busy,
   onBrandChange,
   onBrandModeChange,
@@ -95,6 +102,10 @@ export default function WholeImageForm({
   onUploadProducts,
   onRemoveProduct,
   onPromptChange,
+  seriesEnabled = false,
+  mode = 'single',
+  modeLocked = false,
+  onModeChange,
   children,
 }: Props) {
   const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId)
@@ -120,6 +131,16 @@ export default function WholeImageForm({
 
   return (
     <section className="mp-card form-card">
+      {seriesEnabled ? (
+        <div className="poster-mode-row">
+          <div className="poster-mode-switch" role="group" aria-label="海报模式">
+            <button type="button" className={mode === 'single' ? 'is-active' : ''} aria-pressed={mode === 'single'}
+              disabled={busy || modeLocked} onClick={() => onModeChange?.('single')}>单张</button>
+            <button type="button" className={mode === 'series' ? 'is-active' : ''} aria-pressed={mode === 'series'}
+              disabled={busy || modeLocked} onClick={() => onModeChange?.('series')}>系列图</button>
+          </div>
+        </div>
+      ) : null}
       <PlatformSelector
         platforms={platforms}
         selectedPlatformId={selectedPlatformId}
@@ -182,6 +203,7 @@ export default function WholeImageForm({
         canOptimize={optimizationReady}
         optimizationBlockedReason={optimizationBlockedReason}
         optimizeContext={{
+          workspace_id: workspaceId,
           brand_mode: brandMode,
           brand_id: brandMode === 'preset' ? selectedBrandId : null,
           logo_asset_id: selectedLogoId || null,

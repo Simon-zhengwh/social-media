@@ -210,6 +210,7 @@ export type WholeImageModelInput = {
     agent_id?: string
     timeout_seconds?: number
     image_url?: string
+    reference_scope?: 'round' | 'image'
   }
   images: Array<{
     asset_id: string
@@ -279,6 +280,24 @@ export type WholeImageEditState = {
   branches?: Partial<Record<'gateway' | 'agent', WholeImageBranch>>
 }
 
+/** Present on a task that is one page of a poster-series group. */
+export type WholeImageTaskSeries = {
+  run_id: string
+  group_id: string
+  page_id: string
+  order: number
+  role: 'cover' | 'detail' | 'image'
+  page_count: number
+  user_prompt?: string
+  content_refs?: Array<{ asset_id: string; target: string }>
+  style_reference_ids?: string[]
+  cover_reference?: { version_id?: string; asset_id?: string } | null
+  logo_box?: Record<string, unknown> | null
+  logo_asset_id?: string | null
+  auto_generate_interiors?: boolean
+  status?: string
+}
+
 export type WholeImageTask = {
   id: string
   status: WholeImageTaskStatus
@@ -302,6 +321,7 @@ export type WholeImageTask = {
     platform_id?: string | null
     placement_id?: string | null
   }
+  series?: WholeImageTaskSeries | null
   platform?: PlatformPreset | null
   placement?: PlatformPlacement | null
   brand?: {
@@ -452,6 +472,7 @@ export type OriginalReplacementTask = {
   progress: number
   source: OriginalReplacementReference
   replacements: Array<OriginalReplacementReference & { target: string }>
+  logo_reference?: OriginalReplacementReference | null
   output: { asset_id: string; width: number; height: number; preview_url: string; download_url: string } | null
   agent_id: string | null
   run_id: string | null
@@ -794,4 +815,110 @@ export type MaterialRecognitionRequest = {
   group_limit?: number
   file_ids?: string[]
   force?: boolean
+}
+
+// Poster series (opt-in). One page is an ordinary WholeImageTask; the group/page tree
+// only adds planning, cover locking and group downloads on top.
+export type PosterSeriesMode = 'single' | 'series'
+
+export type PosterSeriesPage = {
+  page_id: string
+  group_id: string
+  run_id: string
+  order: number
+  role: 'cover' | 'detail' | 'image'
+  status: 'planned' | 'queued' | 'running' | 'succeeded' | 'failed' | string
+  whole_task_id: string | null
+  version_id: string | null
+  version: number
+  output_id: string | null
+  asset_id: string | null
+  preview_url: string | null
+  thumb_url: string | null
+  download_url: string | null
+  error: string | null
+  content_refs: Array<{ asset_id: string; target: string }>
+  style_reference_ids: string[]
+  cover_reference: { version_id?: string; asset_id?: string; task_id?: string } | null
+  logo_box: Record<string, unknown> | null
+}
+
+export type PosterSeriesGroup = {
+  id: string
+  run_id: string
+  workspace_id: string
+  order: number
+  image_model: ImageModel
+  page_count: number
+  status: string
+  error?: string | null
+  cover_page_id: string | null
+  cover_ready: boolean
+  interiors_started_at: string | null
+  auto_generate_interiors: boolean
+  complete: boolean
+  can_download: boolean
+  succeeded_count: number
+  failed_count: number
+  running_count: number
+  canvas: { width: number; height: number } | null
+  logo_asset_id?: string | null
+  logo_box?: Record<string, unknown> | null
+  content_pool?: Array<string | { asset_id: string; name?: string; preview_url?: string; thumb_url?: string }>
+  pages: PosterSeriesPage[]
+}
+
+export type PosterSeriesRun = {
+  id: string
+  workspace_id: string
+  round: number
+  status: string
+  prompt: string
+  pages_per_group: number | null
+  workflow?: string | null
+  error?: string | null
+  auto_generate_interiors: boolean
+  canvas: { width: number; height: number } | null
+  created_at: string
+}
+
+export type PosterSeriesWorkspace = {
+  workspace_id: string
+  mode: PosterSeriesMode
+  locked: boolean
+  series_enabled: boolean
+  runs: PosterSeriesRun[]
+  groups: PosterSeriesGroup[]
+}
+
+export type PosterSeriesRunPayload = {
+  submit_id: string
+  prompt: string
+  prompt_optimized: boolean
+  /** Omitted when a platform preset decides the canvas, exactly like a single poster. */
+  ratio?: Ratio
+  reference_asset_ids: string[]
+  brand_id: string | null
+  brand_mode: BrandMode
+  logo_asset_id: string | null
+  style_reference_asset_ids: string[]
+  image_groups: Array<{ image_model: ImageModel; group_count: number }>
+  workspace_title?: string
+  platform_id: string | null
+  placement_id: string | null
+  include_store_address: boolean
+  include_store_phone: boolean
+  store_place_id: string | null
+}
+
+/** One exported canvas handed back by the isolated HTML editor and saved as a page version. */
+export type PosterSeriesHtmlSavePayload = {
+  source_version_id: string
+  expected_output_id: string | null
+  artifact_id: string | null
+  session_id: string
+  png_base64: string
+  width: number
+  height: number
+  content_refs: Array<{ asset_id: string; target: string }>
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { defaultModelCounts, restoreModelCounts, mergeCandidates, modelGenerationState, submitModelRound,
-  candidateForModel, normalizeModelCount, imageModelLabel } from '../src/modelGeneration.ts'
+  candidateForModel, candidateRounds, normalizeModelCount, imageModelLabel } from '../src/modelGeneration.ts'
 import type { WholeImageTask } from '../src/types.ts'
 
 const gpt = 'gpt-image-2.5-sunburst'
@@ -51,6 +51,21 @@ function candidate(id: string, model = gpt, batch = 'round-1', status = 'succeed
   return { id, status, input: { image_model: model, candidate_batch_id: batch, candidate_count: count },
     created_at: updated, updated_at: updated } as WholeImageTask
 }
+
+test('history keeps model batches separate and orders candidates by position', () => {
+  const old = candidate('old', seed, 'old')
+  const recent = '2026-11-11T02:00:00Z'
+  const second = candidate('two', gpt, 'new', 'queued', 3, recent)
+  second.input.candidate_index = 1
+  const first = candidate('one', gpt, 'new', 'succeeded', 3, recent)
+  first.input.candidate_index = 0
+  const legacy = candidate('legacy', minimax, 'legacy', 'succeeded', 1, recent)
+  delete legacy.input.candidate_batch_id
+  assert.deepEqual(candidateRounds([second, old, first, legacy]).map(({ id, model, round, candidates }) =>
+    [id, model, round, candidates.map(item => item.id)]), [
+    ['old', seed, 1, ['old']], ['new', gpt, 2, ['one', 'two']], ['legacy', minimax, 3, ['legacy']],
+  ])
+})
 
 test('defaults and restored latest rounds respect the three-per-model limit', () => {
   const counts = defaultModelCounts()

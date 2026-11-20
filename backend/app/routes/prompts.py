@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.request_context import request_db, request_profile, request_store
 from app.schemas import PromptOptimizeRequest
-from app.services import prompt_optimizer, request_assets
+from app.services import poster_costs, prompt_optimizer, request_assets
 from app.services.core_ai import CoreAIError
 
 router = APIRouter(prefix="/prompts", tags=["prompts"])
@@ -26,15 +26,17 @@ def optimize_prompt(payload: PromptOptimizeRequest, request: Request) -> dict[st
         "product_asset_ids": request_assets.resolve_asset_ids(request, payload.product_asset_ids),
         "reference_asset_ids": reference_ids,
     })
+    db = request_db(request)
     try:
-        prompt = prompt_optimizer.optimize_prompt(
-            request_db(request),
-            settings,
-            request_store(request),
-            request.app.state.core_ai,
-            request=payload,
-            profile=request_profile(request),
-        )
+        with poster_costs.track(db, payload.workspace_id, "optimize"):
+            prompt = prompt_optimizer.optimize_prompt(
+                db,
+                settings,
+                request_store(request),
+                request.app.state.core_ai,
+                request=payload,
+                profile=request_profile(request),
+            )
     except prompt_optimizer.PromptOptimizerError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     except CoreAIError as exc:
