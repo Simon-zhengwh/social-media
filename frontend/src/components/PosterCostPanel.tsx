@@ -117,7 +117,7 @@ export default function PosterCostPanel({ workspaceId }: { workspaceId: string }
         </button>
       )}
       {expanded && (
-        <ol id="poster-cost-log" className="poster-cost-log" aria-label="调用明细">
+        <ol id="poster-cost-log" className="poster-cost-log" aria-label="调用明细" tabIndex={0}>
           {report?.calls?.map(call => <CostItem key={call.id} call={call} />)}
         </ol>
       )}

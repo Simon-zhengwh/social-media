@@ -1,6 +1,16 @@
 .poster-cost-panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
   padding: 10px 16px 20px;
   color: var(--color-primary-900);
+}
+.poster-cost-panel > :not(.poster-cost-log) {
+  flex-shrink: 0;
+}
+.poster-cost-panel > button {
+  align-self: flex-start;
 }
 .poster-cost-summary {
   display: grid;
@@ -43,6 +53,18 @@
   padding: 0;
   margin: 12px 0 0;
   list-style: none;
+}
+.poster-cost-log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  padding-right: 4px;
+}
+.poster-cost-log:focus-visible {
+  outline: 2px solid var(--color-secondary-300);
+  outline-offset: -2px;
 }
 .poster-cost-log > li + li {
   border-top: 1px solid var(--color-neutral-200);
