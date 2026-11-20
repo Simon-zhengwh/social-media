@@ -50,6 +50,7 @@ import type {
   PosterSeriesPage,
   PosterSeriesWorkspace,
   Ratio,
+  SeriesLogoPosition,
   WholeImageTask,
   WholeImageVersion,
 } from '../types'
@@ -266,6 +267,7 @@ export default function WholeImageStudio({
   const [candidateTasks, setCandidateTasks] = useState<WholeImageTask[]>([])
   const [selectedBrandId, setSelectedBrandId] = useState(() => draft?.selectedBrandId ?? preference?.brand_id ?? '')
   const [selectedLogoId, setSelectedLogoId] = useState(() => draft?.selectedLogoId ?? '')
+  const [seriesLogoPosition, setSeriesLogoPosition] = useState<SeriesLogoPosition | null>(() => draft?.seriesLogoPosition ?? null)
   const [logoChoiceTouched, setLogoChoiceTouched] = useState(() => draft?.logoChoiceTouched ?? false)
   const [brandMode, setBrandMode] = useState<BrandMode>(() => draft?.brandMode ?? (preference?.brand_mode === 'reference' ? 'none' : preference?.brand_mode ?? 'preset'))
   const [styleReferences, setStyleReferences] = useState<Asset[]>(() => draft?.styleReferences ?? [])
@@ -402,7 +404,7 @@ export default function WholeImageStudio({
     if (acceptedRef.current || creating) return
     const form: PosterDraftForm = {
       products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId, selectedRatio,
-      selectedBrandId, brandMode: effectiveBrandMode, selectedLogoId, logoChoiceTouched, styleReferences,
+      selectedBrandId, brandMode: effectiveBrandMode, selectedLogoId, seriesLogoPosition, logoChoiceTouched, styleReferences,
       storeSelection, selectedModel, modelCounts, mode,
     }
     const signature = JSON.stringify(form)
@@ -415,7 +417,7 @@ export default function WholeImageStudio({
       : { kind: 'draft', workspaceId, title, form }
     setSessionSaveFailed(!savePosterSession(userId, merchantId, nextSession))
   }, [userId, merchantId, creating, title, products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId,
-    selectedRatio, selectedBrandId, effectiveBrandMode, selectedLogoId, logoChoiceTouched, styleReferences,
+    selectedRatio, selectedBrandId, effectiveBrandMode, selectedLogoId, seriesLogoPosition, logoChoiceTouched, styleReferences,
     storeSelection, selectedModel, modelCounts, mode])
 
   useEffect(() => {
@@ -523,7 +525,10 @@ export default function WholeImageStudio({
             thumb_url: item.thumb_url || asset.thumb_url,
           }]
         })
-        if (restoredSeries) setSeries(restoredSeries)
+        if (restoredSeries) {
+          setSeries(restoredSeries)
+          setSeriesLogoPosition(restoredSeries.runs.find(run => run.id === restoredGroup?.run_id)?.logo_position ?? null)
+        }
         if (!restored) {
           setProducts(groupProducts)
           return
@@ -1029,6 +1034,7 @@ export default function WholeImageStudio({
         brandId: effectiveBrandMode === 'preset' ? effectiveBrandId : null,
         brandMode: effectiveBrandMode,
         logoAssetId: effectiveLogoId || null,
+        logoPosition: seriesLogoPosition,
         styleReferenceIds: styleReferences.map(asset => asset.id),
         modelCounts: Object.fromEntries(groups.map((group) => [group.image_model, group.group_count])),
         title: acceptedRef.current ? undefined : title,
@@ -1482,6 +1488,8 @@ export default function WholeImageStudio({
         styleReferencesUploading={styleReferencesUploading}
         logoOptions={logoOptions}
         selectedLogoId={effectiveLogoId}
+        seriesLogoPosition={seriesLogoPosition}
+        onSeriesLogoPositionChange={setSeriesLogoPosition}
         stores={stores}
         storeSelection={storeSelection}
         onStoreSelectionChange={(next) => setStoreSelection(next)}

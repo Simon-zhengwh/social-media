@@ -1,4 +1,4 @@
-import type { Asset, BrandMode, ImageModel, PosterSeriesMode, Ratio } from './types'
+import type { Asset, BrandMode, ImageModel, PosterSeriesMode, Ratio, SeriesLogoPosition } from './types'
 import type { StoreSelection } from './components/StoreInfoSelector'
 import type { ModelCounts } from './modelGeneration'
 import { IMAGE_MODEL_OPTIONS } from './imageModels.ts'
@@ -13,6 +13,7 @@ export type PosterDraftForm = {
   selectedBrandId: string
   brandMode: BrandMode
   selectedLogoId: string
+  seriesLogoPosition?: SeriesLogoPosition | null
   logoChoiceTouched: boolean
   styleReferences: Asset[]
   storeSelection?: StoreSelection
@@ -85,8 +86,11 @@ function isDraftForm(value: unknown): boolean {
   if (!isRecord(value)) return false
   const store = value.storeSelection
   const counts = value.modelCounts
+  const logoPosition = value.seriesLogoPosition
   return ['prompt', 'selectedPlatformId', 'selectedPlacementId', 'selectedBrandId', 'selectedLogoId'].every(key => typeof value[key] === 'string') &&
     ['promptOptimized', 'logoChoiceTouched'].every(key => typeof value[key] === 'boolean') &&
+    (logoPosition === undefined || logoPosition === null ||
+      (typeof logoPosition === 'string' && ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(logoPosition))) &&
     ['1:1', '9:16', '4:5', '16:9', '3:4', '4:3'].includes(String(value.selectedRatio)) &&
     ['preset', 'reference', 'none'].includes(String(value.brandMode)) && isModel(value.selectedModel) &&
     Array.isArray(value.products) && value.products.length <= 6 && value.products.every(isAsset) &&
@@ -111,7 +115,7 @@ export function readPosterSession(userId: string, merchantId: string): PosterSes
     if (value.kind === 'draft' && isDraftForm(value.form) && (value.title === undefined || hasTitle)) {
       return value as PosterSession
     }
-    const taskModel = isModel(value.selectedModel) || value.selectedModel === 'gemini-3.1-flash-image' || value.selectedModel === 'minimax-h3-image'
+    const taskModel = isModel(value.selectedModel) || value.selectedModel === 'minimax-h3-image'
     if (value.kind === 'task' && (value.taskId === null || (typeof value.taskId === 'string' && Boolean(value.taskId))) && taskModel &&
       isOptionalMode(value.mode) && isOptionalId(value.seriesGroupId) && isOptionalId(value.seriesPageId)) {
       return value as PosterSession

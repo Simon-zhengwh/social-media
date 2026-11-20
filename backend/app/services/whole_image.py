@@ -565,8 +565,8 @@ def run_generation(
         reference_images = _load_reference_images(
             db, store, input_data, brand, include_style=not optimized
         )
-        if image_model == "gemini-3-pro-image" and not reference_images:
-            raise StudioError("reference_required", "Gemini 3 Pro Image 需要至少一张参考图", 422)
+        if image_model in {"gemini-3-pro-image", "gemini-3.1-flash-image"} and not reference_images:
+            raise StudioError("reference_required", "请先添加至少一张参考图", 422)
         product_count = len(_manual_reference_ids(input_data))
         logo_count = 1 if input_data.get("logo_asset_id") else 0
         reference_role_block = _reference_role_guidance(

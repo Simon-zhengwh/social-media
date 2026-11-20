@@ -97,7 +97,7 @@ test('accepted generation replaces the draft with a task pointer without storing
   assert.ok([...tab.data.values()].every(value => !value.includes('保留') && !value.includes('products')))
 })
 
-test('historical models can resume saved tasks without becoming available for new drafts', () => {
+test('historical Gemini Flash tasks can resume with the same model', () => {
   const old = { kind: 'task', workspaceId: 'legacy-workspace', taskId: 'legacy-task', selectedModel: 'gemini-3.1-flash-image' } as const
   savePosterSession('alice', 'merchant', old)
   assert.deepEqual(readPosterSession('alice', 'merchant'), old)

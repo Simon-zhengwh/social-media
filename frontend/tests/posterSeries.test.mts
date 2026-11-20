@@ -199,6 +199,7 @@ test('model counts are group counts and the page count stays in the requirement'
     brandId: 'brand',
     brandMode: 'preset',
     logoAssetId: 'logo-1',
+    logoPosition: 'bottom-right',
     styleReferenceIds: [],
     modelCounts: { 'gpt-image-2.5-sunburst': 2, 'seedream-5.5-image-to-image': 1 },
     title: '系列测试',
@@ -210,6 +211,7 @@ test('model counts are group counts and the page count stays in the requirement'
   })
   assert.equal('pages_per_group' in payload, false)
   assert.equal(payload.prompt, '每组 4 张')
+  assert.equal(payload.logo_position, 'bottom-right')
   // New series rounds always build all their pages: there is no operator toggle.
   assert.equal('auto_generate_interiors' in payload, false)
   assert.equal(payload.ratio, '3:4')
@@ -219,12 +221,13 @@ test('model counts are group counts and the page count stays in the requirement'
   // A platform preset owns the canvas, so the ratio field is omitted like a single poster.
   const platformPayload = buildSeriesRunPayload({
     submitId: 'submit-12345678', prompt: '做 2 张', promptOptimized: true, products: ['asset-1'],
-    brandId: null, brandMode: 'none', logoAssetId: null, styleReferenceIds: [],
+    brandId: null, brandMode: 'none', logoAssetId: null, logoPosition: 'top-left', styleReferenceIds: [],
     modelCounts: { 'gpt-image-2.5-sunburst': 1 },
     platformId: 'instagram', placementId: 'feed', includeStoreAddress: false, includeStorePhone: false,
     storePlaceId: null,
   })
   assert.equal('ratio' in platformPayload, false)
+  assert.equal('logo_position' in platformPayload, false)
   assert.equal('auto_generate_interiors' in platformPayload, false)
   // The page count lives in the requirement only: no helper renders a page-count sentence.
   assert.equal('pageCountHint' in seriesModule, false)
@@ -353,11 +356,12 @@ test('saving to this page binds the version, the artifact and the page content r
   assert.equal(editorConflictMessage({ message: '网络中断' }), '网络中断')
 })
 
-test('the draft remembers the series choice and the task remembers its group and page', () => {
+test('the draft remembers series mode and Logo position, and the task remembers its group and page', () => {
   const form = {
     products: [], prompt: '每组 3 张', promptOptimized: false,
     selectedPlatformId: '', selectedPlacementId: '', selectedRatio: '9:16' as const,
-    selectedBrandId: '', brandMode: 'none' as const, selectedLogoId: '', logoChoiceTouched: false,
+    selectedBrandId: '', brandMode: 'none' as const, selectedLogoId: 'logo-1', logoChoiceTouched: true,
+    seriesLogoPosition: 'bottom-left' as const,
     styleReferences: [], selectedModel: 'gpt-image-2.5-sunburst' as const,
     modelCounts: { 'gpt-image-2.5-sunburst': 2 }, mode: 'series' as const,
   }
@@ -366,6 +370,7 @@ test('the draft remembers the series choice and the task remembers its group and
   assert.equal(restored?.kind, 'draft')
   if (restored?.kind === 'draft') {
     assert.equal(restored.form.mode, 'series')
+    assert.equal(restored.form.seriesLogoPosition, 'bottom-left')
     // The auto-interior toggle is gone, so the draft has nothing to remember for it.
     assert.equal('autoGenerateInteriors' in restored.form, false)
   }

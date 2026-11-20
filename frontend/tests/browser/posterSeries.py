@@ -582,12 +582,33 @@ def main() -> int:
         check('a new draft can still choose the series mode',
               choice['single'] == 'true' and choice['series'] == 'false'
               and choice['seriesDisabled'] is False and choice['groups'] == 0, choice)
+        logo_switch = ".logo-selector-field [role='switch']"
+        fresh_page.eval_json(f"document.querySelector({json.dumps(logo_switch)}).click()")
+        check('single poster omits the position control with Logo enabled',
+              fresh_page.eval_json("!document.querySelector('.logo-position')"))
         fresh_page.eval_json('''JSON.stringify((() => {
           const series = document.querySelectorAll('.poster-mode-switch button')[1];
           series.click();
           return series.getAttribute('aria-pressed');
         })())''')
         fresh_page.wait_for("document.querySelector('.model-count-unit')?.textContent === '组'", timeout=20)
+        check('series shows the four corners on one compact row with automatic placement initially',
+              fresh_page.eval_json('''JSON.stringify((() => {
+                const options = [...document.querySelectorAll('.logo-position label')];
+                return {
+                  corners: options.map(el => el.textContent),
+                  value: document.querySelector('.logo-position input:checked')?.value,
+                  oneRow: new Set(options.map(el => el.getBoundingClientRect().top)).size === 1,
+                  compact: options.every(el => el.getBoundingClientRect().height <= 24),
+                };
+              })())''') == {'corners': ['自动', '左上', '右上', '左下', '右下'], 'value': 'auto',
+                            'oneRow': True, 'compact': True})
+        fresh_page.eval_json("""document.querySelector('.logo-position input[value="bottom-right"]').click()""")
+        fresh_page.wait_for("document.querySelector('.logo-position input:checked')?.value === 'bottom-right'")
+        fresh_page.eval_json(f"document.querySelector({json.dumps(logo_switch)}).click()")
+        fresh_page.wait_for("!document.querySelector('.logo-position')")
+        fresh_page.eval_json(f"document.querySelector({json.dumps(logo_switch)}).click()")
+        fresh_page.wait_for("document.querySelector('.logo-position input:checked')?.value === 'bottom-right'")
         # Zero groups: the action stays disabled and prints no status line under the count row.
         empty = fresh_page.eval_json('''JSON.stringify({
           label: document.querySelector('.model-generate-button')?.getAttribute('aria-label'),
@@ -639,6 +660,8 @@ def main() -> int:
           if (!probe || !probe.runs.length) return null;
           return JSON.stringify(probe.runs[0]);
         })()''', timeout=40)
+        check('the series request sends the selected corner with the Logo',
+              submitted.get('logo_asset_id') == 'logo1' and submitted.get('logo_position') == 'bottom-right', submitted)
         check('one click submits every positive model count in a single round',
               submitted['image_groups'] == [
                 {'image_model': 'gpt-image-2.5-sunburst', 'group_count': 2},

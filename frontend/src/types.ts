@@ -823,6 +823,7 @@ export type MaterialRecognitionRequest = {
 // Poster series (opt-in). One page is an ordinary WholeImageTask; the group/page tree
 // only adds planning, cover locking and group downloads on top.
 export type PosterSeriesMode = 'single' | 'series'
+export type SeriesLogoPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
 export type PosterSeriesPage = {
   page_id: string
@@ -877,6 +878,7 @@ export type PosterSeriesRun = {
   round: number
   status: string
   prompt: string
+  logo_position?: SeriesLogoPosition | null
   pages_per_group: number | null
   workflow?: string | null
   error?: string | null
@@ -904,6 +906,7 @@ export type PosterSeriesRunPayload = {
   brand_id: string | null
   brand_mode: BrandMode
   logo_asset_id: string | null
+  logo_position?: SeriesLogoPosition
   style_reference_asset_ids: string[]
   image_groups: Array<{ image_model: ImageModel; group_count: number }>
   workspace_title?: string

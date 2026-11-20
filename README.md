@@ -30,7 +30,7 @@
 - 发布平台为选填项：选择平台后可指定用途，比例、尺寸和安全区规则由平台预设统一提供；不选择时可手动指定画幅比例。
 - 当前包含小红书、Instagram、TikTok、Google Business Profile 和 Meta 广告，支持 3:4、4:3、1:1、4:5、9:16、16:9 画布。
 - 项目小红书平台预设禁止出现地址、电话号码和二维码；地址包含门牌、街道名、入口位置及领取路线等到店指引，用户文案或参考图包含相关内容时，生成提示词会要求省略。
-- 生成页「图片模型」提供 `gpt-image-2.5-sunburst`（默认）、`gemini-3-pro-image`、`seedream-5-pro-image-to-image`、`seedream-5.5-image-to-image` 与 `minimax-h3-image-edit`。`gemini-3-pro-image` 生图需要至少一张参考图。接口仍接受 `gemini-3.1-flash-image` 以兼容历史任务。每张候选分别保存自己的模型，对话改图不使用表单中其他模型的配置。
+- 生成页「图片模型」提供 `gpt-image-2.5-sunburst`（默认）、`gemini-3-pro-image`、`gemini-3.1-flash-image`、`seedream-5-pro-image-to-image`、`seedream-5.5-image-to-image` 与 `minimax-h3-image-edit`。两个 Gemini 模型生图都需要至少一张参考图。每张候选分别保存自己的模型，对话改图不使用表单中其他模型的配置。
 - 所有图片模型（含 MiniMax H3）统一经 core-ai 网关联调（`CORE_AI_GATEWAY_BASE_URL`），使用 `CORE_AI_API_KEY` 与 `CORE_AI_IMAGE_TIMEOUT_SECONDS`，不再直连任何模型厂商。MiniMax 在网关上的模型名为 `minimax-h3-image-edit`（文生图与改图共用）；历史任务里的 `minimax-h3-image` 由 `IMAGE_MODEL_ALIASES` 映射到该名称，`provider: "minimax"` 记录仅作展示兼容。工作台将新旧名称归并为唯一的「MiniMax H3」入口，历史候选、选中状态及生成进度保持可用，新生成请求统一使用新名称。
 - 提示词输入框支持 AI 优化，会根据当前品牌、素材、平台规则和商家信息生成可直接用于整图生成的提示词。
 - 整图生成默认使用简短开场、图片编号与角色、通用规范、已配置的品牌信息及平台规则；统一参考图按编号范围合并说明，用途仍由用户要求决定。明确指定的上图文案逐字呈现，设计指令不上图；活动信息以内容参考为准，保留价格、各项日期及对应条件，不带入风格参考的旧文案。未指定的设计细节由模型决定，素材保真不限定海报整体构图。选定的商家 Logo 只出现一次，完整清晰且无遮挡，保留原色、不反色或重绘，用对比背景展示；同一商家旧标识以此替换，不重复叠加，位置随构图安排，未选定时不追加必展示要求。固定模板中的标准素材保真规则只发送一份，自定义规范与旧任务缺少该规则时会补充；不再额外叠加英文食物保真段落。此调整不改变图片输入、模型参数或改图流程。

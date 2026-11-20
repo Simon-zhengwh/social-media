@@ -4,6 +4,7 @@ import type {
   PosterSeriesMode,
   PosterSeriesPage,
   PosterSeriesRunPayload,
+  SeriesLogoPosition,
   PosterSeriesWorkspace,
   Ratio,
 } from './types'
@@ -197,6 +198,7 @@ export type SeriesSubmitInput = {
   brandId: string | null
   brandMode: BrandMode
   logoAssetId: string | null
+  logoPosition?: SeriesLogoPosition | null
   styleReferenceIds: string[]
   modelCounts: ModelCounts
   title?: string
@@ -220,6 +222,7 @@ export function buildSeriesRunPayload(input: SeriesSubmitInput): PosterSeriesRun
     brand_id: input.brandId,
     brand_mode: input.brandMode,
     logo_asset_id: input.logoAssetId,
+    ...(input.logoAssetId && input.logoPosition ? { logo_position: input.logoPosition } : {}),
     style_reference_asset_ids: input.styleReferenceIds,
     image_groups: modelGroupPlan(input.modelCounts),
     workspace_title: input.title,

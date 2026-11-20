@@ -44,7 +44,8 @@ def create_run(
     logo_id = template_input.get("logo_asset_id") or payload.logo_asset_id
     references = [asset_id for asset_id in references if asset_id != logo_id]
     canvas = template["canvas"]
-    logo_hint = series.resolve_logo_box(canvas, payload.prompt) if logo_id else None
+    logo_position = payload.logo_position if logo_id else None
+    logo_hint = series.resolve_logo_box(canvas, payload.prompt, position_override=logo_position) if logo_id else None
     if logo_hint and logo_hint["source"] != "user":
         logo_hint = None
 
@@ -54,7 +55,7 @@ def create_run(
     now = whole_image.utcnow()
     run = {"_id": run_id, **key, "workflow": WORKFLOW, "status": "preparing",
            "round": db.whole_series_runs.count_documents({"workspace_id": workspace_id}) + 1,
-           "prompt": payload.prompt, "title": payload.workspace_title, "canvas": canvas,
+           "prompt": payload.prompt, "title": payload.workspace_title, "canvas": canvas, "logo_position": logo_position,
            "created_at": now, "updated_at": now}
     try:
         db.whole_series_runs.insert_one(run)
@@ -107,13 +108,19 @@ def _agent_input(db: Any, settings: Any, store: Any, client: Any,
         hint = group.get("logo_box") or {}
         placement = {key: hint[key] for key in ("position", "size") if hint.get(f"{key}_specified")}
         artwork = series._logo_artwork(db, store, logo_id, run["canvas"])
+        logo_position = run.get("logo_position")
+        instruction = (
+            "For each group choose one supplied option before drawing any page. "
+            "Use its exact logo_box for all pages and keep only its safe_area clear. "
+            "Compose freely outside it. The app overlays the official reference."
+        )
+        if logo_position:
+            instruction += " The selected Logo position takes precedence over position wording in the design prompt."
         logo = {
             "artwork": artwork,
             "placement": placement or None,
-            "options": series._logo_options(run["canvas"], run["prompt"], artwork),
-            "instruction": "For each group choose one supplied option before drawing any page. "
-                           "Use its exact logo_box for all pages and keep only its safe_area clear. "
-                           "Compose freely outside it. The app overlays the official reference.",
+            "options": series._logo_options(run["canvas"], run["prompt"], artwork, position_override=logo_position),
+            "instruction": instruction,
         }
     return {
         "operation": "poster-series-generate", "prompt": run["prompt"], "canvas": run["canvas"],

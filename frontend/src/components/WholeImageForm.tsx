@@ -13,6 +13,7 @@ import type {
   PlatformPreset,
   Ratio,
   PosterSeriesMode,
+  SeriesLogoPosition,
 } from '../types'
 
 type Props = {
@@ -27,6 +28,8 @@ type Props = {
   styleReferencesUploading: boolean
   logoOptions: BrandLogoImage[]
   selectedLogoId: string
+  seriesLogoPosition: SeriesLogoPosition | null
+  onSeriesLogoPositionChange: (position: SeriesLogoPosition | null) => void
   stores: MerchantStore[]
   storeSelection: StoreSelection
   onStoreSelectionChange: (next: StoreSelection) => void
@@ -74,6 +77,8 @@ export default function WholeImageForm({
   styleReferencesUploading,
   logoOptions,
   selectedLogoId,
+  seriesLogoPosition,
+  onSeriesLogoPositionChange,
   stores,
   storeSelection,
   onStoreSelectionChange,
@@ -179,6 +184,8 @@ export default function WholeImageForm({
         busy={busy}
         onSelectLogo={onSelectLogo}
         onToggleLogo={onToggleLogo}
+        position={seriesLogoPosition}
+        onPositionChange={seriesEnabled && mode === 'series' ? onSeriesLogoPositionChange : undefined}
       />
 
       <StoreInfoSelector

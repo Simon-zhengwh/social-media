@@ -356,7 +356,7 @@ def test_generation_and_edit_keep_canvas_ratio_without_alignment_borders(setting
     assert fake.generation_calls[0]["size"] == "1088x1360"
     assert fake.edit_calls[0]["size"] == "1088x1360"
 
-@pytest.mark.parametrize("model", ["gpt-image-2.5-sunburst", "gemini-3-pro-image"])
+@pytest.mark.parametrize("model", ["gpt-image-2.5-sunburst", "gemini-3-pro-image", "gemini-3.1-flash-image"])
 def test_generation_exposes_model_input_snapshot_with_reference_preview(
     settings, store, product_png, model
 ):
@@ -2134,10 +2134,11 @@ def test_outputs_without_artifacts_serialize_as_empty_list(settings, store):
     assert branch["outputs"][0]["artifacts"] == []
 
 
-def test_gemini_generation_rejects_missing_reference_before_calling_gateway(settings, store):
+@pytest.mark.parametrize("model", ["gemini-3-pro-image", "gemini-3.1-flash-image"])
+def test_gemini_generation_rejects_missing_reference_before_calling_gateway(settings, store, model):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
-    created = _create(db, settings, store, fake, image_model="gemini-3-pro-image")
+    created = _create(db, settings, store, fake, image_model=model)
 
     whole_service.run_generation(db, settings, store, fake, created["id"])
 

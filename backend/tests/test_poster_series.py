@@ -641,8 +641,14 @@ def test_round_queues_every_page_and_interior_runs_before_cover_finishes(tmp_pat
             assert request["cover"] is None
 
 
-@pytest.mark.parametrize("logo_position", ["", "Logo 放左上角。"])
-def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(tmp_path, logo_position):
+@pytest.mark.parametrize(("logo_clause", "logo_position", "expected_position"), [
+    ("", None, None),
+    ("Logo 放左上角。", None, "top-left"),
+    ("Logo 放左上角并放大一点。", "bottom-right", "bottom-right"),
+])
+def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
+    tmp_path, logo_clause, logo_position, expected_position,
+):
     settings = _settings(tmp_path)
     store = LocalObjectStore(settings.storage_path / "objects")
     db = mongomock.MongoClient().db
@@ -654,8 +660,9 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(tmp_pa
         template = _build_task(payload)
         template["brand"]["reference_asset_ids"] = ["style-1"]
         return template
-    prompt = "用原照做几张统一风格的图，内容自由。" + logo_position
-    payload = _payload(prompt=prompt, reference_asset_ids=["asset-1"], logo_asset_id="logo-1", image_groups=[
+    prompt = "用原照做几张统一风格的图，内容自由。" + logo_clause
+    payload = _payload(prompt=prompt, reference_asset_ids=["asset-1"], logo_asset_id="logo-1",
+                       logo_position=logo_position, image_groups=[
         SeriesModelGroup(image_model="gpt-image-2.5-sunburst", group_count=1),
         SeriesModelGroup(image_model="seedream-5.5-image-to-image", group_count=1),
     ])
@@ -707,17 +714,24 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(tmp_pa
     ]
     assert full_input["references"][-1]["url"].startswith("https://")
     options = full_input["logo"]["options"]
-    assert len(options) == (1 if logo_position else 4)
+    assert len(options) == (1 if expected_position else 4)
     official_box = options[-1]["logo_box"]
     safe = options[-1]["safe_area"]
     assert safe["width"] <= official_box["width"] + 24
     assert safe["height"] <= official_box["height"] + 24
-    if logo_position:
+    if expected_position:
+        assert options[0]["position"] == full_input["logo"]["placement"]["position"] == expected_position
+    if expected_position == "top-left":
         assert official_box["x"] == official_box["y"] == 49
+    if logo_position:
+        assert official_box["x"] > 540 and official_box["y"] > 675
+        assert full_input["logo"]["placement"]["size"] == "large"
+        assert "takes precedence" in full_input["logo"]["instruction"]
     assert not ({"page_count", "cover", "pages"} & full_input.keys())
     snapshot = poster_series.get_workspace_series(db, "workspace-agent", settings)
     assert [group["page_count"] for group in snapshot["groups"]] == [1, 3]
     assert snapshot["runs"][0]["status"] == "complete"
+    assert snapshot["runs"][0].get("logo_position") == logo_position
     for group in snapshot["groups"]:
         assert group["complete"]
         assert {key: group["logo_box"][key] for key in official_box} == official_box

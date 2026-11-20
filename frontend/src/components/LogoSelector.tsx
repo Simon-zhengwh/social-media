@@ -1,4 +1,5 @@
-import type { BrandLogoImage } from '../types'
+import { useId } from 'react'
+import type { BrandLogoImage, SeriesLogoPosition } from '../types'
 import { assetDisplayName } from '../assetNames'
 import { ZoomableImage } from './ImageLightbox'
 
@@ -14,9 +15,21 @@ type Props = {
    * only decide which logo, so turning it off must remember nothing but the merchant's own set.
    */
   onToggleLogo: (enabled: boolean) => void
+  position?: SeriesLogoPosition | null
+  onPositionChange?: (position: SeriesLogoPosition | null) => void
 }
 
-export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo, onToggleLogo }: Props) {
+const positions: Array<[SeriesLogoPosition | null, string]> = [
+  [null, '自动'],
+  ['top-left', '左上'],
+  ['top-right', '右上'],
+  ['bottom-left', '左下'],
+  ['bottom-right', '右下'],
+]
+
+export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo, onToggleLogo,
+  position = null, onPositionChange }: Props) {
+  const positionId = useId()
   const enabled = Boolean(selectedLogoId)
   // With a single logo there is nothing to pick: keep the switch semantics, drop the selection
   // highlight and the radio marker so the only option does not look like an unanswered choice.
@@ -74,6 +87,23 @@ export default function LogoSelector({ logos, selectedLogoId, busy, onSelectLogo
               </div>
             )
           })}
+        </div>
+      )}
+      {onPositionChange && logos.some(logo => logo.asset_id === selectedLogoId) && (
+        <div className="logo-position" role="radiogroup" aria-label="Logo 位置">
+          {positions.map(([value, label]) => (
+            <label key={value ?? 'auto'}>
+              <input
+                type="radio"
+                name={positionId}
+                value={value ?? 'auto'}
+                checked={position === value}
+                disabled={busy}
+                onChange={() => onPositionChange(value)}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
         </div>
       )}
     </div>

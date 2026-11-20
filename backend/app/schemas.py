@@ -226,6 +226,7 @@ class PosterSeriesRunCreate(BaseModel):
     brand_id: str | None = Field(default=None, max_length=64)
     brand_mode: Literal["preset", "reference", "none"] | None = None
     logo_asset_id: str | None = Field(default=None, max_length=128)
+    logo_position: Literal["top-left", "top-right", "bottom-left", "bottom-right"] | None = None
     style_reference_asset_ids: list[str] = Field(default_factory=list, max_length=3)
     image_groups: list[SeriesModelGroup] = Field(min_length=1, max_length=8)
     pages_per_group: int | None = Field(default=None, ge=2, le=12)

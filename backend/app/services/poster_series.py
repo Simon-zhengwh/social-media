@@ -232,7 +232,9 @@ def _logo_box_size(canvas: dict[str, Any], size: str) -> tuple[int, int]:
     return box_width, box_height
 
 
-def resolve_logo_box(canvas: dict[str, Any], prompt: str) -> dict[str, Any]:
+def resolve_logo_box(
+    canvas: dict[str, Any], prompt: str, *, position_override: str | None = None,
+) -> dict[str, Any]:
     """Deterministic logo box shared by every page of a group.
 
     The model never draws the official logo; the backend composites the original file
@@ -245,13 +247,9 @@ def resolve_logo_box(canvas: dict[str, Any], prompt: str) -> dict[str, Any]:
     if width <= 0 or height <= 0:
         raise SeriesError("invalid_canvas", "系列画布尺寸无效", 422)
     clauses = " | ".join(_logo_clauses(prompt)).lower()
-    position = "bottom-right"
-    position_found = False
-    for word, value in _POSITION_WORDS:
-        if word in clauses:
-            position = value
-            position_found = True
-            break
+    position = position_override or next((value for word, value in _POSITION_WORDS if word in clauses), None)
+    position_found = position is not None
+    position = position or "bottom-right"
     size = "medium"
     size_found = False
     if _SMALL_SIZE.search(clauses):
@@ -314,8 +312,10 @@ def merge_logo_box(
     return box
 
 
-def _logo_options(canvas: dict[str, Any], prompt: str, artwork: dict[str, Any]) -> list[dict[str, Any]]:
-    hint = resolve_logo_box(canvas, prompt)
+def _logo_options(
+    canvas: dict[str, Any], prompt: str, artwork: dict[str, Any], *, position_override: str | None = None,
+) -> list[dict[str, Any]]:
+    hint = resolve_logo_box(canvas, prompt, position_override=position_override)
     canvas_width, canvas_height = int(canvas["width"]), int(canvas["height"])
     image_width, image_height = artwork["image_size"]
     left, top, right, bottom = artwork["ink_bounds"]
@@ -785,6 +785,7 @@ def _run_out(db: Any, run: dict[str, Any]) -> dict[str, Any]:
         "round": int(run.get("round") or 1),
         "status": run.get("status"),
         "prompt": run.get("prompt"),
+        "logo_position": run.get("logo_position"),
         "pages_per_group": None if run.get("workflow") else int(run.get("pages_per_group") or 2),
         "workflow": run.get("workflow"),
         "error": run.get("error"),
