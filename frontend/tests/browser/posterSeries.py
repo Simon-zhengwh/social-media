@@ -169,6 +169,22 @@ def check_costs(studio: Orca) -> None:
     assert studio.eval_json("!document.querySelector('.poster-cost-log details').open")
     studio.eval_json("document.querySelector('.poster-cost-log summary').click()")
     studio.wait_for("document.querySelector('.poster-cost-log details[open]')?.textContent.includes('DeepSeek Flash')")
+    scroll = studio.eval_json("""JSON.stringify((() => {
+      const log = document.querySelector('.poster-cost-log');
+      const summary = document.querySelector('.poster-cost-summary');
+      const lastCall = log.querySelector('.poster-cost-children > li:last-child');
+      const initialSummaryTop = summary.getBoundingClientRect().top;
+      log.scrollTop = log.scrollHeight;
+      const bottom = log.getBoundingClientRect().bottom;
+      const last = lastCall.getBoundingClientRect();
+      return {
+        overflow: getComputedStyle(log).overflowY,
+        scrolled: log.scrollTop > 0,
+        lastInView: last.top >= log.getBoundingClientRect().top && last.bottom <= bottom,
+        summaryStayed: summary.getBoundingClientRect().top === initialSummaryTop,
+      };
+    })())""")
+    assert scroll == {"overflow": "auto", "scrolled": True, "lastInView": True, "summaryStayed": True}, scroll
     assert studio.eval_json("document.querySelector('.poster-cost-summary').textContent.includes('$0.3432')")
     for page in (2, 1):
         studio.eval_json(f"""document.querySelector('button[aria-label="查看 图片 {page}"]').click()""")

@@ -342,8 +342,12 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
         ...(details ? { calls: [{
           id: 'paid-1', kind: 'agent', operation: 'series', target: 'Image Editor',
           image_number: null, started_at: now, status: 'completed', cost_usd: 0.3432, credits: 12,
-          children: [{ id: 'child-1', kind: 'llm', target: 'DeepSeek Flash',
-            started_at: now, cost_usd: 0.0032, credits: null }],
+          children: Array.from({ length: 61 }, (_, index) => ({
+            id: 'child-' + index,
+            kind: index === 60 ? 'image' : 'llm',
+            target: index === 60 ? 'Last image call' : 'DeepSeek Flash',
+            started_at: now, cost_usd: 0.0032, credits: null,
+          })),
         }] } : {}),
       })
     }
