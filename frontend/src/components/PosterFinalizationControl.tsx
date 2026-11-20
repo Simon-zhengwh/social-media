@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import { ApiError, getPosterFinalization, revokePosterFinalization, savePosterFinalization } from '../api'
-import type { PosterFinalizationContext, WholeImageTask } from '../types'
+import type { PosterFinalization, PosterFinalizationContext, WholeImageTask } from '../types'
 import ConfirmDialog from './ConfirmDialog'
 
-type Props = { task: WholeImageTask; disabled: boolean }
+type Props = {
+  task: WholeImageTask
+  disabled: boolean
+  onChange?: (finalization: PosterFinalization | null, revokedGroupKey?: string) => void
+}
 
-export default function PosterFinalizationControl({ task, disabled }: Props) {
+export default function PosterFinalizationControl({ task, disabled, onChange }: Props) {
   const [context, setContext] = useState<PosterFinalizationContext | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -20,12 +24,16 @@ export default function PosterFinalizationControl({ task, disabled }: Props) {
   useEffect(() => {
     let cancelled = false
     void getPosterFinalization(task.id, versionId, outputId).then(value => {
-      if (!cancelled) { setContext(value); setError(null) }
+      if (!cancelled) {
+        setContext(value)
+        setError(null)
+        onChange?.(value.finalization)
+      }
     }).catch((reason: unknown) => {
       if (!cancelled) setError(reason instanceof Error ? reason.message : '定稿状态加载失败')
     }).finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [task.id, versionId, outputId])
+  }, [task.id, versionId, outputId, onChange])
 
   const save = async () => {
     if (loading || saving || isCurrent) return
@@ -35,10 +43,12 @@ export default function PosterFinalizationControl({ task, disabled }: Props) {
       const current = context ?? await getPosterFinalization(task.id, versionId, outputId)
       const value = await savePosterFinalization(task.id, versionId, outputId, current.finalization?.revision ?? null)
       setContext({ ...current, finalization: value })
+      onChange?.(value)
     } catch (reason: unknown) {
       if (reason instanceof ApiError && reason.status === 409) {
         const value = await getPosterFinalization(task.id, versionId, outputId).catch(() => null)
         setContext(value)
+        if (value) onChange?.(value.finalization, value.finalization ? undefined : context?.finalization?.group_key)
       }
       setError(reason instanceof Error ? reason.message : '定稿保存失败')
     } finally { setSaving(false); setReplacing(false) }
@@ -51,9 +61,11 @@ export default function PosterFinalizationControl({ task, disabled }: Props) {
     try {
       await revokePosterFinalization(task.id, final.revision)
       setContext(context ? { ...context, finalization: null } : null)
+      onChange?.(null, final.group_key)
     } catch (reason: unknown) {
       const value = await getPosterFinalization(task.id, versionId, outputId).catch(() => null)
       setContext(value)
+      if (value) onChange?.(value.finalization, value.finalization ? undefined : final.group_key)
       setError(reason instanceof Error ? reason.message : '撤销定稿失败')
     } finally { setSaving(false) }
   }

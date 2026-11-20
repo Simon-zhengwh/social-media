@@ -80,6 +80,8 @@ class Fixture:
         elif re.fullmatch(r"/api/whole-image/workspaces/[^/]+/tasks", path):
             workspace = path.split('/')[-2]
             payload = [task for task in self.tasks.values() if task["input"]["generation_workspace_id"] == workspace]
+        elif re.fullmatch(r"/api/whole-image/workspaces/[^/]+/finalizations", path):
+            payload = []
         elif re.fullmatch(r"/api/whole-image/workspaces/[^/]+/title", path):
             workspace = path.split('/')[-2]
             if request.method == "PUT":

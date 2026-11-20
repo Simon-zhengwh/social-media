@@ -261,3 +261,31 @@ def enrich_assets(db: Any, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def usages(db: Any, asset_id: str) -> list[dict[str, Any]]:
     keys = _asset_aliases(db, [{'id': asset_id}])[asset_id]
     return [record_out(doc) for doc in db.whole_finalizations.find({'asset_keys': {'$in': list(keys)}}).sort('finalized_at', -1)]
+
+
+def list_for_workspace(db: Any, workspace_id: str) -> list[dict[str, Any]]:
+    workspace_id = str(workspace_id or '').strip()
+    if not workspace_id:
+        return []
+    clauses: list[dict[str, Any]] = [
+        {'input.generation_workspace_id': workspace_id},
+        {'input.candidate_batch_id': workspace_id, 'input.generation_workspace_id': None},
+        {'_id': workspace_id, 'input.generation_workspace_id': None, 'input.candidate_batch_id': None},
+    ]
+    group_ids = [
+        str(doc['_id'])
+        for doc in db.whole_series_groups.find({'workspace_id': workspace_id}, {'_id': 1})
+    ]
+    if group_ids:
+        clauses.append({'series.group_id': {'$in': group_ids}})
+    task_ids = [
+        str(doc['_id'])
+        for doc in db.whole_tasks.find(
+            {'$or': clauses, 'candidate_deleted_at': {'$exists': False}},
+            {'_id': 1},
+        )
+    ]
+    if not task_ids:
+        return []
+    docs = db.whole_finalizations.find({'task_id': {'$in': task_ids}}).sort('finalized_at', -1)
+    return [record_out(doc) for doc in docs]

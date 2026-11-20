@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import type { WholeImageVersion } from '../types'
+import { groupFinalizedHistory } from '../finalizedHistory'
+import type { PosterFinalization, WholeImageVersion } from '../types'
 import CandidateVersionPicker from './CandidateVersionPicker'
 
 export type PosterImageItem = {
   id: string
+  taskId?: string | null
   label: string
   thumb: string | null
   status?: string
@@ -31,18 +33,23 @@ type Props = {
   versions: WholeImageVersion[]
   versionsLoading: boolean
   currentVersionId: string | null
+  currentOutputId?: string | null
   versionSelectionDisabled: boolean
   onSelectVersion: (versionId: string) => Promise<boolean>
+  finalizations?: PosterFinalization[]
+  onSelectFinalization?: (finalization: PosterFinalization) => void
+  onOpenHistory?: () => void
 }
 
-function Thumbnail({ image }: { image: PosterImageItem }) {
-  return image.thumb
-    ? <img src={image.thumb} alt="" loading="lazy" decoding="async" />
-    : <span>{image.status || '无预览'}</span>
+function Thumbnail({ thumb, status }: { thumb: string | null; status?: string }) {
+  return thumb
+    ? <img src={thumb} alt="" loading="lazy" decoding="async" />
+    : <span>{status || '无预览'}</span>
 }
 
 export default function PosterImageNavigator({ batches, activeBatchId, selectedId, disabled,
-  versions, versionsLoading, currentVersionId, versionSelectionDisabled, onSelectVersion }: Props) {
+  versions, versionsLoading, currentVersionId, currentOutputId, versionSelectionDisabled,
+  onSelectVersion, finalizations = [], onSelectFinalization, onOpenHistory }: Props) {
   const railRef = useRef<HTMLDivElement>(null)
   const dialogRef = useRef<HTMLDialogElement>(null)
   const dialogTitle = useId()
@@ -52,6 +59,11 @@ export default function PosterImageNavigator({ batches, activeBatchId, selectedI
   const images = activeBatch?.images ?? []
   const selectedVersion = versions.find(version => version.id === currentVersionId)
   const activeVersionAnchor = versionAnchor && versionAnchor.id === selectedId ? versionAnchor.element : null
+  const finalizedGroups = groupFinalizedHistory(batches, finalizations)
+  const finalizedCount = finalizedGroups.reduce((total, group) => total + group.items.length, 0)
+  const finalizedByImageId = new Map(
+    finalizedGroups.flatMap(group => group.items.map(item => [item.imageId, item] as const)),
+  )
 
   useEffect(() => {
     const items = activeBatch?.images
@@ -93,7 +105,7 @@ export default function PosterImageNavigator({ batches, activeBatchId, selectedI
                     closeVersions()
                     if (!active) image.onSelect()
                   }}>
-                  <Thumbnail image={image} />
+                  <Thumbnail thumb={image.thumb} status={image.status} />
                 </button>
                 {image.remove ? (
                   <button type="button" className="candidate-delete" aria-label={`删除 ${image.label}`}
@@ -119,6 +131,7 @@ export default function PosterImageNavigator({ batches, activeBatchId, selectedI
       <div className="poster-rail-actions">
         <button type="button" className="poster-history-trigger" aria-haspopup="dialog" onClick={() => {
           closeVersions()
+          onOpenHistory?.()
           dialogRef.current?.showModal()
         }}>
           <svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
@@ -135,6 +148,44 @@ export default function PosterImageNavigator({ batches, activeBatchId, selectedI
           <button type="button" className="mp-btn-ghost" aria-label="关闭历史记录" onClick={() => dialogRef.current?.close()}>×</button>
         </div>
         <div className="poster-history-list">
+          <section className="poster-history-batch poster-history-finalized" aria-label="定稿">
+            <h3>
+              定稿
+              {finalizedCount > 1 ? <span>{finalizedCount} 张</span> : null}
+              {finalizedCount === 0 ? <span className="poster-history-empty">暂无</span> : null}
+            </h3>
+            {finalizedGroups.length ? (
+              <div className="poster-history-finalized-groups">
+                {finalizedGroups.map(group => (
+                  <div className="poster-history-finalized-group" key={group.batchId}>
+                    <div className="poster-history-finalized-meta">
+                      <strong>第 {group.round} 轮</strong>
+                      <span>{group.model}</span>
+                      {group.group ? <span>{group.group}</span> : null}
+                    </div>
+                    <div className="poster-history-images">
+                      {group.items.map(item => {
+                        const isCurrent = item.imageId === selectedId
+                          && item.versionId === currentVersionId
+                          && (!currentOutputId || item.outputId === currentOutputId)
+                        return (
+                          <button type="button" key={item.id} className="poster-history-image"
+                            aria-pressed={isCurrent} disabled={disabled} onClick={() => {
+                              onSelectFinalization?.(item.finalization)
+                              dialogRef.current?.close()
+                            }}>
+                            <span className="poster-history-thumb"><Thumbnail thumb={item.thumb} /></span>
+                            <span>{item.label}</span>
+                            <span className="poster-history-version">v{item.version}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </section>
           {batches.toSorted((a, b) => b.round - a.round).map(batch => (
             <section className="poster-history-batch" key={batch.id}>
               <h3>第 {batch.round} 轮 <span>{batch.model}</span>{batch.group ? <> <span>{batch.group}</span></> : null}</h3>
@@ -145,16 +196,22 @@ export default function PosterImageNavigator({ batches, activeBatchId, selectedI
                     dialogRef.current?.close()
                   }}>{batch.status}</button>
                 ) : null}
-                {batch.images.map(image => (
-                  <button type="button" key={image.id} className="poster-history-image"
-                    aria-pressed={image.id === selectedId} disabled={disabled} onClick={() => {
-                      image.onSelect()
-                      dialogRef.current?.close()
-                    }}>
-                    <span className="poster-history-thumb"><Thumbnail image={image} /></span>
-                    <span>{image.label}</span>
-                  </button>
-                ))}
+                {batch.images.map(image => {
+                  const finalized = finalizedByImageId.get(image.id)
+                  return (
+                    <button type="button" key={image.id} className="poster-history-image"
+                      aria-pressed={image.id === selectedId} disabled={disabled} onClick={() => {
+                        image.onSelect()
+                        dialogRef.current?.close()
+                      }}>
+                      <span className="poster-history-thumb">
+                        <Thumbnail thumb={image.thumb} status={image.status} />
+                        {finalized ? <span className="poster-history-finalized-badge">定稿</span> : null}
+                      </span>
+                      <span>{image.label}</span>
+                    </button>
+                  )
+                })}
               </div>
             </section>
           ))}

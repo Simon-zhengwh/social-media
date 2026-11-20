@@ -379,6 +379,9 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     if (genericTasks && genericTasks[1] !== 'ws1') {
       return json(Object.values(tasks).filter(task => task.input.generation_workspace_id === genericTasks[1]))
     }
+    if (/^\/workspaces\/[^/]+\/finalizations$/.exec(rest)) {
+      return json([])
+    }
     const genericTitle = /^\/workspaces\/([^/]+)\/title$/.exec(rest)
     if (genericTitle && genericTitle[1] !== 'ws1') {
       return json({ workspace_id: genericTitle[1], title: '系列新任务', created_at: now })

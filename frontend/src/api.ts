@@ -168,6 +168,10 @@ export async function listAssetUsages(assetId: string): Promise<PosterFinalizati
   return parseResponse(await apiFetch(`/api/assets/${encodeURIComponent(assetId)}/usages`))
 }
 
+export async function listWorkspaceFinalizations(workspaceId: string): Promise<PosterFinalization[]> {
+  return parseResponse(await apiFetch(`/api/whole-image/workspaces/${encodeURIComponent(workspaceId)}/finalizations`))
+}
+
 export async function listAssetPage(
   keyword = '',
   skip = 0,

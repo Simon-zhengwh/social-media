@@ -340,3 +340,45 @@ def test_reuploading_same_photo_preserves_its_usage_count(finalization_app, prod
     assert response.status_code == 201
     assert response.json()['id'] == 'm1-a'
     assert response.json()['usage_count'] == 1
+
+
+def test_workspace_finalizations_lists_single_and_series_finalizations(finalization_app):
+    client, db = finalization_app
+    # Empty or unknown workspace returns an empty list rather than 404.
+    assert client.get(BASE + '/whole-image/workspaces/missing-ws/finalizations').json() == []
+    assert client.get(BASE + '/whole-image/workspaces/workspace/finalizations').json() == []
+
+    # Single poster workspace: returns the single finalized candidate & version, isolated by merchant.
+    seed_task(db, 't2', 'workspace', 'm1', ['m1-b'])
+    seed_version(db, 't2', 't2-v2', 'm1', ['m1-b'], parent='t2-v1')
+    seed_task(db, 'm2-t1', 'workspace', 'm2', ['m2-a'])
+    first = save(client, 't1').json()
+    assert save(client, 'm2-t1', base='/api/merchants/m2').status_code == 200
+    listed = client.get(BASE + '/whole-image/workspaces/workspace/finalizations').json()
+    assert [(item['task_id'], item['version_id'], item['version']) for item in listed] == [('t1', 't1-v1', 1)]
+
+    replaced = save(client, 't2', version='t2-v2', revision=first['revision']).json()
+    listed = client.get(BASE + '/whole-image/workspaces/workspace/finalizations').json()
+    assert [(item['task_id'], item['version_id'], item['version']) for item in listed] == [('t2', 't2-v2', 2)]
+
+    assert client.delete(endpoint('t2') + '?expected_revision=' + replaced['revision'], headers=HEADERS).status_code == 204
+    assert client.get(BASE + '/whole-image/workspaces/workspace/finalizations').json() == []
+
+    # Series workspace: each finalized page is returned across groups and rounds.
+    db.whole_series_groups.insert_many([
+        {'_id': 'sg1', 'merchant_id': 'm1', 'workspace_id': 'series-ws', 'order': 0},
+        {'_id': 'sg2', 'merchant_id': 'm1', 'workspace_id': 'series-ws', 'order': 1},
+    ])
+    seed_task(db, 'st1', 'series-ws', 'm1', ['m1-a'])
+    seed_task(db, 'st2', 'series-ws', 'm1', ['m1-b'])
+    seed_version(db, 'st2', 'st2-v2', 'm1', ['m1-b'], parent='st2-v1')
+    db.whole_tasks.update_one({'_id': 'st1'}, {'$set': {'series': {'group_id': 'sg1', 'page_id': 'p1', 'content_refs': ['m1-a']}}})
+    db.whole_tasks.update_one({'_id': 'st2'}, {'$set': {'series': {'group_id': 'sg2', 'page_id': 'p2', 'content_refs': ['m1-b']}}})
+    assert save(client, 'st1', version='st1-v1').status_code == 200
+    assert save(client, 'st2', version='st2-v2').status_code == 200
+
+    series_listed = client.get(BASE + '/whole-image/workspaces/series-ws/finalizations').json()
+    assert {(item['task_id'], item['version_id'], item['version']) for item in series_listed} == {
+        ('st1', 'st1-v1', 1),
+        ('st2', 'st2-v2', 2),
+    }

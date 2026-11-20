@@ -806,6 +806,11 @@ def get_workspace_tasks(workspace_id: str, request: Request) -> list[dict[str, A
     return [task_out(db, doc) for doc in docs if not doc.get("candidate_deleted_at")]
 
 
+@router.get("/workspaces/{workspace_id}/finalizations")
+def get_workspace_finalizations(workspace_id: str, request: Request) -> list[dict[str, Any]]:
+    return poster_finalizations.list_for_workspace(request_db(request), workspace_id)
+
+
 def _workspace_start(db: Any, workspace_id: str) -> dict[str, Any]:
     first = db.whole_tasks.find_one(
         _workspace_filter(workspace_id),

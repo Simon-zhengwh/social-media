@@ -108,6 +108,8 @@ def run(vite_url, output_dir):
                     data = records[0]
                 elif path.endswith('/finalization'):
                     data = dict(finalization=None)
+                elif path.endswith('/finalizations'):
+                    data = []
                 elif path.endswith('/versions'):
                     data = [version]
                 elif '/workspaces/' in path or '/batches/' in path:

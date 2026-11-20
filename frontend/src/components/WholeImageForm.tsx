@@ -62,7 +62,9 @@ type Props = {
   mode?: PosterSeriesMode
   modeLocked?: boolean
   onModeChange?: (mode: PosterSeriesMode) => void
-  children?: ReactNode
+  header?: ReactNode
+  headerAction?: ReactNode
+  footer?: ReactNode
 }
 
 export default function WholeImageForm({
@@ -111,7 +113,9 @@ export default function WholeImageForm({
   mode = 'single',
   modeLocked = false,
   onModeChange,
-  children,
+  header,
+  headerAction,
+  footer,
 }: Props) {
   const selectedPlatform = platforms.find((item) => item.id === selectedPlatformId)
   const selectedStoreId = (stores.find(store => store.place_id === storeSelection.placeId) ?? stores[0])?.place_id || ''
@@ -136,14 +140,22 @@ export default function WholeImageForm({
 
   return (
     <section className="mp-card form-card">
-      {seriesEnabled ? (
-        <div className="poster-mode-row">
-          <div className="poster-mode-switch" role="group" aria-label="海报模式">
-            <button type="button" className={mode === 'single' ? 'is-active' : ''} aria-pressed={mode === 'single'}
-              disabled={busy || modeLocked} onClick={() => onModeChange?.('single')}>单张</button>
-            <button type="button" className={mode === 'series' ? 'is-active' : ''} aria-pressed={mode === 'series'}
-              disabled={busy || modeLocked} onClick={() => onModeChange?.('series')}>系列图</button>
-          </div>
+      {header || seriesEnabled || headerAction ? (
+        <div className="poster-sidebar-head">
+          {header}
+          {seriesEnabled || headerAction ? (
+            <div className="poster-mode-row">
+              {seriesEnabled ? (
+                <div className="poster-mode-switch" role="group" aria-label="海报模式">
+                  <button type="button" className={mode === 'single' ? 'is-active' : ''} aria-pressed={mode === 'single'}
+                    disabled={busy || modeLocked} onClick={() => onModeChange?.('single')}>单张</button>
+                  <button type="button" className={mode === 'series' ? 'is-active' : ''} aria-pressed={mode === 'series'}
+                    disabled={busy || modeLocked} onClick={() => onModeChange?.('series')}>系列图</button>
+                </div>
+              ) : null}
+              {headerAction}
+            </div>
+          ) : null}
         </div>
       ) : null}
       <PlatformSelector
@@ -226,7 +238,7 @@ export default function WholeImageForm({
         onPromptChange={onPromptChange}
       />
 
-      {children}
+      {footer}
     </section>
   )
 }

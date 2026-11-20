@@ -25,11 +25,13 @@ test('finalization APIs retain frozen source, revision, merchant scope and write
   await finalizationApi.savePosterFinalization('poster/a', 'version/a', 'output/a', 'revision')
   await finalizationApi.revokePosterFinalization('poster/a', 'revision/a')
   await finalizationApi.listAssetUsages('am:photo/a')
+  await finalizationApi.listWorkspaceFinalizations('workspace/a')
   assert.deepEqual(requests.map(request => request.path), [
     '/api/merchants/merchant%2Fa/whole-image/tasks/poster%2Fa/finalization?version_id=version%2Fa&output_id=output%2Fa',
     '/api/merchants/merchant%2Fa/whole-image/tasks/poster%2Fa/finalization',
     '/api/merchants/merchant%2Fa/whole-image/tasks/poster%2Fa/finalization?expected_revision=revision%2Fa',
     '/api/merchants/merchant%2Fa/assets/am%3Aphoto%2Fa/usages',
+    '/api/merchants/merchant%2Fa/whole-image/workspaces/workspace%2Fa/finalizations',
   ])
   assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
     version_id: 'version/a', output_id: 'output/a', expected_revision: 'revision',

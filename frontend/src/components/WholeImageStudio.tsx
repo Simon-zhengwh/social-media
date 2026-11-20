@@ -17,6 +17,7 @@ import {
   createPosterSeriesRun,
   createWholeImageEdit,
   createWholeImageTask,
+  getPosterFinalization,
   getPosterSeriesConfig,
   getPosterSeriesWorkspace,
   getPosterWorkspaceMode,
@@ -24,6 +25,7 @@ import {
   getWholeImageWorkspaceTitle,
   listWholeImageTaskBatch,
   listWholeImageWorkspace,
+  listWorkspaceFinalizations,
   renameWholeImageWorkspace,
   retryPosterSeriesPage,
   retryWholeImageTask,
@@ -45,6 +47,7 @@ import type {
   ImageModel,
   MerchantProfile,
   PlatformPreset,
+  PosterFinalization,
   PosterSeriesGroup,
   PosterSeriesMode,
   PosterSeriesPage,
@@ -280,6 +283,8 @@ export default function WholeImageStudio({
   const [sessionRestored, setSessionRestored] = useState(() => session?.kind !== 'task')
   const [versionsLoading, setVersionsLoading] = useState(false)
   const [selectingOutput, setSelectingOutput] = useState(false)
+  const [workspaceFinalizations, setWorkspaceFinalizations] = useState<PosterFinalization[]>([])
+  const pendingFinalizedVersionRef = useRef<{ taskId: string; versionId: string; outputId: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   /*
@@ -740,8 +745,26 @@ export default function WholeImageStudio({
       return
     }
     let cancelled = false
-    void getWholeImageTask(selectedPageTaskId).then((next) => {
+    void getWholeImageTask(selectedPageTaskId).then(async (fetched) => {
       if (cancelled || !mountedRef.current || boundPageTaskRef.current !== selectedPageTaskId) return
+      let next = fetched
+      const pending = pendingFinalizedVersionRef.current
+      if (pending && pending.taskId === next.id) {
+        pendingFinalizedVersionRef.current = null
+        if (next.current_version_id !== pending.versionId) {
+          next = await selectWholeImageVersion(next.id, pending.versionId)
+          if (cancelled || !mountedRef.current || boundPageTaskRef.current !== selectedPageTaskId) return
+          if (pending.outputId && next.current_output_id !== pending.outputId) {
+            next = await selectWholeImageOutput(next.id, pending.versionId, pending.outputId)
+            if (cancelled || !mountedRef.current || boundPageTaskRef.current !== selectedPageTaskId) return
+          }
+          void refreshSeries()
+        } else if (pending.outputId && next.current_output_id !== pending.outputId) {
+          next = await selectWholeImageOutput(next.id, pending.versionId, pending.outputId)
+          if (cancelled || !mountedRef.current || boundPageTaskRef.current !== selectedPageTaskId) return
+          void refreshSeries()
+        }
+      }
       setTask(next)
       setCandidateTasks([])
       lastVersionRef.current = next.current_version_id
@@ -752,10 +775,91 @@ export default function WholeImageStudio({
     return () => { cancelled = true }
     // Only the page task id may re-run this: the selection object is rebuilt every render, and
     // depending on it would cancel the task fetch before it can bind the page.
-  }, [seriesMode, selectedPageTaskId, loadVersions])
+  }, [seriesMode, selectedPageTaskId, loadVersions, refreshSeries])
 
 
   const visibleCandidates = mergeCandidates(candidateTasks, task ? [task] : [])
+  const finalizationWorkspaceId = seriesMode
+    ? (series?.workspace_id ?? workspaceRef.current)
+    : (workspaceId ?? task?.id ?? null)
+  const hasHistoryBatches = seriesMode ? Boolean(series?.groups.length) : visibleCandidates.length > 0
+  const fallbackTargetRef = useRef<{
+    seriesMode: boolean
+    series: PosterSeriesWorkspace | null
+    task: WholeImageTask | null
+    candidates: WholeImageTask[]
+  }>({ seriesMode, series, task, candidates: visibleCandidates })
+  useEffect(() => {
+    fallbackTargetRef.current = { seriesMode, series, task, candidates: visibleCandidates }
+  })
+
+  const fetchWorkspaceFinalizations = useCallback(async (wsId: string): Promise<PosterFinalization[]> => {
+    try {
+      return await listWorkspaceFinalizations(wsId)
+    } catch (reason: unknown) {
+      if (!(reason instanceof ApiError && reason.status === 404)) throw reason
+      // Fallback when an older backend process has not been restarted with the batch route yet.
+      const snapshot = fallbackTargetRef.current
+      if (snapshot.seriesMode) {
+        const pages = (snapshot.series?.groups ?? []).flatMap((group) => group.pages)
+          .filter((page) => Boolean(page.whole_task_id && page.version_id && page.output_id))
+        const settled = await Promise.allSettled(
+          pages.map((page) => getPosterFinalization(page.whole_task_id!, page.version_id!, page.output_id!)),
+        )
+        const byGroup = new Map<string, PosterFinalization>()
+        for (const item of settled) {
+          if (item.status === 'fulfilled' && item.value.finalization) {
+            byGroup.set(item.value.finalization.group_key, item.value.finalization)
+          }
+        }
+        return [...byGroup.values()]
+      }
+      const target = [snapshot.task, ...snapshot.candidates].find(
+        (item): item is WholeImageTask => Boolean(item && item.current_version_id && item.current_output_id),
+      )
+      if (!target) return []
+      const context = await getPosterFinalization(target.id, target.current_version_id!, target.current_output_id!)
+      return context.finalization ? [context.finalization] : []
+    }
+  }, [])
+
+  const refreshWorkspaceFinalizations = useCallback(async () => {
+    if (!finalizationWorkspaceId || !hasHistoryBatches) return
+    try {
+      const items = await fetchWorkspaceFinalizations(finalizationWorkspaceId)
+      if (mountedRef.current) setWorkspaceFinalizations(items)
+    } catch {
+      // Keep the last known list when offline or while a workspace is still initializing.
+    }
+  }, [finalizationWorkspaceId, hasHistoryBatches, fetchWorkspaceFinalizations])
+
+  useEffect(() => {
+    if (!finalizationWorkspaceId || !hasHistoryBatches) return
+    let cancelled = false
+    void fetchWorkspaceFinalizations(finalizationWorkspaceId).then((items) => {
+      if (!cancelled && mountedRef.current) setWorkspaceFinalizations(items)
+    }).catch(() => {
+      // Non-fatal: history dialog retries when opened.
+    })
+    return () => { cancelled = true }
+  }, [finalizationWorkspaceId, hasHistoryBatches, fetchWorkspaceFinalizations])
+  const effectiveFinalizations = finalizationWorkspaceId && hasHistoryBatches ? workspaceFinalizations : []
+
+  const handleFinalizationChange = useCallback((finalization: PosterFinalization | null, revokedGroupKey?: string) => {
+    setWorkspaceFinalizations((previous) => {
+      if (finalization) {
+        const existing = previous.find((item) => item.group_key === finalization.group_key)
+        if (existing && existing.id === finalization.id && existing.revision === finalization.revision) {
+          return previous
+        }
+        return [finalization, ...previous.filter((item) => item.group_key !== finalization.group_key)]
+      }
+      if (revokedGroupKey) {
+        return previous.filter((item) => item.group_key !== revokedGroupKey)
+      }
+      return previous
+    })
+  }, [])
   const taskId = task?.id ?? null
   const taskStatus = task?.status ?? null
   const editRunning = task?.edit.status === 'running'
@@ -892,7 +996,7 @@ export default function WholeImageStudio({
     }
   }
 
-  const handleGenerate = async (onlyModel?: ImageModel) => {
+  const handleGenerate = async (onlyModel?: ImageModel, explicitCount?: number) => {
     if (formBusy || seriesBusy) {
       return
     }
@@ -922,8 +1026,13 @@ export default function WholeImageStudio({
       await submitSeriesRound()
       return
     }
+    const resolvedCount = (model: ImageModel) =>
+      onlyModel === model && explicitCount ? explicitCount : (modelCounts[model] ?? 0)
+    if (onlyModel && explicitCount && (modelCounts[onlyModel] ?? 0) !== explicitCount) {
+      setModelCounts(previous => ({ ...previous, [onlyModel]: explicitCount }))
+    }
     const models = IMAGE_MODEL_OPTIONS.filter(option =>
-      (!onlyModel || option.value === onlyModel) && (modelCounts[option.value] ?? 0) > 0 &&
+      (!onlyModel || option.value === onlyModel) && resolvedCount(option.value) > 0 &&
       !modelLocks.current.has(option.value) && !modelGenerationState(visibleCandidates, option.value).running)
     const payload = {
             prompt: submittedPrompt,
@@ -943,7 +1052,7 @@ export default function WholeImageStudio({
             placement_id: selectedPlacement?.id ?? null,
     }
     await Promise.all(models.map(async ({ value: model }) => {
-      const count = modelCounts[model] ?? 0
+      const count = resolvedCount(model)
       const batchId = crypto.randomUUID()
       const previousTaskId = readWholeTaskId()
       modelLocks.current.add(model)
@@ -1091,6 +1200,7 @@ export default function WholeImageStudio({
   }
 
   const handleSelectSeriesPage = (group: PosterSeriesGroup, page: PosterSeriesPage | null) => {
+    pendingFinalizedVersionRef.current = null
     if (!page || page.whole_task_id !== boundPageTaskRef.current) {
       boundPageTaskRef.current = null
       setTask(null)
@@ -1273,6 +1383,72 @@ export default function WholeImageStudio({
     if (candidate.current_version > 0) void loadVersions(candidate.id)
   }
 
+  const handleSelectFinalization = async (finalization: PosterFinalization) => {
+    if (editRunning || submitLock.current || selectingOutput || deleteLock.current || seriesBusy) return
+    if (seriesMode) {
+      const match = series?.groups
+        .flatMap((group) => group.pages.map((page) => ({ group, page })))
+        .find(({ page }) => page.whole_task_id === finalization.task_id)
+      if (!match) return
+      if (task?.id === finalization.task_id) {
+        if (task.current_version_id !== finalization.version_id) {
+          await handleSelectVersion(finalization.version_id)
+        } else if (finalization.output_id && task.current_output_id !== finalization.output_id) {
+          await handleSelectOutput(finalization.version_id, finalization.output_id)
+        }
+        return
+      }
+      handleSelectSeriesPage(match.group, match.page)
+      pendingFinalizedVersionRef.current = {
+        taskId: finalization.task_id,
+        versionId: finalization.version_id,
+        outputId: finalization.output_id,
+      }
+      return
+    }
+    const candidate = visibleCandidates.find((item) => item.id === finalization.task_id)
+    if (!candidate) return
+    if (task?.id !== candidate.id) {
+      handleSelectCandidate(candidate)
+    }
+    if (candidate.current_version_id !== finalization.version_id) {
+      submitLock.current = true
+      setSelectingOutput(true)
+      setError(null)
+      try {
+        let next = await selectWholeImageVersion(candidate.id, finalization.version_id)
+        if (finalization.output_id && next.current_output_id !== finalization.output_id) {
+          next = await selectWholeImageOutput(candidate.id, finalization.version_id, finalization.output_id)
+        }
+        if (mountedRef.current) {
+          setTask((previous) => previous?.id === next.id ? next : previous)
+          setCandidateTasks((previous) => mergeCandidates(previous, [next]))
+          if (readWholeTaskId() === next.id) lastVersionRef.current = next.current_version_id
+        }
+      } catch (reason: unknown) {
+        if (mountedRef.current) setError(errorMessage(reason))
+      } finally {
+        submitLock.current = false
+        if (mountedRef.current) setSelectingOutput(false)
+      }
+    } else if (finalization.output_id && candidate.current_output_id !== finalization.output_id) {
+      setSelectingOutput(true)
+      setError(null)
+      try {
+        const next = await selectWholeImageOutput(candidate.id, finalization.version_id, finalization.output_id)
+        if (mountedRef.current) {
+          setTask((previous) => previous?.id === next.id ? next : previous)
+          setCandidateTasks((previous) => mergeCandidates(previous, [next]))
+          if (readWholeTaskId() === next.id) lastVersionRef.current = next.current_version_id
+        }
+      } catch (reason: unknown) {
+        if (mountedRef.current) setError(errorMessage(reason))
+      } finally {
+        if (mountedRef.current) setSelectingOutput(false)
+      }
+    }
+  }
+
   const handleSelectModel = (model: ImageModel) => {
     if (creating || editRunning || submitLock.current || selectingOutput || deleteLock.current || model === selectedModelRef.current) return
     selectedModelRef.current = model
@@ -1443,6 +1619,7 @@ export default function WholeImageStudio({
         onSelectEmpty: () => handleSelectSeriesPage(group, null),
         images: group.pages.map(page => ({
           id: page.page_id,
+          taskId: page.whole_task_id,
           label: seriesPageLabel(page),
           thumb: (task && task.id === page.whole_task_id ? task.thumb_url || task.preview_url : null)
             || page.thumb_url || page.preview_url,
@@ -1461,6 +1638,7 @@ export default function WholeImageStudio({
         model: imageModelLabel(round.model),
         images: round.candidates.map((candidate, index) => ({
           id: candidate.id,
+          taskId: candidate.id,
           label: `图片 ${(candidate.input.candidate_index ?? index) + 1}`,
           thumb: candidate.thumb_url || candidate.preview_url,
           status: candidate.status === 'succeeded' ? undefined : seriesStatusLabel(candidate.status),
@@ -1473,6 +1651,36 @@ export default function WholeImageStudio({
           },
         })),
       }))
+  const resultModelTabs = (() => {
+    const known = new Map<ImageModel, { value: ImageModel; label: string; running: boolean }>()
+    const register = (rawModel: string | null | undefined, running: boolean) => {
+      const value = normalizeImageModel(rawModel) as ImageModel
+      const existing = known.get(value)
+      if (existing) {
+        if (running) existing.running = true
+      } else {
+        known.set(value, { value, label: imageModelLabel(value), running })
+      }
+    }
+    if (seriesMode) {
+      for (const group of series?.groups ?? []) {
+        const running = group.status === 'queued' || group.status === 'running' ||
+          group.pages.some(page => page.status === 'queued' || page.status === 'running')
+        register(group.image_model, running)
+      }
+    } else {
+      for (const candidate of visibleCandidates) {
+        const running = candidate.status === 'queued' || candidate.status === 'running'
+        register(candidate.input.image_model, running)
+      }
+    }
+    for (const [model, submission] of Object.entries(modelSubmissions)) {
+      if (submission && !submission.error) register(model, true)
+    }
+    const order = new Map<string, number>(IMAGE_MODEL_OPTIONS.map((option, index) => [option.value, index]))
+    return [...known.values()].sort((a, b) => (order.get(a.value) ?? 999) - (order.get(b.value) ?? 999))
+  })()
+
   return (
     <main className="workspace poster-workspace has-studio">
       <WholeImageForm
@@ -1546,42 +1754,17 @@ export default function WholeImageStudio({
         mode={mode}
         modeLocked={modeLocked || submittingModels}
         onModeChange={handleSeriesModeChange}
-      >
-        <ImageModelSelector
-          counts={modelCounts}
-          tasks={seriesMode ? [] : visibleCandidates}
-          submissions={modelSubmissions}
-          disabled={generationDisabled || seriesBusy}
-          disabledReasons={blockers}
-          onChange={(model, count) => setModelCounts(previous => ({ ...previous, [model]: count }))}
-          onGenerate={(model) => void handleGenerate(model)}
-          selectedModel={selectedModel}
-          selectionDisabled={creating || editRunning || selectingOutput || deletingCandidateId !== null || seriesBusy}
-          onSelectModel={seriesMode ? handleSelectSeriesModel : handleSelectModel}
-          countUnit={seriesMode ? '组' : '张'}
-          countNoun={seriesMode ? '生成组数' : '生成张数'}
-          seriesSubmit={seriesMode ? {
-            total: seriesGroupTotal,
-            busy: seriesSubmitting,
-            error: seriesSubmitError,
-            onGenerate: () => void handleGenerate(),
-          } : undefined}
-        />
-      </WholeImageForm>
-
-      <div className={`poster-editor${activeTab ? ' has-utility-panel' : ''}`}>
-        <div className="poster-utility-toolbar">
-          {titleEdit === null ? (
+        header={
+          titleEdit === null ? (
             <div className="poster-task-heading">
               <h1 title={title}>{title || '海报任务'}</h1>
-              {seriesMode ? <span className="mp-badge poster-mode-badge">系列图</span> : null}
               <button type="button" className="mp-btn-ghost poster-title-edit" aria-label="编辑任务标题" title="编辑任务标题"
                 disabled={!title || creating || submittingModels} onClick={() => setTitleEdit(title)}>
                 <span aria-hidden="true">✎</span>
               </button>
             </div>
           ) : (
-            <form className="poster-task-heading" onSubmit={(event) => { event.preventDefault(); void saveTitle() }}
+            <form className="poster-task-heading is-editing" onSubmit={(event) => { event.preventDefault(); void saveTitle() }}
               onKeyDown={(event) => { if (event.key === 'Escape' && !savingTitle) setTitleEdit(null) }}>
               <input className="mp-input poster-task-title-input" aria-label="任务标题" autoFocus required maxLength={100}
                 value={titleEdit} disabled={savingTitle} onChange={(event) => setTitleEdit(event.target.value)} />
@@ -1590,24 +1773,75 @@ export default function WholeImageStudio({
               </button>
               <button type="button" className="mp-btn-ghost mp-btn-small" disabled={savingTitle} onClick={() => setTitleEdit(null)}>取消</button>
             </form>
-          )}
-          <a className="mp-btn-secondary mp-btn-small" href={newDesignHref}
+          )
+        }
+        headerAction={
+          <a className="mp-btn-secondary mp-btn-small poster-new-btn" href={newDesignHref}
             target="_blank" rel="noopener noreferrer" title="在新标签页打开，保留当前设计">
             ＋ 新建海报
           </a>
-          <div className="model-toolbar-tools" aria-label="辅助工具">
-            {visibleTabs.map(tab => (
-              <button key={tab.key} type="button" aria-expanded={activeTab === tab.key}
-                aria-controls="studio-utility-panel" className={activeTab === tab.key ? 'is-active' : ''}
-                onClick={() => selectUtility(activeTab === tab.key ? null : tab.key)}>
-                {tab.label}
-                {tab.key === 'chat_history' && chatMessages.length ? (
-                  <span className="tab-count">{chatMessages.length}</span>
-                ) : null}
-              </button>
-            ))}
+        }
+        footer={
+          <ImageModelSelector
+            counts={modelCounts}
+            tasks={seriesMode ? [] : visibleCandidates}
+            submissions={modelSubmissions}
+            disabled={generationDisabled || seriesBusy}
+            disabledReasons={blockers}
+            onChange={(model, count) => setModelCounts(previous => ({ ...previous, [model]: count }))}
+            onGenerate={(model, count) => void handleGenerate(model, count)}
+            selectedModel={selectedModel}
+            selectionDisabled={creating || editRunning || selectingOutput || deletingCandidateId !== null || seriesBusy}
+            onSelectModel={seriesMode ? handleSelectSeriesModel : handleSelectModel}
+            countUnit={seriesMode ? '组' : '张'}
+            countNoun={seriesMode ? '生成组数' : '生成张数'}
+            seriesSubmit={seriesMode ? {
+              total: seriesGroupTotal,
+              busy: seriesSubmitting,
+              error: seriesSubmitError,
+              onGenerate: () => void handleGenerate(),
+            } : undefined}
+          />
+        }
+      />
+
+      <div className={`poster-editor${activeTab ? ' has-utility-panel' : ''}`}>
+        {resultModelTabs.length || visibleTabs.length ? (
+          <div className="poster-editor-header">
+            {resultModelTabs.length ? (
+              <div className="poster-result-model-tabs" role="group" aria-label="切换已生成模型">
+                {resultModelTabs.map(option => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`model-view-button${selectedModel === option.value ? ' is-active' : ''}`}
+                    aria-label={`切换到 ${option.label}`}
+                    aria-pressed={selectedModel === option.value}
+                    disabled={creating || editRunning || selectingOutput || deletingCandidateId !== null || seriesBusy}
+                    onClick={() => (seriesMode ? handleSelectSeriesModel : handleSelectModel)(option.value)}
+                  >
+                    <span>{option.label}</span>
+                    {option.running ? <span className="model-running-dot" aria-label="生成中" /> : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            {visibleTabs.length ? (
+              <div className="model-toolbar-tools" aria-label="辅助工具">
+                {visibleTabs.map(tab => (
+                  <button key={tab.key} type="button" aria-expanded={activeTab === tab.key}
+                    aria-controls="studio-utility-panel" className={activeTab === tab.key ? 'is-active' : ''}
+                    onClick={() => selectUtility(activeTab === tab.key ? null : tab.key)}>
+                    {tab.label}
+                    {tab.key === 'chat_history' && chatMessages.length ? (
+                      <span className="tab-count">{chatMessages.length}</span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
-        </div>
+        ) : null}
         <WholeImageResultPanel
           task={task}
           busy={creating}
@@ -1628,7 +1862,11 @@ export default function WholeImageStudio({
               selectedId={seriesMode ? selectedPage?.page_id ?? null : task?.id ?? null}
               disabled={!visible || (!seriesMode && editRunning) || selectingOutput || deletingCandidateId !== null || seriesBusy}
               versions={versions} versionsLoading={versionsLoading} currentVersionId={task?.current_version_id ?? null}
-              versionSelectionDisabled={busy} onSelectVersion={handleSelectVersion} />
+              currentOutputId={task?.current_output_id ?? null}
+              versionSelectionDisabled={busy} onSelectVersion={handleSelectVersion}
+              finalizations={effectiveFinalizations}
+              onSelectFinalization={(item) => void handleSelectFinalization(item)}
+              onOpenHistory={() => void refreshWorkspaceFinalizations()} />
           ) : null}
         >
           <WholeChatPanel
@@ -1639,7 +1877,8 @@ export default function WholeImageStudio({
             onUpload={handleUploadChatImages}
             downloadHref={downloadHref}
             finalizationActions={task?.current_version_id && task.current_output_id ? (
-              <PosterFinalizationControl key={`${task.id}:${task.current_version_id}:${task.current_output_id}`} task={task} disabled={busy} />
+              <PosterFinalizationControl key={`${task.id}:${task.current_version_id}:${task.current_output_id}`} task={task} disabled={busy}
+                onChange={handleFinalizationChange} />
             ) : null}
             currentImage={currentPromptImage}
             assets={assets}
