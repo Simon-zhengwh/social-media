@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { ApiError, listTaskCenterGroups } from '../api'
+import { formatPosterTitle } from '../posterSession'
 import type {
   WholeImageTaskGroup,
   WholeImageTaskGroupFilter,
@@ -9,14 +10,13 @@ const PAGE_SIZE = 24
 
 const FILTERS: Array<{ key: WholeImageTaskGroupFilter; label: string }> = [
   { key: 'all', label: '全部' },
-  { key: 'active', label: '生成中' },
+  { key: 'active', label: '进行中' },
   { key: 'ready', label: '已完成' },
   { key: 'failed', label: '失败' },
 ]
 
 const KINDS = [
   { key: 'all', label: '全部类型' },
-  { key: 'generate', label: '海报设计' },
   { key: 'original_replace', label: '原照替换' },
 ] as const
 
@@ -52,7 +52,7 @@ function formatDate(value: string): string {
 
 function statusLabel(group: WholeImageTaskGroup): string {
   if (group.status === 'active') {
-    return group.kind === 'original_replace' ? '替换中' : '生成中'
+    return group.active_count > 0 ? '生成中' : '替换中'
   }
   if (group.status === 'ready') {
     return '已完成'
@@ -69,13 +69,9 @@ function TaskCard({
   onOpenTask: (taskId: string) => void
   onOpenReplacement: (taskId: string, wholeTaskId: string) => void
 }) {
-  const open = () => {
-    if (group.kind === 'original_replace' && group.whole_task_id) {
-      onOpenReplacement(group.id, group.whole_task_id)
-    } else {
-      onOpenTask(group.representative_task_id)
-    }
-  }
+  const open = () => onOpenTask(group.representative_task_id)
+  const title = group.title ?? formatPosterTitle(group.created_at)
+  const replacement = group.original_replacement
   const ratio =
     group.canvas.width > 0 && group.canvas.height > 0
       ? `${group.canvas.width} : ${group.canvas.height}`
@@ -91,9 +87,14 @@ function TaskCard({
             type="button"
             className="task-cover-button"
             onClick={open}
-            aria-label={group.kind === 'original_replace' ? '打开原照替换任务' : '在工作台打开任务'}
+            aria-label={`打开海报任务 ${title}`}
           >
-            <img src={group.preview_url} alt={group.prompt || '生成的海报'} />
+            <img
+              src={group.thumb_url || group.preview_url}
+              alt={group.prompt || '生成的海报'}
+              loading="lazy"
+              decoding="async"
+            />
           </button>
         ) : (
           <button
@@ -102,7 +103,7 @@ function TaskCard({
             onClick={open}
           >
             <span className="task-cover-mark" aria-hidden="true" />
-            <strong>{group.kind === 'original_replace' ? group.status === 'failed' ? '替换未完成' : '正在替换' : group.status === 'failed' ? '生成失败' : '正在生成'}</strong>
+            <strong>{group.status === 'failed' ? '生成失败' : '正在生成'}</strong>
             <span>
               {group.status === 'failed'
                 ? group.error_message || '可以在工作台重试这次生成。'
@@ -116,7 +117,7 @@ function TaskCard({
         <span className="task-candidate-count tnum">
           {group.candidate_count} 张
         </span>
-        {group.status === 'active' ? (
+        {group.active_count > 0 ? (
           <span className="task-progress" aria-hidden="true">
             <span style={{ width: `${progress}%` }} />
           </span>
@@ -125,14 +126,12 @@ function TaskCard({
 
       <div className="task-card-body">
         <div className="task-card-meta">
-          <span>{formatDate(group.created_at)}</span>
+          {group.title && group.title !== formatPosterTitle(group.created_at) ? <span>{formatDate(group.created_at)}</span> : null}
           <span>{ratio}</span>
         </div>
-        <strong className="task-prompt" title={group.prompt}>
-          {group.prompt || '未填写设计需求'}
-        </strong>
+        <strong className="task-prompt" title={title}>{title}</strong>
+        {group.prompt ? <p className="task-card-prompt" title={group.prompt}>{group.prompt}</p> : null}
         <div className="task-tags">
-          <span>{group.kind === 'original_replace' ? '原照替换' : '海报设计'}</span>
           {(group.image_models?.length ?? 0) > 1 ? <span>{group.image_models?.length} 个模型</span> : null}
           {group.brand_name ? <span>{group.brand_name}</span> : null}
           {group.platform_name ? (
@@ -142,7 +141,15 @@ function TaskCard({
             </span>
           ) : null}
         </div>
-        {group.kind === 'original_replace' && group.download_url ? <a className="mp-btn-secondary mp-btn-small" href={group.download_url} download>下载 PNG</a> : null}
+        {replacement ? (
+          <div className="task-card-replacement">
+            <button type="button" className="mp-btn-secondary mp-btn-small"
+              onClick={() => onOpenReplacement(replacement.id, replacement.whole_task_id)}>
+              {replacement.status === 'active' ? '原照替换中' : replacement.status === 'failed' ? '原照替换失败' : '原照替换'}
+            </button>
+            {replacement.download_url ? <a className="mp-btn-ghost mp-btn-small" href={replacement.download_url} download>下载 PNG</a> : null}
+          </div>
+        ) : null}
         {group.failed_count > 0 && group.status !== 'failed' ? (
           <p className="task-card-warning">
             {group.failed_count} 张候选失败，可直接重试失败项。
@@ -156,7 +163,7 @@ function TaskCard({
 
 export default function TaskCenter({ onOpenTask, onOpenReplacement, newDesignHref }: Props) {
   const [filter, setFilter] = useState<WholeImageTaskGroupFilter>('all')
-  const [kind, setKind] = useState<'all' | 'generate' | 'original_replace'>('all')
+  const [kind, setKind] = useState<'all' | 'original_replace'>('all')
   const [groups, setGroups] = useState<WholeImageTaskGroup[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -175,7 +182,7 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, newDesignHre
     setNextCursor(null)
   }
 
-  const handleKindChange = (next: 'all' | 'generate' | 'original_replace') => {
+  const handleKindChange = (next: 'all' | 'original_replace') => {
     if (next === kind) return
     setKind(next)
     setLoading(true)
@@ -209,7 +216,9 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, newDesignHre
     }
   }, [filter, kind])
 
-  const hasActive = groups.some((group) => group.status === 'active')
+  const hasActive = groups.some((group) => kind === 'original_replace'
+    ? group.original_replacement?.status === 'active'
+    : group.status === 'active')
   useEffect(() => {
     if (!hasActive || loading || loadingMore) {
       return
@@ -230,7 +239,13 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, newDesignHre
         // Keep the current list while a polling refresh fails.
       }
     }
-    const interval = window.setInterval(() => void tick(), 2000)
+    const interval = window.setInterval(() => {
+      // A background tab keeps no reason to hold the line: the list refreshes on return.
+      if (document.hidden) {
+        return
+      }
+      void tick()
+    }, 4000)
     return () => {
       cancelled = true
       window.clearInterval(interval)
@@ -299,7 +314,7 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, newDesignHre
             rel="noopener noreferrer"
             title="在新标签页打开，保留当前设计"
           >
-            ＋ 新建海报设计
+            ＋ 新建海报
           </a>
         </div>
       </div>
@@ -359,7 +374,7 @@ export default function TaskCenter({ onOpenTask, onOpenReplacement, newDesignHre
         </div>
       ) : groups.length === 0 ? (
         <div className="asset-empty task-empty">
-          <strong>{filter === 'all' ? '还没有生成任务' : `没有${filterLabel}的任务`}</strong>
+          <strong>{kind === 'original_replace' ? '没有符合条件的原照替换记录' : filter === 'all' ? '还没有生成任务' : `没有${filterLabel}的任务`}</strong>
           <span>
             {filter === 'all'
               ? `创建一次${createName}后，任务和候选会自动出现在这里。`

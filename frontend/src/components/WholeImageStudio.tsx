@@ -15,8 +15,10 @@ import {
   createWholeImageEdit,
   createWholeImageTask,
   getWholeImageTask,
+  getWholeImageWorkspaceTitle,
   listWholeImageTaskBatch,
   listWholeImageWorkspace,
+  renameWholeImageWorkspace,
   retryWholeImageTask,
   deleteWholeImageCandidate,
   listWholeImageVersions,
@@ -45,7 +47,7 @@ import { defaultModelCounts, restoreModelCounts, mergeCandidates, modelGeneratio
 import { candidateForModel } from '../modelGeneration'
 import { hydrateImagePrompt, serializeImagePrompt, type PromptImage } from '../imageMentions'
 import { generationBlockers, presetStyleUnavailable } from '../generationBlockers'
-import { readPosterSession, savePosterSession, type PosterDraftForm, type PosterSession } from '../posterSession'
+import { formatPosterTitle, readPosterSession, savePosterSession, type PosterDraftForm, type PosterSession } from '../posterSession'
 
 type Props = {
   userId: string
@@ -170,6 +172,9 @@ export default function WholeImageStudio({
   const acceptedRef = useRef(session?.kind === 'task')
   const initialFormRef = useRef<string | null>(null)
   const draftStartedRef = useRef(Boolean(draft))
+  const [title, setTitle] = useState(() => session?.kind === 'task' ? '' : session?.title ?? formatPosterTitle(new Date()))
+  const [titleEdit, setTitleEdit] = useState<string | null>(null)
+  const [savingTitle, setSavingTitle] = useState(false)
   const [sessionSaveFailed, setSessionSaveFailed] = useState(false)
   useEffect(() => {
     mountedRef.current = true
@@ -325,10 +330,12 @@ export default function WholeImageStudio({
     }
     const signature = JSON.stringify(form)
     if (initialFormRef.current === null) initialFormRef.current = signature
-    if (!draftStartedRef.current && signature === initialFormRef.current) return
-    draftStartedRef.current = true
-    setSessionSaveFailed(!savePosterSession(userId, merchantId, { kind: 'draft', workspaceId: workspaceRef.current, form }))
-  }, [userId, merchantId, creating, products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId,
+    const workspaceId = workspaceRef.current
+    const blank = !draftStartedRef.current && signature === initialFormRef.current
+    draftStartedRef.current = !blank
+    const nextSession: PosterSession = blank ? { kind: 'blank', workspaceId, title } : { kind: 'draft', workspaceId, title, form }
+    setSessionSaveFailed(!savePosterSession(userId, merchantId, nextSession))
+  }, [userId, merchantId, creating, title, products, prompt, promptOptimized, selectedPlatformId, selectedPlacementId,
     selectedRatio, selectedBrandId, effectiveBrandMode, selectedLogoId, logoChoiceTouched, styleReferences,
     storeSelection, selectedModel, modelCounts])
 
@@ -388,9 +395,14 @@ export default function WholeImageStudio({
     const restore = async () => {
         const savedTask = taskId ? await getWholeImageTask(taskId) : null
         const workspace = savedTask?.input.generation_workspace_id ?? savedTask?.input.candidate_batch_id ?? savedTask?.id ?? savedWorkspace!
-        const restoredCandidates = await listWholeImageWorkspace(workspace)
+        const [restoredCandidates, workspaceTitle] = await Promise.all([
+          listWholeImageWorkspace(workspace),
+          getWholeImageWorkspaceTitle(workspace).catch(() => null),
+        ])
         if (cancelled) return
         workspaceRef.current = workspace
+        setTitle(workspaceTitle?.title ?? formatPosterTitle(workspaceTitle?.created_at ??
+          restoredCandidates[0]?.created_at ?? savedTask?.created_at ?? ''))
         const model = savedTask ? normalizeImageModel(savedTask.input.image_model) : selectedModelRef.current
         selectedModelRef.current = model
         setSelectedModel(model)
@@ -452,8 +464,8 @@ export default function WholeImageStudio({
 
   const candidateBatchId = task?.input.candidate_batch_id ?? null
   const workspaceId = task?.input.generation_workspace_id ?? candidateTasks.find(item => item.input.generation_workspace_id)?.input.generation_workspace_id ?? candidateTasks[0]?.input.candidate_batch_id ?? candidateTasks[0]?.id ?? null
-  const workspaceRunning = candidateTasks.some(candidate => candidate.status === 'queued' || candidate.status === 'running') ||
-    Object.values(modelSubmissions).some(submission => submission && !submission.error)
+  const submittingModels = Object.values(modelSubmissions).some(submission => submission && !submission.error)
+  const workspaceRunning = submittingModels || candidateTasks.some(candidate => candidate.status === 'queued' || candidate.status === 'running')
   useEffect(() => {
     if ((!workspaceId && !candidateBatchId) || (!visible && !workspaceRunning)) {
       return
@@ -555,13 +567,6 @@ export default function WholeImageStudio({
   const currentPreview = currentOutput?.preview_url ?? task?.preview_url
   // The download entry sits in the composer footer, so the studio resolves the URL for it.
   const downloadHref = currentOutput?.download_url ?? task?.download_url ?? null
-  // The task's own reference images ride along into the edit composer as removable defaults.
-  const chatDefaultAttachments: Asset[] = task
-    ? (task.input.reference_asset_ids ?? task.input.product_asset_ids ?? [])
-        .map((assetId) => assetFromTask(task, assetId))
-        .filter((asset): asset is Asset => Boolean(asset))
-    : []
-
   const currentPromptImage: PromptImage | null = task && currentPreview ? {
     assetId: `current:${task.id}:${task.current_version_id}:${task.current_output_id}`,
     name: '当前海报', url: currentPreview, removable: false,
@@ -576,6 +581,30 @@ export default function WholeImageStudio({
     setSessionSaveFailed(!savePosterSession(userId, merchantId, {
       kind: 'task', taskId: selectedId, workspaceId: workspaceRef.current, selectedModel: model,
     }))
+  }
+
+  const saveTitle = async () => {
+    const next = titleEdit?.trim()
+    if (!next || savingTitle || modelLocks.current.size) return
+    if (next === title) {
+      setTitleEdit(null)
+      return
+    }
+    if (!acceptedRef.current) {
+      setTitle(next)
+      setTitleEdit(null)
+      return
+    }
+    setSavingTitle(true)
+    try {
+      const saved = await renameWholeImageWorkspace(workspaceRef.current, next)
+      setTitle(saved.title ?? next)
+      setTitleEdit(null)
+    } catch (reason: unknown) {
+      setError(errorMessage(reason))
+    } finally {
+      setSavingTitle(false)
+    }
   }
 
   const handleGenerate = async (onlyModel?: ImageModel) => {
@@ -607,6 +636,7 @@ export default function WholeImageStudio({
       !modelLocks.current.has(option.value) && !modelGenerationState(visibleCandidates, option.value).running)
     const payload = {
             prompt: submittedPrompt,
+            workspace_title: acceptedRef.current ? undefined : title,
             prompt_optimized: promptOptimized,
             brand_id: effectiveBrandMode === 'preset' ? effectiveBrandId : null,
             brand_mode: effectiveBrandMode,
@@ -993,9 +1023,28 @@ export default function WholeImageStudio({
 
       <div className={`poster-editor${activeTab ? ' has-utility-panel' : ''}`}>
         <div className="poster-utility-toolbar">
+          {titleEdit === null ? (
+            <div className="poster-task-heading">
+              <h1 title={title}>{title || '海报任务'}</h1>
+              <button type="button" className="mp-btn-ghost poster-title-edit" aria-label="编辑任务标题" title="编辑任务标题"
+                disabled={!title || creating || submittingModels} onClick={() => setTitleEdit(title)}>
+                <span aria-hidden="true">✎</span>
+              </button>
+            </div>
+          ) : (
+            <form className="poster-task-heading" onSubmit={(event) => { event.preventDefault(); void saveTitle() }}
+              onKeyDown={(event) => { if (event.key === 'Escape' && !savingTitle) setTitleEdit(null) }}>
+              <input className="mp-input poster-task-title-input" aria-label="任务标题" autoFocus required maxLength={100}
+                value={titleEdit} disabled={savingTitle} onChange={(event) => setTitleEdit(event.target.value)} />
+              <button className="mp-btn-secondary mp-btn-small" disabled={!titleEdit.trim() || savingTitle || submittingModels}>
+                {savingTitle ? '保存中…' : '保存'}
+              </button>
+              <button type="button" className="mp-btn-ghost mp-btn-small" disabled={savingTitle} onClick={() => setTitleEdit(null)}>取消</button>
+            </form>
+          )}
           <a className="mp-btn-secondary mp-btn-small" href={newDesignHref}
             target="_blank" rel="noopener noreferrer" title="在新标签页打开，保留当前设计">
-            ＋ 新建海报设计
+            ＋ 新建海报
           </a>
           <div className="model-toolbar-tools" aria-label="辅助工具">
             {visibleTabs.map(tab => (
@@ -1038,7 +1087,6 @@ export default function WholeImageStudio({
               <PosterFinalizationControl key={`${task.id}:${task.current_version_id}:${task.current_output_id}`} task={task} disabled={busy} />
             ) : null}
             currentImage={currentPromptImage}
-            defaultAttachments={chatDefaultAttachments}
             assets={assets}
             assetsLoading={assetsLoading}
             onLoadAssets={onLoadAssets}
@@ -1061,7 +1109,7 @@ export default function WholeImageStudio({
             </div>
             <div className="studio-tab-body">
               {activeTab === 'chat_history' ? (
-                <WholeChatHistory messages={chatMessages} edit={task?.edit ?? { status: 'idle' }} />
+                <WholeChatHistory messages={chatMessages} versions={versions} edit={task?.edit ?? { status: 'idle' }} />
               ) : null}
               {activeTab === 'original_replace' && task ? (
                 <OriginalReplacementPanel key={task.id} task={task} assets={assets}

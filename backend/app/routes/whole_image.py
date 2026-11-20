@@ -12,10 +12,10 @@ from urllib.parse import quote
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 
-from app.api_paths import asset_url, whole_download_url, merchant_base
+from app.api_paths import asset_thumb_url, asset_url, whole_download_url, merchant_base
 from app.request_context import request_db, request_merchant_id, request_store, request_profile
-from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageOriginalReplacementRequest,
-                         WholeImageOriginalReplacementApplyRequest)
+from app.schemas import (gateway_model_name, PosterFinalizationRequest, WholeImageEditRequest, WholeImageTaskCreate, WholeImageWorkspaceTitle, WholeImageOriginalReplacementRequest,
+                         WholeImageOriginalReplacementApplyRequest, WholeImageOriginalReplacementFeedbackRequest)
 from app.services import (original_replacement_runner, brand_rules, brand_style, merchant_profile, original_replacement, platform_presets, request_assets, whole_image)
 from app.services.agent_image import artifacts_out as _artifacts_out
 from app.services.core_ai import CoreAIError
@@ -107,6 +107,9 @@ def _candidate_summary(doc: dict[str, Any]) -> dict[str, Any]:
         "progress": int(doc.get("progress") or 0),
         "current_version": version,
         "preview_url": asset_url(merchant_id, str(output_id), version=version) if output_id else None,
+        # List screens draw a ~200 px card; the thumbnail keeps a 1080x1350 poster from
+        # downloading as a multi-megabyte PNG just to fill it.
+        "thumb_url": asset_thumb_url(merchant_id, str(output_id)) if output_id else None,
         "download_url": (
             whole_download_url(merchant_id, str(doc["_id"]), str(version_id))
             if output_id and version_id
@@ -135,8 +138,8 @@ def _task_sort_key(doc: dict[str, Any]) -> tuple[int, datetime, str]:
     )
 
 
-def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, Any]:
-    tasks = sorted(docs, key=_task_sort_key)
+def _task_group_summary(group_id: str, tasks: list[dict[str, Any]], first_candidate: dict[str, Any]) -> dict[str, Any]:
+    tasks = sorted(tasks, key=_task_sort_key)
     active_count = sum(1 for doc in tasks if _task_is_active(doc))
     succeeded_count = sum(1 for doc in tasks if doc.get("status") == "succeeded")
     failed_count = sum(1 for doc in tasks if doc.get("status") == "failed")
@@ -180,10 +183,11 @@ def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, 
         ),
         None,
     )
-    created_at = min((_as_utc(doc.get("created_at")) for doc in tasks))
+    created_at = _as_utc(first_candidate.get("created_at"))
     updated_at = max((_as_utc(doc.get("updated_at")) for doc in tasks))
     return {
         "id": group_id,
+        "title": first_candidate.get("workspace_initial_title"),
         "status": group_status,
         "prompt": str(first_input.get("prompt") or ""),
         "brand_name": str((brand or {}).get("name") or "") or None,
@@ -204,6 +208,7 @@ def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, 
         "retryable_count": retryable_count,
         "representative_task_id": str(representative["_id"]),
         "preview_url": representative_candidate["preview_url"],
+        "thumb_url": representative_candidate.get("thumb_url"),
         "download_url": representative_candidate["download_url"],
         "error_message": error_message,
         "candidates": candidates,
@@ -212,16 +217,31 @@ def _task_group_summary(group_id: str, docs: list[dict[str, Any]]) -> dict[str, 
     }
 
 
+def _workspace_start_key(doc: dict[str, Any]) -> tuple[datetime, str]:
+    return _as_utc(doc.get("created_at")), str(doc["_id"])
+
+
 def _build_task_groups(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for doc in docs:
         grouped.setdefault(_task_group_key(doc), []).append(doc)
-    items = [
-        _task_group_summary(group_id, group_docs)
-        for group_id, group_docs in grouped.items()
-    ]
+    items = []
+    for group_id, group_docs in grouped.items():
+        visible_docs = [doc for doc in group_docs if not doc.get("candidate_deleted_at")]
+        if visible_docs:
+            items.append(_task_group_summary(group_id, visible_docs, min(group_docs, key=_workspace_start_key)))
     items.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
     return items
+
+
+def _list_task_groups(db: Any) -> list[dict[str, Any]]:
+    groups = _build_task_groups(list(db.whole_tasks.find().sort("created_at", -1)))
+    titles = {doc["workspace_id"]: doc["title"] for doc in db.whole_workspace_titles.find(
+        {"workspace_id": {"$in": [group["id"] for group in groups]}}, {"workspace_id": 1, "title": 1},
+    )}
+    for group in groups:
+        group["title"] = titles.get(group["id"], group["title"])
+    return groups
 
 
 def _encode_task_cursor(item: dict[str, Any]) -> str:
@@ -278,6 +298,7 @@ def _model_input_out(db: Any, snapshot: Any) -> dict[str, Any] | None:
             "name": str(image.get("name") or "参考图片"),
             "role": str(image.get("role") or image.get("kind") or "reference"),
             "preview_url": asset_url(str(asset.get("merchant_id") or ""), asset_id) if asset else None,
+            "thumb_url": asset_thumb_url(str(asset.get("merchant_id") or ""), asset_id) if asset else None,
         }
         if image.get("kind"):
             item["kind"] = image.get("kind")
@@ -316,6 +337,8 @@ def _output_out(
         "height": int(output.get("height") or (asset or {}).get("height") or 0),
         "selectable": bool(output.get("selectable")),
         "preview_url": asset_url(merchant_id, asset_id, version=version_number) if asset_id and asset else None,
+        # Small WebP for candidate strips and output grids; downloads keep using preview_url.
+        "thumb_url": asset_thumb_url(merchant_id, asset_id) if asset_id and asset else None,
         "download_url": (
             whole_download_url(merchant_id, task_id, version_id, output_id)
             if asset_id and asset and version_id and output_id
@@ -441,6 +464,7 @@ def task_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
         "current_version_id": version_id,
         "current_version": version_number,
         "preview_url": selected_output.get("preview_url") if selected_output else None,
+        "thumb_url": selected_output.get("thumb_url") if selected_output else None,
         "download_url": selected_output.get("download_url") if selected_output else None,
         "messages": [
             {**message, "created_at": utc_iso(message.get("created_at"))}
@@ -482,6 +506,7 @@ def _version_out(db: Any, doc: dict[str, Any]) -> dict[str, Any]:
         "height": int(doc.get("height") or (primary or {}).get("height") or 0),
         "output_asset_id": primary.get("asset_id") if primary else None,
         "preview_url": primary.get("preview_url") if primary else None,
+        "thumb_url": primary.get("thumb_url") if primary else None,
         "download_url": primary.get("download_url") if primary else None,
         "outputs": outputs,
         "model_input": _model_input_out(db, doc.get("model_input")),
@@ -659,6 +684,8 @@ def create_task(
         "created_at": now,
         "updated_at": now,
     }
+    if payload.workspace_title is not None:
+        doc["workspace_initial_title"] = payload.workspace_title
     db.whole_tasks.insert_one(doc)
     background_tasks.add_task(
         whole_image.run_generation,
@@ -687,8 +714,7 @@ def list_tasks(
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
     db = request_db(request)
-    docs = list(db.whole_tasks.find({"candidate_deleted_at": {"$exists": False}}).sort("created_at", -1))
-    items = _build_task_groups(docs)
+    items = _list_task_groups(db)
     if status != "all":
         items = [item for item in items if item["status"] == status]
     total = len(items)
@@ -731,19 +757,52 @@ def get_task_batch(batch_id: str, request: Request) -> list[dict[str, Any]]:
     return [task_out(db, doc) for doc in docs if not doc.get("candidate_deleted_at")]
 
 
+def _workspace_filter(workspace_id: str) -> dict[str, Any]:
+    return {"$or": [
+        {"input.generation_workspace_id": workspace_id},
+        {"input.candidate_batch_id": workspace_id, "input.generation_workspace_id": None},
+        {"_id": workspace_id, "input.generation_workspace_id": None, "input.candidate_batch_id": None},
+    ]}
+
+
 @router.get("/workspaces/{workspace_id}/tasks")
 def get_workspace_tasks(workspace_id: str, request: Request) -> list[dict[str, Any]]:
     db = request_db(request)
-    docs = list(db.whole_tasks.find({"$or": [
-        {"input.generation_workspace_id": workspace_id},
-        {"input.candidate_batch_id": workspace_id, "input.generation_workspace_id": None},
-        {"_id": workspace_id, "input.generation_workspace_id": None},
-    ]}).sort(
+    docs = list(db.whole_tasks.find(_workspace_filter(workspace_id)).sort(
         [("created_at", 1), ("input.candidate_index", 1), ("_id", 1)]
     ))
     if not docs:
         raise HTTPException(status_code=404, detail="生成工作区不存在")
     return [task_out(db, doc) for doc in docs if not doc.get("candidate_deleted_at")]
+
+
+def _workspace_start(db: Any, workspace_id: str) -> dict[str, Any]:
+    first = db.whole_tasks.find_one(
+        _workspace_filter(workspace_id),
+        {"created_at": 1, "workspace_initial_title": 1},
+        sort=[("created_at", 1), ("_id", 1)],
+    )
+    if first is None:
+        raise HTTPException(status_code=404, detail="生成工作区不存在")
+    return first
+
+
+@router.get("/workspaces/{workspace_id}/title")
+def get_workspace_title(workspace_id: str, request: Request) -> dict[str, Any]:
+    db = request_db(request)
+    first = _workspace_start(db, workspace_id)
+    saved = db.whole_workspace_titles.find_one({"workspace_id": workspace_id}, {"title": 1})
+    return {"title": saved["title"] if saved else first.get("workspace_initial_title"), "created_at": utc_iso(first.get("created_at"))}
+
+
+@router.put("/workspaces/{workspace_id}/title")
+def rename_workspace(workspace_id: str, payload: WholeImageWorkspaceTitle, request: Request) -> dict[str, Any]:
+    db = request_db(request)
+    first = _workspace_start(db, workspace_id)
+    db.whole_workspace_titles.update_one(
+        {"workspace_id": workspace_id}, {"$set": {"title": payload.title}}, upsert=True,
+    )
+    return {"title": payload.title, "created_at": utc_iso(first.get("created_at"))}
 
 
 @router.delete("/tasks/{task_id}/candidate", status_code=204)
@@ -960,6 +1019,7 @@ def create_edit(
         role="user",
         content=payload.instruction,
         attachments=reference_attachments,
+        image_model=claimed["edit"]["image_model"],
     )
     background_tasks.add_task(
         whole_image.run_edit,
@@ -992,8 +1052,55 @@ def create_original_replacement(task_id: str, payload: WholeImageOriginalReplace
         doc = original_replacement.create(db, task_id, **values)
     except (whole_image.StudioError, original_replacement_runner.OriginalReplacementError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    background_tasks.add_task(original_replacement_runner.run_task, db, state.settings, store, state.core_ai, doc["_id"])
+    run = original_replacement.run_model_batch if payload.kind == "model" else original_replacement_runner.run_task
+    background_tasks.add_task(run, db, state.settings, store, state.core_ai, doc["_id"])
     return original_replacement_runner.task_out(doc)
+
+
+@router.post("/tasks/{task_id}/original-replacements/{replacement_id}/feedback", status_code=202)
+def retry_model_replacement(task_id: str, replacement_id: str, payload: WholeImageOriginalReplacementFeedbackRequest,
+                            request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    _require_configured(request)
+    state = request.app.state
+    db = request_db(request)
+    _get_task_or_404(db, task_id)
+    try:
+        doc = original_replacement.retry_model_batch(db, task_id, replacement_id, payload.feedback)
+    except (whole_image.StudioError, original_replacement_runner.OriginalReplacementError) as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    background_tasks.add_task(original_replacement.run_model_batch, db, state.settings,
+                              request_store(request), state.core_ai, doc["_id"])
+    return original_replacement_runner.task_out(doc)
+
+
+@router.post("/tasks/{task_id}/original-replacements/{replacement_id}/candidates/{candidate_model}/retry", status_code=202)
+def retry_original_replacement_candidate(task_id: str, replacement_id: str, candidate_model: str,
+                                         request: Request, background_tasks: BackgroundTasks, for_crop: bool = False) -> dict[str, Any]:
+    _require_configured(request)
+    state = request.app.state
+    db = request_db(request)
+    _get_task_or_404(db, task_id)
+    try:
+        doc = original_replacement.queue_model_candidate_retry(db, task_id, replacement_id, candidate_model, for_crop=for_crop)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    background_tasks.add_task(original_replacement.run_model_batch, db, state.settings,
+                              request_store(request), state.core_ai, doc["_id"], candidate_model)
+    return original_replacement_runner.task_out(doc)
+
+
+@router.get("/tasks/{task_id}/original-replacements/{replacement_id}/candidates/{candidate_model}/crop-source")
+def get_original_replacement_crop_source(task_id: str, replacement_id: str, candidate_model: str, request: Request) -> Response:
+    try:
+        batch = original_replacement.get_task(request_db(request), task_id, replacement_id)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    output = next((item.get("output") for item in batch.get("candidates", [])
+                   if item["model"] == candidate_model and item.get("for_crop") and item["status"] == "succeeded"), None)
+    if not output:
+        raise HTTPException(status_code=404, detail="裁剪图片尚未就绪")
+    data = _artifact_bytes(request_store(request), output)
+    return Response(data, media_type="image/png", headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/tasks/{task_id}/original-replacements")

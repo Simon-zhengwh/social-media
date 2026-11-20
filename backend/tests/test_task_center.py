@@ -9,6 +9,7 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app.routes import task_center as task_center_routes
 from app.routes import whole_image as whole_routes
+from app import schemas
 
 
 BASE_TIME = datetime(2026, 10, 26, 8, 0, tzinfo=timezone.utc)
@@ -351,3 +352,38 @@ def test_task_center_cursor_pagination_keeps_whole_image_groups():
     second = task_center_routes.list_task_center(_list_request(db), limit=1, cursor=first["next_cursor"])
     assert [item["id"] for item in second["items"]] == ["wtask_old"]
     assert second["next_cursor"] is None
+
+
+def test_workspace_title_survives_candidate_deletion_and_later_rounds():
+    db = mongomock.MongoClient().db
+    first = _task("old", batch_id="legacy-workspace")
+    first["workspace_initial_title"] = "2026-10-26 15:59:55"
+    first["candidate_deleted_at"] = BASE_TIME + timedelta(minutes=1)
+    db.whole_tasks.insert_many([
+        first,
+        _task("new", workspace_id="legacy-workspace", created_at=BASE_TIME + timedelta(minutes=2)),
+    ])
+    req = _list_request(db)
+    group = task_center_routes.list_task_center(req)["items"][0]
+    assert group["title"] == first["workspace_initial_title"]
+    assert group["candidate_count"] == 1
+    assert whole_routes.get_workspace_title("legacy-workspace", req)["title"] == group["title"]
+
+    renamed = whole_routes.rename_workspace("legacy-workspace", schemas.WholeImageWorkspaceTitle(title="  孜然牛肉海报  "), req)
+    assert renamed["title"] == "孜然牛肉海报"
+    db.whole_tasks.insert_one(_task("later", workspace_id="legacy-workspace", created_at=BASE_TIME + timedelta(minutes=3)))
+    assert task_center_routes.list_task_center(req)["items"][0]["title"] == renamed["title"]
+    assert whole_routes.list_tasks(req)["items"][0]["title"] == renamed["title"]
+    assert whole_routes.get_workspace_title("legacy-workspace", req)["title"] == renamed["title"]
+
+
+def test_legacy_workspace_title_uses_first_candidate_creation_time():
+    db = mongomock.MongoClient().db
+    first = _task("old", workspace_id="workspace")
+    first["candidate_deleted_at"] = BASE_TIME + timedelta(minutes=1)
+    db.whole_tasks.insert_many([first, _task("new", workspace_id="workspace", created_at=BASE_TIME + timedelta(minutes=2))])
+    req = _list_request(db)
+    group = task_center_routes.list_task_center(req)["items"][0]
+    assert group["title"] is None
+    assert group["created_at"] == BASE_TIME
+    assert whole_routes.get_workspace_title("workspace", req) == {"title": None, "created_at": "2026-10-26T08:00:00.000Z"}

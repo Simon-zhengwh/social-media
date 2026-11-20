@@ -293,7 +293,7 @@ export default function AssetPicker({
                     }
                   }}
                 >
-                  <img src={asset.url} alt={assetDisplayName(asset.original_name)} loading="lazy" />
+                  <img src={asset.thumb_url || asset.url} alt={assetDisplayName(asset.original_name)} loading="lazy" decoding="async" />
                   {checked ? <span className="picker-check">✓</span> : null}
                   <span className="picker-name" title={assetDisplayName(asset.original_name)}>
                     {assetDisplayName(asset.original_name)}

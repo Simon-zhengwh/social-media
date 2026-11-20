@@ -21,8 +21,19 @@ export type PosterDraftForm = {
 }
 
 export type PosterSession =
-  | { kind: 'draft'; workspaceId: string; form: PosterDraftForm }
+  | { kind: 'blank'; workspaceId: string; title: string }
+  | { kind: 'draft'; workspaceId: string; title?: string; form: PosterDraftForm }
   | { kind: 'task'; workspaceId: string; taskId: string | null; selectedModel: ImageModel }
+
+export function formatPosterTitle(value: Date | string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '未命名海报'
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const time = [date.getHours(), date.getMinutes(), date.getSeconds()]
+    .map(part => String(part).padStart(2, '0')).join(':')
+  return `${date.getFullYear()}-${month}-${day} ${time}`
+}
 
 export function newPosterDesignUrl(currentUrl: string): string {
   const url = new URL(currentUrl)
@@ -75,7 +86,11 @@ export function readPosterSession(userId: string, merchantId: string): PosterSes
     const raw = window.sessionStorage.getItem(key)
     const value: unknown = raw ? JSON.parse(raw) : null
     if (!isRecord(value) || typeof value.workspaceId !== 'string' || !value.workspaceId) return null
-    if (value.kind === 'draft' && isDraftForm(value.form)) return value as PosterSession
+    const hasTitle = typeof value.title === 'string' && Boolean(value.title.trim()) && value.title.length <= 100
+    if (value.kind === 'blank' && hasTitle) return value as PosterSession
+    if (value.kind === 'draft' && isDraftForm(value.form) && (value.title === undefined || hasTitle)) {
+      return value as PosterSession
+    }
     const taskModel = isModel(value.selectedModel) || value.selectedModel === 'gemini-3.1-flash-image' || value.selectedModel === 'minimax-h3-image'
     if (value.kind === 'task' && (value.taskId === null || (typeof value.taskId === 'string' && Boolean(value.taskId))) && taskModel) {
       return value as PosterSession

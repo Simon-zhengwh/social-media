@@ -65,8 +65,17 @@ def run(vite_url, out_dir):
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(vite_url + '/?merchant_id=m1&view=whole&whole=t1&whole_workspace=workspace')
                 page.locator('.studio-preview').wait_for()
-                page.get_by_role('button', name='定稿', exact=True).wait_for(timeout=8000)
-                page.get_by_role('button', name='定稿', exact=True).click()
+                finalize = page.get_by_role('button', name='定稿', exact=True)
+                finalize.wait_for(timeout=8000)
+                download = page.get_by_role('link', name='下载', exact=True)
+                button_style = '''element => {
+                    const style = getComputedStyle(element);
+                    return [style.border, style.borderRadius, style.backgroundColor, style.color,
+                        style.font, style.padding, element.getBoundingClientRect().height];
+                }'''
+                check('download and finalize use the same outlined button style',
+                      download.evaluate(button_style) == finalize.evaluate(button_style))
+                finalize.click()
                 check('finalize does not open a photo selection page', page.get_by_role('dialog').count() == 0)
                 page.get_by_role('button', name='撤销定稿', exact=True).wait_for()
                 check('finalization has exactly one toggle button', page.locator('.poster-finalization-actions button').count() == 1)

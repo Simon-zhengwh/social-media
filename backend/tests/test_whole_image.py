@@ -314,34 +314,47 @@ def test_create_without_platform_uses_selected_ratio(settings, store):
     assert created["canvas"] == {"width": 1080, "height": 1350}
 
 
-def test_generation_normalizes_provider_output_to_requested_canvas(settings, store):
+def test_generation_and_edit_keep_canvas_ratio_without_alignment_borders(settings, store):
     db = mongomock.MongoClient().db
     fake = FakeCoreAI()
 
-    def generate_1072x1440(prompt: str, *, size: str, model: str | None = None) -> bytes:
-        fake.generation_calls.append({"prompt": prompt, "size": size, "model": model})
+    def provider_image(color: tuple[int, int, int]) -> bytes:
         buffer = io.BytesIO()
-        Image.new("RGB", (1072, 1440), (40, 90, 130)).save(buffer, format="PNG")
+        Image.new("RGB", (1072, 1344), color).save(buffer, format="PNG")
         return buffer.getvalue()
 
-    fake.generate_image = generate_1072x1440
+    fake._image = provider_image
+    request = _request(db, settings, store, fake)
     created = whole_routes.create_task(
-        WholeImageTaskCreate(
-            prompt="精确保留画布",
-            ratio="3:4",
-            brand_mode="none",
-        ),
-        _request(db, settings, store, fake),
+        WholeImageTaskCreate(prompt="精确保留画布", ratio="4:5", brand_mode="none"),
+        request,
         BackgroundTasks(),
     )
+    task_id = created["id"]
+    assert created["canvas"] == {"width": 1080, "height": 1350}
 
-    whole_service.run_generation(db, settings, store, fake, created["id"])
+    whole_service.run_generation(db, settings, store, fake, task_id)
+    generated = db.whole_versions.find_one({"task_id": task_id, "version": 1})
+    instruction = "背景换成橙色"
+    whole_routes.create_edit(
+        task_id,
+        WholeImageEditRequest(instruction=instruction, source_version_id=generated["_id"]),
+        request,
+        BackgroundTasks(),
+    )
+    whole_service.run_edit(db, settings, store, fake, task_id, instruction, generated["_id"])
+    edited = db.whole_versions.find_one({"task_id": task_id, "version": 2})
 
-    version = db.whole_versions.find_one({"task_id": created["id"], "version": 1})
-    output = db.assets.find_one({"_id": version["output_asset_id"]})
-    assert created["canvas"] == {"width": 1080, "height": 1440}
-    assert (output["width"], output["height"]) == (1080, 1440)
-    assert (version["width"], version["height"]) == (1080, 1440)
+    for version, color in [(generated, (50, 90, 130)), (edited, (180, 80, 40))]:
+        output = db.assets.find_one({"_id": version["output_asset_id"]})
+        assert (output["width"], output["height"]) == (1080, 1350)
+        assert (version["width"], version["height"]) == (1080, 1350)
+        with Image.open(io.BytesIO(store.get_bytes(output["path"]))) as image:
+            assert image.size == (1080, 1350)
+            assert image.getextrema() == tuple((channel, channel) for channel in color)
+
+    assert fake.generation_calls[0]["size"] == "1088x1360"
+    assert fake.edit_calls[0]["size"] == "1088x1360"
 
 def test_generation_exposes_model_input_snapshot_with_reference_preview(
     settings, store, product_png
@@ -387,6 +400,7 @@ def test_generation_exposes_model_input_snapshot_with_reference_preview(
             "name": "dish.png",
             "role": "product",
             "preview_url": f"/api/assets/{product.id}/file",
+            "thumb_url": f"/api/assets/{product.id}/thumb?w=480",
         }
     ]
 
@@ -918,6 +932,7 @@ def test_chat_edit_can_override_model_without_moving_candidate(settings, store, 
     ), req, background)
     expected = "minimax-h3-image-edit" if edit_model == "minimax-h3-image" else edit_model
     assert pending["edit"]["image_model"] == expected
+    assert pending["messages"][-1]["image_model"] == expected
     job = background.tasks[0]
     job.func(*job.args, **job.kwargs)
     updated = whole_routes.get_task(created["id"], req)
@@ -925,6 +940,7 @@ def test_chat_edit_can_override_model_without_moving_candidate(settings, store, 
     assert updated["input"]["image_model"] == generation_model
     assert updated["edit"]["image_model"] == expected
     assert updated["model_input"]["model"] == expected
+    assert updated["messages"][-2]["image_model"] == expected
     version = db.whole_versions.find_one({"task_id": created["id"], "version": 2})
     assert version["parent_version_id"] == source["_id"]
     assert version["model_input"]["model"] == expected
@@ -956,6 +972,12 @@ def test_edit_retry_keeps_override_and_omitting_model_restores_generation_defaul
     ), req, BackgroundTasks())
     whole_service.run_edit(db, settings, store, fake, task_id, "标题向上移动", current["current_version_id"])
     assert fake.edit_calls[-1]["model"] == "gpt-image-2.5-sunburst"
+    messages = whole_routes.get_task(task_id, req)["messages"]
+    requests = [message for message in messages if message["role"] == "user"]
+    assert [(message["content"], message["image_model"]) for message in requests[1:]] == [
+        ("只改标题", "seedream-5.5-image-to-image"),
+        ("标题向上移动", "gpt-image-2.5-sunburst"),
+    ]
 
 
 def test_edit_rejects_unknown_model():
@@ -1457,7 +1479,11 @@ def test_edit_omits_style_references(
         product.id, source_asset["_id"]
     ]
     assert whole_routes.get_task(created["id"], request)["model_input"]["images"] == [
-        {**image, "preview_url": f"/api/assets/{image['asset_id']}/file"}
+        {
+            **image,
+            "preview_url": f"/api/assets/{image['asset_id']}/file",
+            "thumb_url": f"/api/assets/{image['asset_id']}/thumb?w=480",
+        }
         for image in snapshot["images"]
     ]
 

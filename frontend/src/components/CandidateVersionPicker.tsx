@@ -110,7 +110,7 @@ export default function CandidateVersionPicker({ anchor, versions, loading, curr
                 onClose()
               }
             }}>
-            {version.preview_url ? <img src={version.preview_url} alt="" /> : <span className="candidate-version-missing">无预览</span>}
+            {version.preview_url ? <img src={version.thumb_url || version.preview_url} alt="" loading="lazy" decoding="async" /> : <span className="candidate-version-missing">无预览</span>}
             <span>v{version.version}</span>
           </button>
         ))}

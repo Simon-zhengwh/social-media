@@ -294,6 +294,7 @@ type ComposerProps = EditorProps & {
   addedCount?: number
   maxLength?: number
   uploading?: boolean
+  scrollReferences?: boolean
   onRemoveImage?: (assetId: string) => void
   onUploadImages?: (files: File[]) => void
   onPickImages?: () => void
@@ -301,31 +302,34 @@ type ComposerProps = EditorProps & {
 }
 
 export default function ImagePromptComposer({ images, maxImages = null, addedCount = images.length, maxLength = 5000,
-  uploading = false, onRemoveImage, onUploadImages, onPickImages, footerActions, ...editorProps }: ComposerProps) {
+  uploading = false, scrollReferences = false, onRemoveImage, onUploadImages, onPickImages, footerActions, ...editorProps }: ComposerProps) {
   const [addOpen, setAddOpen] = useState(false)
   // The add tile sits at the start of the strip, so anchoring the menu to its right edge pushes it
   // out of the card and under the sidebar; open to the right unless that would leave the viewport.
   const [addMenuSide, setAddMenuSide] = useState<'left' | 'right'>('left')
   const addRef = useRef<HTMLDivElement>(null)
   const atLimit = maxImages !== null && addedCount >= maxImages
-  const issue = atLimit ? `最多使用 ${maxImages} 张参考图，请移除多余图片。` : imagePromptIssue(editorProps.value, images, maxLength)
+  const issue = maxImages !== null && addedCount > maxImages
+    ? `最多使用 ${maxImages} 张参考图，请移除多余图片。`
+    : imagePromptIssue(editorProps.value, images, maxLength)
   useEffect(() => {
     const close = (event: PointerEvent) => { if (!addRef.current?.contains(event.target as Node)) setAddOpen(false) }
     document.addEventListener('pointerdown', close)
     return () => document.removeEventListener('pointerdown', close)
   }, [])
+  const referenceTiles = images.map((image, index) => image.role !== 'poster' && (
+    <div className={`image-reference-tile${image.removable === false ? ' is-source' : ''}`} key={image.assetId}>
+      <ZoomableImage className="image-reference-preview" src={image.url} alt={`${imageLabel(images, index)}：${assetDisplayName(image.name)}`} title={assetDisplayName(image.name)} />
+      <span className="image-reference-label">{imageLabel(images, index)}</span>
+      {onRemoveImage && image.removable !== false ? <button type="button" className="image-reference-remove" aria-label={`移除${imageLabel(images, index)}`}
+        disabled={editorProps.disabled || uploading} onClick={() => onRemoveImage(image.assetId)}>×</button> : null}
+    </div>
+  ))
   return (
     <div className={`image-prompt-composer${editorProps.disabled ? ' is-disabled' : ''}${issue ? ' has-error' : ''}`}>
       <div className="image-reference-strip">
-        {images.map((image, index) => (
-          <div className={`image-reference-tile${image.removable === false ? ' is-source' : ''}`} key={image.assetId}>
-            <ZoomableImage className="image-reference-preview" src={image.url} alt={`${imageLabel(images, index)}：${assetDisplayName(image.name)}`} title={assetDisplayName(image.name)} />
-            <span className="image-reference-label">{imageLabel(images, index)}{image.role === 'poster' ? ' · 当前图' : ''}</span>
-            {onRemoveImage && image.removable !== false ? <button type="button" className="image-reference-remove" aria-label={`移除${imageLabel(images, index)}`}
-              disabled={editorProps.disabled || uploading} onClick={() => onRemoveImage(image.assetId)}>×</button> : null}
-          </div>
-        ))}
-        {(onUploadImages || onPickImages) && !atLimit ? (
+        {scrollReferences ? <div className="image-reference-scroll">{referenceTiles}</div> : referenceTiles}
+        {onUploadImages || onPickImages ? (
           <div className="image-reference-add-wrap" ref={addRef}>
             <button type="button" className="image-reference-add" aria-label="添加参考图" aria-expanded={addOpen}
               disabled={editorProps.disabled || uploading || atLimit} onClick={() => {
@@ -341,7 +345,7 @@ export default function ImagePromptComposer({ images, maxImages = null, addedCou
                   : <><br />{addedCount}/{maxImages}</>}
               </small>
             </button>
-            {addOpen ? <div className={`image-reference-add-menu from-${addMenuSide}`}>
+            {addOpen && !atLimit ? <div className={`image-reference-add-menu from-${addMenuSide}`}>
               {onUploadImages ? <label>上传图片<input type="file" multiple accept="image/*" aria-label="上传参考图"
                 onChange={event => { const files = Array.from(event.target.files ?? []); if (files.length) onUploadImages(files); event.target.value = ''; setAddOpen(false) }} /></label> : null}
               {onPickImages ? <button type="button" onClick={() => { setAddOpen(false); onPickImages() }}>从资产库选择</button> : null}

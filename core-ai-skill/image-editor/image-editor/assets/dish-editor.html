@@ -25,6 +25,13 @@ main{max-width:1320px;margin:0 auto 32px;padding:0 24px;display:grid;grid-templa
 <label class="field" for="dish-background">菜品图片</label>
 <select id="dish-background" disabled><option value="cutout">去背景（默认）</option><option value="original">保留原照背景</option></select>
 <p id="variant-hint" class="hint"></p>
+<section id="photo-tone" hidden>
+<div class="zoom-title"><label for="brightness">亮度</label><output id="brightness-value" for="brightness">0</output></div>
+<div class="row"><input id="brightness" type="range" min="-30" max="30" step="1" value="0" disabled></div>
+<div class="zoom-title"><label for="contrast">对比度</label><output id="contrast-value" for="contrast">0</output></div>
+<div class="row"><input id="contrast" type="range" min="-30" max="30" step="1" value="0" disabled></div>
+<div class="small-buttons"><button id="reset-tone" class="secondary" type="button" disabled>恢复原色</button></div>
+</section>
 <label class="check"><input id="visible" type="checkbox" checked disabled>显示这个图层</label>
 <div class="zoom-title"><label for="zoom">大小</label><output id="zoom-value">100%</output></div>
 <div class="row"><button id="zoom-out" class="step" aria-label="缩小" disabled>−</button><input id="zoom" type="range" min="20" max="300" step="1" value="100" disabled><button id="zoom-in" class="step" aria-label="放大" disabled>＋</button></div>
@@ -68,7 +75,46 @@ for(const kind of ['dish','photo']){
  });select.append(group);
 }
 function choose(index){state.selected=index;state.mode=selected().kind;state[state.mode==='dish'?'lastArt':'lastPhoto']=index;render();}
-function drawable(ctx,l){ctx.save();ctx.translate(l.x,l.y);ctx.rotate(l.rotation*Math.PI/180);if(l.kind==='dish'&&l.backgroundMode!=='original'&&$('shadow').checked){ctx.shadowColor='rgba(0,0,0,.28)';ctx.shadowBlur=18;ctx.shadowOffsetY=10;}ctx.drawImage(l.image,-l.image.naturalWidth*l.scale/2,-l.image.naturalHeight*l.scale/2,l.image.naturalWidth*l.scale,l.image.naturalHeight*l.scale);ctx.restore();}
+const canAdjustTone=layer=>layer.kind==='dish';
+const toneFields=['brightness','contrast'],toneCache=new WeakMap();
+const liveTone='filter' in stage.getContext('2d');
+function showToneValue(key,value){$(key+'-value').value=value>0?'+'+value:String(value);}
+function renderTone(layer){
+ $('photo-tone').hidden=!canAdjustTone(layer);
+ for(const key of toneFields){
+  const value=layer[key]??0;
+  $(key).value=String(value);
+  showToneValue(key,value);
+ }
+ $('reset-tone').disabled=!(layer.brightness||layer.contrast);
+}
+function tonedImage(ctx,layer){
+ const {image}=layer;
+ const brightness=1+(layer.brightness??0)/100,contrast=1+(layer.contrast??0)/100;
+ if(!canAdjustTone(layer)||(brightness===1&&contrast===1))return image;
+ if('filter' in ctx){
+  ctx.filter=`brightness(${brightness}) contrast(${contrast})`;
+  return image;
+ }
+ // Older browsers can render and export the same adjustment without canvas filters.
+ const cached=toneCache.get(layer);
+ if(cached?.image===image&&cached.brightness===brightness&&cached.contrast===contrast)return cached.canvas;
+ const canvas=cached?.canvas??document.createElement('canvas');
+ canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;
+ const pixels=canvas.getContext('2d',{willReadFrequently:true});
+ pixels.drawImage(image,0,0);
+ const rgba=pixels.getImageData(0,0,canvas.width,canvas.height),data=rgba.data;
+ const values=Uint8ClampedArray.from({length:256},(_,v)=>(Math.min(v*brightness,255)-127.5)*contrast+127.5);
+ for(let i=0;i<data.length;i+=4){
+  data[i]=values[data[i]];
+  data[i+1]=values[data[i+1]];
+  data[i+2]=values[data[i+2]];
+ }
+ pixels.putImageData(rgba,0,0);
+ toneCache.set(layer,{image,brightness,contrast,canvas});
+ return canvas;
+}
+function drawable(ctx,l){ctx.save();ctx.translate(l.x,l.y);ctx.rotate(l.rotation*Math.PI/180);if(l.kind==='dish'&&l.backgroundMode!=='original'&&$('shadow').checked){ctx.shadowColor='rgba(0,0,0,.28)';ctx.shadowBlur=18;ctx.shadowOffsetY=10;}ctx.drawImage(tonedImage(ctx,l),-l.image.naturalWidth*l.scale/2,-l.image.naturalHeight*l.scale/2,l.image.naturalWidth*l.scale,l.image.naturalHeight*l.scale);ctx.restore();}
 function paint(canvas,options={}){
  const ctx=canvas.getContext('2d');ctx.clearRect(0,0,W,H);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
  // A full opaque image sits below every movable layer, including inspection views.
@@ -82,6 +128,7 @@ function paint(canvas,options={}){
 function makeCanvas(options={}){if(!state.ready)throw new Error('图层尚未载入。');const c=document.createElement('canvas');c.width=W;c.height=H;paint(c,options);return c;}
 function render(){
  if(!state.ready)return;const l=selected(),art=l.kind==='dish';select.value=l.id;
+ renderTone(l);
  zoom.value=String(Math.round(l.scale/l.baseScale*100));$('zoom-value').textContent=`${Math.round(l.scale/l.baseScale*100)}%`;rotation.value=String(l.rotation);$('rotation-value').textContent=`${l.rotation}°`;visible.checked=l.visible;
  $('rotation-field').hidden=!art;$('photo-upload').hidden=art;$('download-element').disabled=!art;$('upload').disabled=art;$('file-name').textContent=l.fileName;
  $('layer-text').textContent=art?l.text:'只调整这张完整原照，显示范围固定在对应窗口。';
@@ -138,19 +185,35 @@ $('add-dish').addEventListener('change',async()=>{
 $('mode-art').addEventListener('click',()=>choose(state.lastArt));$('mode-photo').addEventListener('click',()=>choose(state.lastPhoto));
 $('dish-background').addEventListener('change',()=>setBackgroundMode($('dish-background').value));
 zoom.addEventListener('input',()=>scaleAt(selected().baseScale*Number(zoom.value)/100));$('zoom-in').addEventListener('click',()=>scaleAt(selected().scale*1.1));$('zoom-out').addEventListener('click',()=>scaleAt(selected().scale/1.1));
+for(const key of toneFields){
+ const input=$(key);
+ if(!liveTone)input.addEventListener('input',()=>showToneValue(key,Number(input.value)));
+ input.addEventListener(liveTone?'input':'change',()=>{
+  const layer=selected();
+  layer[key]=Number(input.value);
+  if(!layer.brightness&&!layer.contrast)toneCache.delete(layer);
+  render();
+ });
+}
+$('reset-tone').addEventListener('click',()=>{
+ const layer=selected();
+ layer.brightness=layer.contrast=0;
+ toneCache.delete(layer);
+ render();
+});
 rotation.addEventListener('input',()=>{selected().rotation=Number(rotation.value);render();});visible.addEventListener('change',()=>{selected().visible=visible.checked;render();});
 $('reset').addEventListener('click',reset);$('reset-all').addEventListener('click',()=>{layers.forEach(l=>Object.assign(l,l.initial));render();message('所有图层已回到初始位置。');});
 document.querySelectorAll('[data-dx]').forEach(b=>b.addEventListener('click',()=>move(Number(b.dataset.dx),Number(b.dataset.dy))));
 view.addEventListener('change',render);hideArt.addEventListener('change',render);
 $('upload').addEventListener('change',async()=>{
  const file=$('upload').files?.[0],l=selected();if(!file||l.kind!=='photo')return;const sequence=++l.sequence,url=URL.createObjectURL(file);
- try{const candidate=new Image();candidate.src=url;await candidate.decode();if(sequence!==l.sequence){URL.revokeObjectURL(url);return;}const previous=l.blob;l.image=candidate;l.blob=url;l.fileName=file.name;
+ try{const candidate=new Image();candidate.src=url;await candidate.decode();if(sequence!==l.sequence){URL.revokeObjectURL(url);return;}const previous=l.blob;l.image=candidate;l.blob=url;l.fileName=file.name;l.brightness=l.contrast=0;toneCache.delete(l);
   const b=l.bounds,s=Math.max((b[2]-b[0])/candidate.naturalWidth,(b[3]-b[1])/candidate.naturalHeight);l.initial={x:(b[0]+b[2])/2,y:(b[1]+b[3])/2,scale:s,baseScale:s,rotation:0,visible:true};Object.assign(l,l.initial);if(previous)URL.revokeObjectURL(previous);render();message('原照已更换，其他图层保持不动。');
  }catch{URL.revokeObjectURL(url);if(sequence===l.sequence)message('图片无法读取，已保留之前的有效原照。',true);}finally{$('upload').value='';}
 });
 async function save(canvas,name){const blob=await new Promise((resolve,reject)=>canvas.toBlob(v=>v?resolve(v):reject(new Error('PNG 导出失败。')),'image/png'));const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
 $('download').addEventListener('click',async()=>{const button=$('download');button.disabled=true;try{await save(makeCanvas(),'poster-dishes.png');message(`已导出当前画面，${W} × ${H}。`);}catch(e){message(e.message,true);}finally{button.disabled=false;}});
-$('download-element').addEventListener('click',async()=>{const l=selected();if(l.kind!=='dish')return;try{const c=document.createElement('canvas');c.width=l.image.naturalWidth;c.height=l.image.naturalHeight;c.getContext('2d').drawImage(l.image,0,0);await save(c,`${l.id}-${l.backgroundMode||'cutout'}.png`);message(l.backgroundMode==='original'?'已导出保留原照背景的菜品 PNG。':'已导出去背景的透明菜品 PNG。');}catch(e){message(e.message,true);}});
+$('download-element').addEventListener('click',async()=>{const l=selected();if(l.kind!=='dish')return;try{const c=document.createElement('canvas');c.width=l.image.naturalWidth;c.height=l.image.naturalHeight;const ctx=c.getContext('2d');ctx.drawImage(tonedImage(ctx,l),0,0);await save(c,`${l.id}-${l.backgroundMode||'cutout'}.png`);message(l.backgroundMode==='original'?'已导出保留原照背景的菜品 PNG。':'已导出去背景的透明菜品 PNG。');}catch(e){message(e.message,true);}});
 fixed.src=config.fixed;if(config.background)background.src=config.background;
 function readAlpha(image){const c=document.createElement('canvas');c.width=image.naturalWidth;c.height=image.naturalHeight;const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0);return ctx.getImageData(0,0,c.width,c.height).data;}
 Promise.all([...(config.background?[background.decode()]:[]),fixed.decode(),...layers.flatMap(l=>{l.image.src=l.source;l.cutoutImage=l.image;const ready=[l.image.decode().then(()=>{l.alpha=readAlpha(l.cutoutImage);})];if(l.originalImage){l.originalImage.src=l.originalSource;ready.push(Promise.all([ready[0],l.originalImage.decode()]).then(()=>{if(l.originalImage.naturalWidth!==l.cutoutImage.naturalWidth||l.originalImage.naturalHeight!==l.cutoutImage.naturalHeight)throw new Error('两种菜品图像尺寸不一致。');l.originalAlpha=readAlpha(l.originalImage);}));}return ready;})]).then(()=>{

@@ -35,6 +35,8 @@ export type BrandLogoImage = {
   asset_id: string
   original_name: string
   url: string
+  /** Grid/chip-sized preview; `url` stays the full file for the lightbox. */
+  thumb_url?: string | null
   width: number
   height: number
 }
@@ -130,6 +132,8 @@ export type Asset = {
   height: number
   mime_type: string
   url: string
+  /** Small WebP preview for grids; the lightbox still opens `url`. */
+  thumb_url?: string | null
   created_at: string
   source?: 'am' | 'upload'
   read_only?: boolean
@@ -155,6 +159,7 @@ export type PosterFinalization = {
   revision: string
   finalized_at: string
   preview_url: string
+  thumb_url?: string | null
   task_url: string
 }
 
@@ -175,6 +180,7 @@ export type WholeImageAttachment = {
   asset_id: string
   name: string
   url: string
+  thumb_url?: string | null
 }
 
 export type WholeImageMessage = {
@@ -182,6 +188,7 @@ export type WholeImageMessage = {
   role: 'user' | 'assistant' | 'system'
   content: string
   created_at: string
+  image_model?: string
   version_id?: string | null
   version?: number | null
   status?: 'done' | 'failed'
@@ -211,6 +218,7 @@ export type WholeImageModelInput = {
     kind?: string
     url?: string | null
     preview_url: string | null
+    thumb_url?: string | null
   }>
 }
 
@@ -242,6 +250,7 @@ export type WholeImageOutput = {
   height: number
   selectable: boolean
   preview_url: string | null
+  thumb_url?: string | null
   download_url: string | null
   model_input: WholeImageModelInput | null
   artifacts?: WholeImageArtifact[]
@@ -312,6 +321,7 @@ export type WholeImageTask = {
   current_version_id: string | null
   current_version: number
   preview_url: string | null
+  thumb_url?: string | null
   download_url: string | null
   messages: WholeImageMessage[]
   edit: WholeImageEditState
@@ -333,6 +343,7 @@ export type WholeImageVersion = {
   height: number
   output_asset_id: string | null
   preview_url: string | null
+  thumb_url?: string | null
   download_url: string | null
   outputs: WholeImageOutput[]
   model_input?: WholeImageModelInput | null
@@ -352,6 +363,8 @@ export type WholeImageTaskGroupCandidate = {
   progress: number
   current_version: number
   preview_url: string | null
+  // Small WebP preview for list screens; falls back to preview_url when absent.
+  thumb_url?: string | null
   download_url: string | null
   edit_status: 'idle' | 'running' | 'failed'
   error: string | null
@@ -361,9 +374,15 @@ export type WholeImageTaskGroupCandidate = {
 
 export type WholeImageTaskGroup = {
   image_models?: ImageModel[]
-  whole_task_id?: string | null
   id: string
-  kind: 'generate' | 'original_replace'
+  kind?: 'generate'
+  title?: string | null
+  original_replacement?: {
+    id: string
+    whole_task_id: string
+    status: WholeImageTaskGroupStatus
+    download_url: string | null
+  } | null
   status: WholeImageTaskGroupStatus
   prompt: string
   brand_name: string | null
@@ -377,6 +396,7 @@ export type WholeImageTaskGroup = {
   retryable_count: number
   representative_task_id: string
   preview_url: string | null
+  thumb_url?: string | null
   download_url: string | null
   error_message: string | null
   candidates: WholeImageTaskGroupCandidate[]
@@ -402,8 +422,23 @@ export type OriginalReplacementReference = {
 
 export type OriginalReplacementItem = { target: string; asset_id: string }
 
+export type OriginalReplacementCandidate = {
+  model: ImageModel
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'unsupported'
+  for_crop?: boolean
+  output: { width: number; height: number; preview_url: string } | null
+  error: string | null
+  applied_version_id?: string | null
+  applied_version?: number | null
+}
+
 export type OriginalReplacementTask = {
   id: string
+  kind?: 'agent' | 'model'
+  candidates?: OriginalReplacementCandidate[]
+  retry_of?: string | null
+  feedback?: string | null
+  applied_candidate_model?: ImageModel | null
   split_all_elements?: boolean
   artifacts?: WholeImageArtifact[]
   artifact_error?: string | null
@@ -447,6 +482,7 @@ export type PosterEditOutput = {
  height: number
  selectable: boolean
  preview_url: string | null
+ thumb_url?: string | null
  download_url: string | null
  model_input: string | null
  artifacts?: WholeImageArtifact[]

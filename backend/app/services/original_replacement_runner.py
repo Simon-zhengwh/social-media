@@ -7,6 +7,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from math import gcd
 from typing import Any
 
 import httpx
@@ -23,6 +24,15 @@ from app.time_utils import utc_iso
 
 logger = logging.getLogger(__name__)
 ACTIVE = ["queued", "running"]
+_UNSUPPORTED_FORMAT_MESSAGE = "不支持此格式"
+
+# The current Core AI KIE routes select from explicit aspect ratios.
+_SEEDREAM_RATIOS = {(1, 1), (4, 3), (3, 4), (16, 9), (9, 16), (2, 3), (3, 2), (21, 9)}
+_MODEL_REPLACEMENT_RATIOS = {
+    "seedream-5-pro-image-to-image": _SEEDREAM_RATIOS,
+    "seedream-5.5-image-to-image": _SEEDREAM_RATIOS,
+    "minimax-h3-image-edit": _SEEDREAM_RATIOS | {(5, 4), (4, 5)},
+}
 
 
 class OriginalReplacementError(CoreAIError):
@@ -48,8 +58,17 @@ def _asset(db: Any, asset_id: str) -> dict[str, Any]:
             "width": int(asset.get("width") or 0), "height": int(asset.get("height") or 0)}
 
 
+def model_candidate(model: str, source: dict[str, Any]) -> dict[str, Any]:
+    width, height = source["width"], source["height"]
+    divisor = gcd(width, height)
+    ratios = _MODEL_REPLACEMENT_RATIOS.get(model)
+    if ratios is not None and (width // divisor, height // divisor) not in ratios:
+        return {"model": model, "status": "unsupported", "error": _UNSUPPORTED_FORMAT_MESSAGE}
+    return {"model": model, "status": "queued"}
+
+
 def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacements: list[dict[str, str]],
-                split_all_elements: bool = False) -> dict[str, Any]:
+                split_all_elements: bool = False, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     from pydantic import ValidationError
 
     try:
@@ -65,7 +84,14 @@ def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacemen
     doc = {"_id": f"brep_{uuid.uuid4().hex}", "status": "queued", "stage": "queued", "progress": 0,
            "whole_task_id": whole_task_id, "input": payload.model_dump(), "source": source, "replacements": items,
            "output": None, "agent_id": None, "run_id": None, "agent_input": None, "agent_output": None,
-           "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now}
+           "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now,
+           **(metadata or {})}
+    if doc.get("kind") == "model":
+        doc["candidates"] = [model_candidate(model, source) for model in _MODEL_REPLACEMENT_RATIOS]
+        if all(candidate["status"] == "unsupported" for candidate in doc["candidates"]):
+            doc.update(status="failed", stage="failed", error={
+                "code": "unsupported_format", "message": _UNSUPPORTED_FORMAT_MESSAGE,
+            })
     # Keep the existing collection so linked replacement history survives retirement.
     db.background_replace_tasks.insert_one(doc)
     return db.background_replace_tasks.find_one({"_id": doc["_id"]})
@@ -386,12 +412,33 @@ def get_task(db: Any, task_id: str) -> dict[str, Any]:
 def task_out(doc: dict[str, Any]) -> dict[str, Any]:
     output = doc.get("output")
     task_id = str(doc["_id"])
+    merchant_id = str(doc.get("merchant_id") or "")
     if output:
-        merchant_id = str(doc.get("merchant_id") or "")
         output = {"asset_id": output["asset_id"], "width": output["width"], "height": output["height"],
                   "preview_url": asset_url(merchant_id, str(output["asset_id"])),
                   "download_url": original_replacement_download_url(merchant_id, str(doc["whole_task_id"]), task_id)}
-    return {"id": task_id, **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements",
+    candidates = []
+    for candidate in doc.get("candidates", []):
+        item = {key: candidate.get(key) for key in ("model", "status", "error")}
+        if candidate.get("for_crop"):
+            item["for_crop"] = True
+        for key in ("applied_version_id", "applied_version"):
+            item[key] = candidate.get(key) or (doc.get(key) if item["model"] == doc.get("applied_candidate_model") else None)
+        candidate_output = candidate.get("output")
+        if doc["status"] in {"interrupted", "failed"} and item["status"] in ACTIVE:
+            item.update(status="failed", error=(doc.get("error") or {}).get("message") or "模型结果未保存")
+        if item["status"] == "failed" and not item.get("for_crop"):
+            preflight = model_candidate(item["model"], doc["source"])
+            if preflight["status"] == "unsupported":
+                item.update(preflight)
+        item["output"] = {
+            "width": candidate_output["width"], "height": candidate_output["height"],
+            "preview_url": asset_url(merchant_id, candidate_output["asset_id"]),
+        } if candidate_output else None
+        candidates.append(item)
+    return {"id": task_id, "kind": doc.get("kind", "agent"), "candidates": candidates,
+            **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements", "feedback",
+            "retry_of", "applied_candidate_model",
             "agent_id", "run_id", "agent_input", "agent_output", "error", "whole_task_id", "source_version_id",
             "source_output_id", "source_version", "applied_version_id", "applied_version"]}, "output": output,
             "split_all_elements": (doc.get("input") or {}).get("split_all_elements", False),

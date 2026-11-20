@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 
 from pymongo.errors import DuplicateKeyError
 
-from app.api_paths import asset_url
+from app.api_paths import asset_thumb_url, asset_url
 from app.services.asset_records import is_generated_asset
 from app.services.whole_image import StudioError, _version_outputs, utcnow
 from app.time_utils import utc_iso
@@ -131,6 +131,7 @@ def record_out(doc: dict[str, Any] | None) -> dict[str, Any] | None:
         'version_id': doc['version_id'], 'output_id': doc['output_id'], 'version': doc['version'],
         'asset_ids': doc['asset_ids'], 'revision': doc['revision'], 'finalized_at': utc_iso(doc['finalized_at']),
         'preview_url': asset_url(merchant_id, doc['output_asset_id'], version=doc['version']),
+        'thumb_url': asset_thumb_url(merchant_id, doc['output_asset_id']),
         'task_url': '?' + urlencode({'view': 'whole', 'merchant_id': merchant_id,
             'whole': doc['task_id'], 'whole_workspace': doc['group_key']})}
 

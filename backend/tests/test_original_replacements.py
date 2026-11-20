@@ -1,9 +1,12 @@
 from datetime import timedelta
+from io import BytesIO
+from threading import Barrier
 from types import SimpleNamespace
 
 import mongomock
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from PIL import Image
 from pydantic import ValidationError
 
 from app import schemas
@@ -13,13 +16,18 @@ from app.services import original_replacement_runner, storage, whole_image
 from app.services.core_ai import AgentArtifact
 from tests.conftest import png_bytes
 from tests.test_original_replacement_runner import FakeAgent
-from tests.test_whole_image import FakeCoreAI, _generate, _request
+from tests.test_whole_image import FakeCoreAI, _request
 
 
 @pytest.fixture
-def env(settings, store):
+def env(settings, store, request):
     db = mongomock.MongoClient().db
-    task_id, task = _generate(db, settings, store, FakeCoreAI())
+    generator = FakeCoreAI()
+    created = routes.create_task(schemas.WholeImageTaskCreate(prompt="夏日冰美式海报", ratio=getattr(request, "param", "1:1")),
+                                 _request(db, settings, store, generator), BackgroundTasks())
+    task_id = created["id"]
+    whole_image.run_generation(db, settings, store, generator, task_id)
+    task = db.whole_tasks.find_one({"_id": task_id})
     for asset_id in ("beef", "environment", "logo"):
         image = storage.prepare_upload(settings, store, png_bytes(), asset_id + ".png")
         db.assets.insert_one({"_id": asset_id, "original_name": asset_id + ".png",
@@ -52,6 +60,276 @@ def apply(env, task, **overrides):
     values.update(overrides)
     return routes.apply_original_replacement(env.task_id, task["id"],
         schemas.WholeImageOriginalReplacementApplyRequest(**values), env.request)
+
+
+def run_background(background):
+    (job,) = background.tasks
+    job.func(*job.args, **job.kwargs)
+
+
+def model_batch(env, items=None):
+    env.client = FakeCoreAI()
+    env.request.app.state.core_ai = env.client
+    background = BackgroundTasks()
+    task = routes.create_original_replacement(env.task_id,
+        schemas.WholeImageOriginalReplacementRequest(
+            source_version_id=env.source_id, source_output_id=env.output_id, kind="model",
+            replacements=items or [{"target": "右下角牛肉", "asset_id": "beef"}]),
+        env.request, background)
+    assert task["kind"] == "model"
+    return task, background
+
+
+def test_model_replacement_runs_three_independent_candidates_with_shared_input(env):
+    task, background = model_batch(env, [{"target": "右下角牛肉", "asset_id": "beef"},
+        {"target": "", "asset_id": "environment"}, {"target": "Logo", "asset_id": "logo"}])
+    barrier = Barrier(3, timeout=5)
+    edit = env.client.edit_image
+
+    def edit_image(prompt, refs, *, size, model):
+        barrier.wait()
+        data = edit(prompt, refs, size=size, model=model)
+        if model == "seedream-5.5-image-to-image":
+            raise RuntimeError("模型暂不可用")
+        return data
+
+    env.client.edit_image = edit_image
+    run_background(background)
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert restored["id"] == task["id"]
+    assert restored["status"] == "succeeded"
+    candidates = {item["model"]: item for item in restored["candidates"]}
+    assert set(candidates) == {"seedream-5-pro-image-to-image", "seedream-5.5-image-to-image", "minimax-h3-image-edit"}
+    assert candidates["seedream-5.5-image-to-image"]["status"] == "failed"
+    assert candidates["seedream-5.5-image-to-image"]["error"] == "模型暂不可用"
+    assert candidates["seedream-5-pro-image-to-image"]["output"]["width"] == task["source"]["width"]
+    assert len({call["prompt"] for call in env.client.edit_calls}) == 1
+    for call in env.client.edit_calls:
+        assert call["reference_names"][1:] == ["beef.png", "environment.png", "logo.png"]
+        assert "右下角牛肉" in call["prompt"]
+        assert "食物本身" in call["prompt"] and "透视" in call["prompt"] and "等比" in call["prompt"]
+    assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_model_replacement_skips_candidates_that_cannot_keep_the_source_ratio(env):
+    task, background = model_batch(env)
+    edit = env.client.edit_image
+
+    def edit_image(prompt, refs, *, size, model):
+        edit(prompt, refs, size=size, model=model)
+        return png_bytes(1088, 1360)
+
+    env.client.edit_image = edit_image
+    assert (task["source"]["width"], task["source"]["height"]) == (1080, 1350)
+    run_background(background)
+    assert [call["model"] for call in env.client.edit_calls] == ["minimax-h3-image-edit"]
+    assert [(candidate["status"], candidate["error"]) for candidate in task["candidates"]] == [
+        ("unsupported", "不支持此格式"), ("unsupported", "不支持此格式"), ("queued", None),
+    ]
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert restored["status"] == "succeeded"
+    assert [candidate["status"] for candidate in restored["candidates"]] == ["unsupported", "unsupported", "succeeded"]
+    assert restored["candidates"][2]["output"]["height"] == 1350
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_historical_candidate_with_an_unsupported_ratio_cannot_be_retried(env):
+    task, _ = model_batch(env)
+    env.db.background_replace_tasks.update_one({"_id": task["id"]},
+        {"$set": {"status": "failed", "candidates.0.status": "failed", "candidates.0.error": "模型返回的画布比例与底稿不符"}})
+    retry = BackgroundTasks()
+    with pytest.raises(HTTPException) as unsupported:
+        routes.retry_original_replacement_candidate(env.task_id, task["id"], "seedream-5-pro-image-to-image",
+                                                    env.request, retry)
+    assert unsupported.value.status_code == 422
+    assert unsupported.value.detail == "不支持此格式"
+    assert not retry.tasks
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_explicit_crop_request_keeps_full_model_output_without_applying_it(env):
+    task, background = model_batch(env)
+    edit = env.client.edit_image
+    model = "seedream-5.5-image-to-image"
+
+    def edit_image(prompt, refs, *, size, model):
+        edit(prompt, refs, size=size, model=model)
+        return png_bytes(768, 1024) if model.startswith("seedream") else png_bytes(1088, 1360)
+
+    env.client.edit_image = edit_image
+    run_background(background)
+    crop_job = BackgroundTasks()
+    pending = routes.retry_original_replacement_candidate(env.task_id, task["id"], model, env.request, crop_job, for_crop=True)
+    assert pending["candidates"][1]["status"] == "queued"
+    assert pending["candidates"][1]["for_crop"] is True
+    run_background(crop_job)
+
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    candidate = restored["candidates"][1]
+    assert candidate["for_crop"] is True and candidate["status"] == "succeeded"
+    assert (candidate["output"]["width"], candidate["output"]["height"]) == (768, 1024)
+    assert [call["model"] for call in env.client.edit_calls] == ["minimax-h3-image-edit", model]
+    source = routes.get_original_replacement_crop_source(env.task_id, task["id"], model, env.request)
+    assert source.media_type == "image/png"
+    with Image.open(BytesIO(source.body)) as image:
+        assert image.size == (768, 1024)
+    with pytest.raises(HTTPException) as cannot_apply:
+        apply(env, task, candidate_model=model)
+    assert cannot_apply.value.status_code == 409
+    assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_crop_request_cannot_take_over_a_batch_before_its_worker_starts(env):
+    task, background = model_batch(env)
+    crop_job = BackgroundTasks()
+    with pytest.raises(HTTPException) as queued:
+        routes.retry_original_replacement_candidate(env.task_id, task["id"], "seedream-5.5-image-to-image",
+                                                    env.request, crop_job, for_crop=True)
+    assert queued.value.status_code == 409
+    assert not crop_job.tasks
+    run_background(background)
+    assert [call["model"] for call in env.client.edit_calls] == ["minimax-h3-image-edit"]
+
+
+def test_model_feedback_uses_original_source_and_applies_chosen_candidate(env):
+    task, background = model_batch(env)
+    run_background(background)
+    chosen_model = "minimax-h3-image-edit"
+    applied = apply(env, task, candidate_model=chosen_model)
+    assert applied["current_version_id"] != env.source_id
+    version = env.db.whole_versions.find_one({"_id": applied["current_version_id"]})
+    assert version["parent_version_id"] == env.source_id
+    assert version["model_input"]["model"] == chosen_model
+    assert apply(env, task, candidate_model=chosen_model)["current_version_id"] == version["_id"]
+    background = BackgroundTasks()
+    rerun = routes.retry_model_replacement(env.task_id, task["id"],
+        schemas.WholeImageOriginalReplacementFeedbackRequest(feedback="羊肉需要恢复到底稿大小"),
+        env.request, background)
+    assert rerun["source_version_id"] == env.source_id
+    assert rerun["source_output_id"] == env.output_id
+    assert rerun["retry_of"] == task["id"]
+    run_background(background)
+    assert len(routes.list_original_replacements(env.task_id, env.request)) == 2
+    for first, second in zip(env.client.edit_calls[:3], env.client.edit_calls[3:]):
+        assert first["reference_bytes"] == second["reference_bytes"]
+        assert "羊肉需要恢复到底稿大小" in second["prompt"]
+        assert "底稿上的 Logo" in second["prompt"]
+
+
+@pytest.mark.parametrize("sibling_running", [False, True])
+def test_retry_only_queues_the_failed_candidate_in_the_same_batch(env, sibling_running):
+    task, background = model_batch(env)
+    failed_model = "seedream-5.5-image-to-image"
+    edit = env.client.edit_image
+
+    def fail_one(prompt, refs, *, size, model):
+        if model == failed_model:
+            raise RuntimeError("Image fetch failed")
+        return edit(prompt, refs, size=size, model=model)
+
+    env.client.edit_image = fail_one
+    run_background(background)
+    batches = env.db.background_replace_tasks
+    baseline = batches.find_one({"_id": task["id"]})
+    if sibling_running:
+        batches.update_one({"_id": task["id"]}, {"$set": {"status": "running", "candidates.0.status": "running"}})
+    env.client.edit_image = edit
+    env.client.edit_calls.clear()
+    retry = BackgroundTasks()
+    response = routes.retry_original_replacement_candidate(env.task_id, task["id"], failed_model, env.request, retry)
+    assert response["id"] == task["id"]
+    assert response["status"] == "running"
+    assert response["candidates"][1]["status"] == "queued"
+    with pytest.raises(HTTPException) as duplicate:
+        routes.retry_original_replacement_candidate(env.task_id, task["id"], failed_model, env.request, BackgroundTasks())
+    assert duplicate.value.status_code == 409
+
+    run_background(retry)
+    assert [call["model"] for call in env.client.edit_calls] == [failed_model]
+    assert env.client.edit_calls[0]["reference_names"][1:] == ["beef.png"]
+    assert env.client.edit_calls[0]["prompt"] == baseline["candidates"][1]["model_input"]["prompt"]
+    restored = batches.find_one({"_id": task["id"]})
+    assert restored["status"] == ("running" if sibling_running else "succeeded")
+    assert restored["candidates"][1]["status"] == "succeeded"
+    assert restored["candidates"][2] == baseline["candidates"][2]
+    assert batches.count_documents({}) == 1
+    with pytest.raises(HTTPException) as already_succeeded:
+        routes.retry_original_replacement_candidate(env.task_id, task["id"], failed_model, env.request, BackgroundTasks())
+    assert already_succeeded.value.status_code == 409
+
+
+def test_retry_recovers_an_interrupted_candidate_in_a_historical_batch(env):
+    task, _ = model_batch(env)
+    batches = env.db.background_replace_tasks
+    batches.update_one({"_id": task["id"]}, {"$set": {"status": "interrupted", "candidates.1.status": "running"}})
+    before = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert [candidate["status"] for candidate in before["candidates"]] == ["failed", "failed", "failed"]
+
+    model = before["candidates"][1]["model"]
+    retry = BackgroundTasks()
+    routes.retry_original_replacement_candidate(env.task_id, task["id"], model, env.request, retry)
+    run_background(retry)
+
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert restored["status"] == "succeeded"
+    assert [candidate["status"] for candidate in restored["candidates"]] == ["failed", "succeeded", "failed"]
+    assert [call["model"] for call in env.client.edit_calls] == [model]
+
+
+def test_successful_candidates_apply_independently_and_keep_legacy_versions(env):
+    task, background = model_batch(env)
+    run_background(background)
+    first_model = "seedream-5-pro-image-to-image"
+    second_model = "minimax-h3-image-edit"
+    first_id = apply(env, task, candidate_model=first_model)["current_version_id"]
+    # Reproduce a batch that was applied before per-candidate application was supported.
+    env.db.whole_tasks.update_one({"_id": env.task_id}, {"$set": {"original_replacement_versions": {task["id"]: first_id}}})
+    env.db.background_replace_tasks.update_one({"_id": task["id"]},
+        {"$unset": {"candidates.0.applied_version_id": "", "candidates.0.applied_version": ""}})
+    second_id = apply(env, task, candidate_model=second_model)["current_version_id"]
+    assert first_id != second_id
+    assert apply(env, task, candidate_model=first_model)["current_version_id"] == second_id
+    assert apply(env, task, candidate_model=second_model)["current_version_id"] == second_id
+    assert len(env.client.edit_calls) == 3
+    versions = {doc["_id"]: doc for doc in env.db.whole_versions.find({"task_id": env.task_id})}
+    assert len(versions) == 3
+    assert versions[first_id]["parent_version_id"] == versions[second_id]["parent_version_id"] == env.source_id
+    record = routes.list_original_replacements(env.task_id, env.request)[0]
+    candidates = {item["model"]: item for item in record["candidates"]}
+    assert candidates[first_model]["applied_version_id"] == first_id
+    assert candidates[second_model]["applied_version_id"] == second_id
+    assert record["applied_version_id"] == second_id
+
+
+def test_model_candidate_cannot_be_applied_to_a_deleted_poster(env):
+    task, background = model_batch(env)
+    run_background(background)
+    env.db.whole_tasks.update_one({"_id": env.task_id}, {"$set": {"candidate_deleted_at": whole_image.utcnow()}})
+    with pytest.raises(HTTPException) as conflict:
+        apply(env, task, candidate_model="minimax-h3-image-edit")
+    assert conflict.value.status_code == 409
+    assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+
+
+def test_model_candidate_with_different_aspect_ratio_is_not_letterboxed(env):
+    task, background = model_batch(env)
+    edit = env.client.edit_image
+
+    def edit_image(prompt, refs, *, size, model):
+        if model == "minimax-h3-image-edit":
+            return png_bytes(720, 1280)
+        return edit(prompt, refs, size=size, model=model)
+
+    env.client.edit_image = edit_image
+    run_background(background)
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert restored["status"] == "succeeded"
+    candidate = next(item for item in restored["candidates"] if item["model"] == "minimax-h3-image-edit")
+    assert candidate["status"] == "failed"
+    assert candidate["output"] is None
+    assert "画布比例" in candidate["error"]
 
 
 def test_original_replacement_routes_exist():
@@ -399,11 +677,22 @@ def test_apply_failure_does_not_delete_shared_image(env, monkeypatch):
 
 
 def test_task_center_links_associated_replacements_to_the_whole_task(env):
-    task = create(env)
-    groups = task_center.list_task_center(env.request, kind="original_replace")["items"]
-    group = next(item for item in groups if item["id"] == task["id"])
-    assert group["whole_task_id"] == env.task_id
-    assert group["kind"] == "original_replace"
+    first = create(env)
+    complete(env, first)
+    second = create(env)
+    for kind in ("all", "original_replace"):
+        result = task_center.list_task_center(env.request, kind=kind, status="active")
+        assert result["total"] == 1
+        group = result["items"][0]
+        assert group["id"] == env.task_id
+        assert group["kind"] == "generate"
+        assert group["candidate_count"] == 1
+        assert group["original_replacement"]["id"] == second["id"]
+        assert group["original_replacement"]["whole_task_id"] == env.task_id
+    finished = task_center.list_task_center(env.request, kind="original_replace", status="ready")["items"][0]
+    assert finished["id"] == env.task_id
+    assert finished["original_replacement"]["id"] == first["id"]
+    assert finished["original_replacement"]["download_url"]
 
 
 def test_restart_does_not_resume_retired_standalone_tasks(env):

@@ -246,7 +246,13 @@ export default function App() {
       return
     }
     finishedIndexRef.current = runningIndexId
-    const timer = window.setInterval(() => { void refreshAssetIndex() }, 2000)
+    const timer = window.setInterval(() => {
+      // Polling an in-flight index from a hidden tab only burns the link.
+      if (document.hidden) {
+        return
+      }
+      void refreshAssetIndex()
+    }, 5000)
     return () => window.clearInterval(timer)
   }, [runningIndexId, refreshAssetIndex, loadAssets, assetQuery, assetTagQuery, assetSearch?.id])
 
@@ -455,7 +461,7 @@ export default function App() {
         merchantId={initialMerchantId}
         merchantName={context?.merchant.merchant_name ?? '商家工作区'}
       />
-      <div className="app-main">
+      <div className={visibleView === 'whole' ? 'app-main is-poster-workspace' : 'app-main'}>
         {/* Keep pending uploads/submissions alive when another menu is open. */}
         <div hidden={visibleView !== 'whole'}>
           <WholeImageStudio

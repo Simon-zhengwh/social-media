@@ -12,6 +12,7 @@ import {
   merchantPath,
   refreshOriginalReplacement,
   restoreOriginalReplacementArtifacts,
+  retryModelReplacement,
   listMerchants,
 } from '../src/api.ts'
 import type { WholeImageTask } from '../src/types.ts'
@@ -88,6 +89,22 @@ test('original replacement sends the whole-element choice and defaults it off', 
   assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
     source_version_id: 'version', source_output_id: 'output', replacements, split_all_elements: true,
   })
+})
+
+test('model replacement sends its kind, feedback and candidate within the same scoped history', async () => {
+  const requests = mockBrowser()
+  const replacements = [{ target: '背景', asset_id: 'photo' }]
+  await createOriginalReplacement('poster/a', 'v1', 'base', replacements, true, 'model')
+  await retryModelReplacement('poster/a', 'batch/a', '保持原排版')
+  await applyOriginalReplacement({ id: 'poster/a', current_version_id: 'v1', current_output_id: 'base' } as WholeImageTask,
+    'batch/a', 'minimax-h3-image-edit')
+  const path = '/api/merchants/merchant%2Fa/whole-image/tasks/poster%2Fa/original-replacements'
+  assert.deepEqual(requests.map(request => request.path), [path, `${path}/batch%2Fa/feedback`, `${path}/batch%2Fa/apply`])
+  assert.deepEqual(requests.map(request => JSON.parse(String(request.init?.body))), [
+    { source_version_id: 'v1', source_output_id: 'base', replacements, split_all_elements: false, kind: 'model' },
+    { feedback: '保持原排版' },
+    { expected_current_version_id: 'v1', expected_current_output_id: 'base', candidate_model: 'minimax-h3-image-edit' },
+  ])
 })
 
 test('restoring replacement files queries the existing run within the merchant scope', async () => {

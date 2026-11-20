@@ -25,7 +25,7 @@ export default function AssetUsageDialog({ asset, onClose }: { asset: Asset; onC
       : !items.length ? <p>暂无定稿引用。</p>
       : <div className="asset-usage-list">{items.map(item => <article className="asset-usage-item" key={item.id}>
         <a href={item.preview_url} target="_blank" rel="noopener noreferrer" aria-label={`查看定稿 v${item.version}`}>
-          <img src={item.preview_url} alt={`定稿海报 v${item.version}`} />
+          <img src={item.thumb_url || item.preview_url} alt={`定稿海报 v${item.version}`} loading="lazy" decoding="async" />
         </a>
         <div><strong>定稿 v{item.version}</strong>
           <time dateTime={item.finalized_at}>{new Date(item.finalized_at).toLocaleString('zh-CN', { hour12: false })}</time>

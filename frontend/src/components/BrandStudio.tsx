@@ -413,6 +413,7 @@ export default function BrandStudio({
             <ZoomableImage
               className="brand-logo-preview"
               src={logo.url}
+              previewSrc={logo.thumb_url || undefined}
               alt={logo.original_name}
               title={logo.original_name}
             />
@@ -559,7 +560,7 @@ export default function BrandStudio({
                       {brand.logo_images[0] ? (
                         <img
                           className="brand-card-logo-static"
-                          src={brand.logo_images[0].url}
+                          src={brand.logo_images[0].thumb_url || brand.logo_images[0].url}
                           alt={brand.logo_images[0].original_name || `${brand.name} Logo`}
                         />
                       ) : null}

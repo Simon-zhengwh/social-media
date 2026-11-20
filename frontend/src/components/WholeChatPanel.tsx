@@ -18,15 +18,13 @@ type Props = {
   downloadHref: string | null
   finalizationActions?: ReactNode
   currentImage: PromptImage | null
-  /** The task's own reference images, carried in as removable defaults for every turn. */
-  defaultAttachments?: Asset[]
   assets: Asset[]
   assetsLoading: boolean
   onLoadAssets: () => void
   onGoAssets: () => void
 }
 
-const MAX_ATTACHMENTS = 5
+const MAX_ATTACHMENTS = 15
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : '图片处理失败，请稍后重试'
@@ -41,7 +39,6 @@ export default function WholeChatPanel({
   downloadHref,
   finalizationActions,
   currentImage,
-  defaultAttachments = [],
   assets,
   assetsLoading,
   onLoadAssets,
@@ -50,8 +47,7 @@ export default function WholeChatPanel({
   const [imageModel, setImageModel] = useState(() =>
     IMAGE_MODEL_OPTIONS.some(option => option.value === initialModel) ? initialModel : DEFAULT_IMAGE_MODEL)
   const [draft, setDraft] = useState('')
-  // Defaults come from the task, not from this dialog: the operator can remove or add freely.
-  const [attachments, setAttachments] = useState<Asset[]>(() => defaultAttachments)
+  const [attachments, setAttachments] = useState<Asset[]>([])
   const [uploading, setUploading] = useState(false)
   const [sending, setSending] = useState(false)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
@@ -156,6 +152,7 @@ export default function WholeChatPanel({
         <ImagePromptComposer
           value={draft} onChange={setDraft} images={promptImages} label="修改要求"
           placeholder="描述想改什么，输入 @ 选择图片" maxImages={MAX_ATTACHMENTS} addedCount={attachments.length} maxLength={1000}
+          scrollReferences
           disabled={disabled || running} uploading={uploading} onSubmit={() => void send(draft)}
           onUploadImages={files => void addImages(files)}
           onRemoveImage={assetId => setAttachments(current => current.filter(asset => asset.id !== assetId))}
@@ -163,9 +160,9 @@ export default function WholeChatPanel({
           footerActions={
             <div className="chat-composer-actions">
               {downloadHref ? (
-                <a className="chat-download" href={downloadHref} download title="下载当前海报 PNG">
+                <a className="mp-btn-secondary mp-btn-small chat-download" href={downloadHref} download title="下载当前海报 PNG">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9m0 0 3.5-3.5M10 12 6.5 8.5M4 15.5h12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                  下载 PNG
+                  下载
                 </a>
               ) : null}
               {finalizationActions}

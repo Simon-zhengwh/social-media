@@ -23,6 +23,7 @@ class Fixture:
         self.delay = 0
         self.list_delay = 0
         self.tasks = {}
+        self.titles = {}
         self.posts = 0
         self.unhandled = []
 
@@ -51,6 +52,9 @@ class Fixture:
             ]}]
         elif path == "/api/merchants":
             payload = {"total": 2, "merchants": [{"id": key, "name": key} for key in ("merchant-1", "merchant-2")]}
+        elif path == "/api/asset-index":
+            payload = {"total": 2, "described": 2, "failed": 0, "running": 0, "pending": 0,
+                       "active_run": None, "last_run": None}
         elif path in ("/api/assets", "/api/am-assets"):
             payload = {"items": [{"id": name, "original_name": name + ".png", "width": 100, "height": 100,
                                   "mime_type": "image/png", "url": "/fixture/" + name, "created_at": "2026-11-13T00:00:00Z"}
@@ -76,6 +80,12 @@ class Fixture:
         elif re.fullmatch(r"/api/whole-image/workspaces/[^/]+/tasks", path):
             workspace = path.split('/')[-2]
             payload = [task for task in self.tasks.values() if task["input"]["generation_workspace_id"] == workspace]
+        elif re.fullmatch(r"/api/whole-image/workspaces/[^/]+/title", path):
+            workspace = path.split('/')[-2]
+            if request.method == "PUT":
+                self.titles[workspace] = request.post_data_json["title"]
+            first = next(task for task in self.tasks.values() if task["input"]["generation_workspace_id"] == workspace)
+            payload = {"title": self.titles.get(workspace, first["input"].get("workspace_title")), "created_at": first["created_at"]}
         elif path.startswith("/api/whole-image/tasks/wtask_test_"):
             task_id = path.split('/')[4]
             payload = self.tasks[task_id] if path.endswith(task_id) else []
@@ -89,7 +99,7 @@ async def session(page):
     return await page.evaluate("JSON.parse(sessionStorage.getItem('social-media:poster-session:v1:alice:merchant-1'))")
 
 
-async def open_new_design(context, page, label='＋ 新建海报设计'):
+async def open_new_design(context, page, label='＋ 新建海报'):
     link = page.get_by_role('link', name=label, exact=True)
     await expect(link).to_have_attribute('target', '_blank')
     async with context.expect_page() as opened:
@@ -97,7 +107,7 @@ async def open_new_design(context, page, label='＋ 新建海报设计'):
     new_page = await opened.value
     await expect(new_page.get_by_role('textbox', name='设计需求', exact=True)).to_be_empty()
     assert await new_page.evaluate('window.opener === null')
-    assert await session(new_page) is None
+    assert (await session(new_page))['kind'] == 'blank'
     assert new_page.url == BASE + '/?merchant_id=merchant-1'
     return new_page
 
@@ -142,10 +152,16 @@ async def main():
             await page.get_by_role("button", name="海报设计", exact=True).click()
             await expect(editor).to_have_text(expected)
             assert (await session(page))["kind"] == "draft"
+            await expect(page.locator('.poster-task-heading h1')).to_have_text(re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'))
+            await page.get_by_role('button', name='编辑任务标题').click()
+            await page.get_by_role('textbox', name='任务标题').fill('测试海报标题')
+            await page.locator('.poster-task-heading').get_by_role('button', name='保存', exact=True).click()
+            await expect(page.locator('.poster-task-heading h1')).to_have_text('测试海报标题')
             before = await session(page)
             fixture.list_delay = 0.3
             await page.reload()
             await expect(editor).to_have_text(expected)
+            await expect(page.locator('.poster-task-heading h1')).to_have_text('测试海报标题')
             await expect(page.get_by_label('选择发布平台')).to_be_visible()
             await expect(page.get_by_role("radio", name="GPT Image 2.5 2 张", exact=True)).to_have_attribute("aria-checked", "true")
             assert (await session(page))["form"] == before["form"]
@@ -214,6 +230,13 @@ async def main():
             await page.reload()
             await expect(editor).to_have_text(expected)
             await expect(page.get_by_role('button', name='切换到 Seedream 5.5', exact=True)).to_have_attribute('aria-pressed', 'true')
+            await expect(page.locator('.poster-task-heading h1')).to_have_text('测试海报标题')
+            await page.get_by_role('button', name='编辑任务标题').click()
+            await page.get_by_role('textbox', name='任务标题').fill('已保存标题')
+            await page.locator('.poster-task-heading').get_by_role('button', name='保存', exact=True).click()
+            await expect(page.locator('.poster-task-heading h1')).to_have_text('已保存标题')
+            await page.reload()
+            await expect(page.locator('.poster-task-heading h1')).to_have_text('已保存标题')
             await page.get_by_role('button', name='任务中心', exact=True).click()
             new_design = await open_new_design(context, page)
             await page.close()
@@ -250,11 +273,11 @@ async def main():
             source_task = await session(page)
             await page.get_by_role('button', name='任务中心', exact=True).click()
             source_url = page.url
-            for label in ['＋ 新建海报设计', '去海报设计']:
+            for label in ['＋ 新建海报', '去海报设计']:
                 new_design = await open_new_design(context, page, label)
                 await new_design.reload()
                 await expect(new_design.get_by_role('textbox', name='设计需求', exact=True)).to_be_empty()
-                assert await session(new_design) is None
+                assert (await session(new_design))['kind'] == 'blank'
                 assert await session(page) == source_task
                 assert page.url == source_url
                 await new_design.close()
@@ -281,7 +304,7 @@ async def main():
             await expect(page).to_have_url(re.compile(r'whole=wtask_test_'))
             await expect(editor).to_have_text(expected)
             await expect(new_design.get_by_role('textbox', name='设计需求', exact=True)).to_be_empty()
-            assert await session(new_design) is None
+            assert (await session(new_design))['kind'] == 'blank'
             assert 'whole=' not in new_design.url
             print('PASS: pending submissions finish only in the source tab without populating the new tab')
 
@@ -294,7 +317,7 @@ async def main():
             page = await context.new_page()
             await page.goto(BASE + '/?merchant_id=merchant-1')
             await expect(page.get_by_role('textbox', name='设计需求', exact=True)).to_be_empty()
-            assert await session(page) is None
+            assert (await session(page))['kind'] == 'blank'
             await page.wait_for_load_state('networkidle')
             print('PASS: a fresh tab after closing has no unfinished draft')
 

@@ -1,7 +1,7 @@
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 # Ceiling for one poster's reference images. The workbench itself does not cap the picker;
 # this is only the server-side guard against runaway payloads.
@@ -147,6 +147,13 @@ class BrandUpdate(BaseModel):
         return result
 
 
+WorkspaceTitle = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+class WholeImageWorkspaceTitle(BaseModel):
+    title: WorkspaceTitle
+
+
 class WholeImageTaskCreate(BaseModel):
     image_model: ImageModel = "gpt-image-2.5-sunburst"
     prompt: str = Field(min_length=1, max_length=5000)
@@ -161,6 +168,7 @@ class WholeImageTaskCreate(BaseModel):
     candidate_count: int = Field(default=3, ge=1, le=6)
     candidate_batch_id: str | None = Field(default=None, max_length=128)
     generation_workspace_id: str | None = Field(default=None, min_length=1, max_length=128)
+    workspace_title: WorkspaceTitle | None = None
     candidate_index: int = Field(default=0, ge=0, le=5)
     platform_id: str | None = Field(default=None, max_length=64)
     placement_id: str | None = Field(default=None, max_length=64)
@@ -221,6 +229,7 @@ class WholeImageOriginalReplacementRequest(BaseModel):
     source_output_id: str = Field(min_length=1, max_length=128)
     replacements: list[OriginalReplacementItem] = Field(min_length=1, max_length=5)
     split_all_elements: bool = False
+    kind: Literal["agent", "model"] = "agent"
 
     @field_validator("source_version_id", "source_output_id", mode="before")
     @classmethod
@@ -231,6 +240,16 @@ class WholeImageOriginalReplacementRequest(BaseModel):
 class WholeImageOriginalReplacementApplyRequest(BaseModel):
     expected_current_version_id: str = Field(min_length=1, max_length=128)
     expected_current_output_id: str = Field(min_length=1, max_length=128)
+    candidate_model: ImageModel | None = None
+
+
+class WholeImageOriginalReplacementFeedbackRequest(BaseModel):
+    feedback: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("feedback", mode="before")
+    @classmethod
+    def strip_feedback(cls, value: str) -> str:
+        return value.strip() if isinstance(value, str) else value
 
 
 class PosterFinalizationRequest(BaseModel):
@@ -244,7 +263,7 @@ class WholeImageEditRequest(BaseModel):
     image_model: ImageModel | None = None
     source_version_id: str = Field(min_length=1, max_length=128)
     source_output_id: str | None = Field(default=None, max_length=128)
-    reference_asset_ids: list[str] = Field(default_factory=list, max_length=5)
+    reference_asset_ids: list[str] = Field(default_factory=list, max_length=MAX_REFERENCE_ASSETS)
     reference_mode: Literal["legacy", "unified"] = "legacy"
 
     @model_validator(mode="before")

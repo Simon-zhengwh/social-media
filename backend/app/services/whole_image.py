@@ -76,6 +76,7 @@ def _append_message(
     version: int | None = None,
     status: str = "done",
     attachments: list[dict[str, str]] | None = None,
+    image_model: str | None = None,
 ) -> dict[str, Any]:
     message = {
         "id": f"msg_{uuid.uuid4().hex}",
@@ -88,6 +89,8 @@ def _append_message(
         "status": status,
         "attachments": attachments or [],
     }
+    if image_model:
+        message["image_model"] = image_model
     db.whole_tasks.update_one({"_id": task_id}, {"$push": {"messages": message}})
     return message
 
@@ -106,6 +109,7 @@ def _save_output_asset(
     data: bytes,
     role: str | None = None,
     target_size: tuple[int, int] | None = None,
+    allow_letterbox: bool = True,
 ) -> dict[str, Any]:
     try:
         with Image.open(io.BytesIO(data)) as source:
@@ -114,17 +118,30 @@ def _save_output_asset(
             if image.mode not in {"RGB", "RGBA"}:
                 image = image.convert("RGB")
             if target_size is not None:
-                image = ImageOps.pad(
-                    image,
-                    target_size,
-                    method=Image.Resampling.LANCZOS,
-                    color=(0, 0, 0, 0) if image.mode == "RGBA" else "white",
-                    centering=(0.5, 0.5),
+                target_width, target_height = target_size
+                cover_scale = max(target_width / image.width, target_height / image.height)
+                crop_pixels = max(
+                    image.width * cover_scale - target_width,
+                    image.height * cover_scale - target_height,
                 )
+                # Fix small size mismatches without cutting into a substantially different composition.
+                if crop_pixels <= 16:
+                    image = ImageOps.fit(image, target_size, method=Image.Resampling.LANCZOS)
+                elif not allow_letterbox:
+                    raise StudioError("invalid_output_ratio", "模型返回的画布比例与底稿不符", 502)
+                else:
+                    image = ImageOps.pad(
+                        image,
+                        target_size,
+                        method=Image.Resampling.LANCZOS,
+                        color=(0, 0, 0, 0) if image.mode == "RGBA" else "white",
+                    )
             buffer = io.BytesIO()
             image.save(buffer, format="PNG", optimize=True)
             png = buffer.getvalue()
             width, height = image.size
+    except StudioError:
+        raise
     except Exception as exc:  # noqa: BLE001 - provider payload is untrusted
         raise StudioError("invalid_output", "模型返回的图片无法解码", 502) from exc
 
@@ -303,7 +320,6 @@ def _model_input_images(
     *,
     include_style: bool = True,
     extra_reference_asset_ids: list[str] | None = None,
-    reference_mode: str = "legacy",
 ) -> list[dict[str, str]]:
     images: list[dict[str, str]] = []
     asset_ids = [
@@ -320,10 +336,11 @@ def _model_input_images(
         asset_ids.extend(
             (asset_id, "style_reference") for asset_id in dict.fromkeys(style_ids)
         )
-    edit_ids = ([(source_asset_id, "current_design")] if source_asset_id else []) + [
+    if source_asset_id:
+        asset_ids.append((source_asset_id, "current_design"))
+    asset_ids.extend(
         (asset_id, "edit_reference") for asset_id in dict.fromkeys(extra_reference_asset_ids or [])
-    ]
-    asset_ids = [*edit_ids, *asset_ids] if reference_mode == "unified" else [*asset_ids, *edit_ids]
+    )
 
     for asset_id, role in asset_ids:
         asset = db.assets.find_one({"_id": asset_id})
@@ -680,7 +697,7 @@ def _gateway_edit_branch(
     *,
     task_id: str,
     version: int,
-    task_input: dict[str, Any],
+    original_input: dict[str, Any],
     source_asset: dict[str, Any],
     size: str,
     image_model: str,
@@ -688,14 +705,13 @@ def _gateway_edit_branch(
     prompt: str,
     target_size: tuple[int, int],
     reference_asset_ids: list[str],
-    reference_mode: str = "legacy",
 ) -> list[dict[str, Any]]:
     original_refs: list[ImageRef] = []
     source_ref: ImageRef | None = None
     edit_refs: list[ImageRef] = []
     asset_id: str | None = None
     try:
-        original_refs = _load_reference_images(db, store, task_input, include_style=False)
+        original_refs = _load_reference_images(db, store, original_input, include_style=False)
         _set_edit_branch(
             db,
             task_id,
@@ -709,7 +725,7 @@ def _gateway_edit_branch(
         ]
         data = client.edit_image(
             prompt,
-            [source_ref, *edit_refs, *original_refs] if reference_mode == "unified" else [*original_refs, source_ref, *edit_refs],
+            [*original_refs, source_ref, *edit_refs],
             size=size,
             model=gateway_model_name(image_model),
         )
@@ -832,48 +848,8 @@ def run_edit(
             (task.get("edit") or {}).get("image_model")
             or task_input.get("image_model") or settings.core_ai_image_model
         )
-        product_count = len(_manual_reference_ids(task_input))
-        original_count = product_count + (1 if task_input.get("logo_asset_id") else 0)
-        image_roles: list[str] = []
-        if product_count:
-            product_range = "1" if product_count == 1 else f"1-{product_count}"
-            image_roles.append(
-                f"Original content image(s): {product_range}. "
-                "Use these originals only to check subject identity and details; "
-                "do not reconstruct the current poster from them."
-            )
-        if task_input.get("logo_asset_id"):
-            image_roles.append(
-                f"Image {product_count + 1} is the original logo. "
-                "Preserve its original shape, wording, proportions, and colors."
-            )
-        image_roles.append(
-            f"Image {original_count + 1} is the current poster to edit. "
-            "Preserve its existing image regions except where the current edit request requires changes."
-        )
-        if reference_asset_ids:
-            first_index = original_count + 2
-            if len(reference_asset_ids) == 1:
-                image_roles.append(
-                    f"Image {first_index} is this turn's user-supplied edit reference 1. "
-                    "Use it only as a reference for the requested change; do not replace "
-                    "the current poster wholesale."
-                )
-            else:
-                image_roles.append(
-                    f"Images {first_index}-{first_index + len(reference_asset_ids) - 1} "
-                    "are this turn's user-supplied edit references in order. "
-                    "Use them only as references for the requested change; do not replace "
-                    "the current poster wholesale."
-                )
-            image_roles.append(
-                f"The request names the current poster @海报 (image {original_count + 1}) and "
-                "names this turn's references @图1 up to "
-                f"@图{len(reference_asset_ids)} in the order above."
-            )
         if reference_mode == "unified":
-            # The request text names the poster @海报 and the references @图1..@图N; keep the
-            # payload positions in the same sentence so the model never has to guess.
+            original_input = {}
             image_roles = [
                 "图片1（@海报）：当前海报，作为本次改图底图；只修改用户指定部分，其他内容与排版保持不变。",
                 *[
@@ -881,15 +857,46 @@ def run_edit(
                     for index in range(2, len(reference_asset_ids) + 2)
                 ],
             ]
-            if original_count:
-                first_original = len(reference_asset_ids) + 2
+        else:
+            original_input = task_input
+            product_count = len(_manual_reference_ids(original_input))
+            original_count = product_count + (1 if original_input.get("logo_asset_id") else 0)
+            image_roles = []
+            if product_count:
+                product_range = "1" if product_count == 1 else f"1-{product_count}"
                 image_roles.append(
-                    f"图片{first_original}-{first_original + original_count - 1}：历史任务参考图，"
-                    "仅供核对主体及品牌细节，不得据此重新构建当前海报。"
+                    f"Original content image(s): {product_range}. "
+                    "Use these originals only to check subject identity and details; "
+                    "do not reconstruct the current poster from them."
                 )
-            if task_input.get("logo_asset_id"):
+            if original_input.get("logo_asset_id"):
                 image_roles.append(
-                    f"图片{len(reference_asset_ids) + 2 + product_count}：原任务 Logo，保留图形、文字、比例和原色。"
+                    f"Image {product_count + 1} is the original logo. "
+                    "Preserve its original shape, wording, proportions, and colors."
+                )
+            image_roles.append(
+                f"Image {original_count + 1} is the current poster to edit. "
+                "Preserve its existing image regions except where the current edit request requires changes."
+            )
+            if reference_asset_ids:
+                first_index = original_count + 2
+                if len(reference_asset_ids) == 1:
+                    image_roles.append(
+                        f"Image {first_index} is this turn's user-supplied edit reference 1. "
+                        "Use it only as a reference for the requested change; do not replace "
+                        "the current poster wholesale."
+                    )
+                else:
+                    image_roles.append(
+                        f"Images {first_index}-{first_index + len(reference_asset_ids) - 1} "
+                        "are this turn's user-supplied edit references in order. "
+                        "Use them only as references for the requested change; do not replace "
+                        "the current poster wholesale."
+                    )
+                image_roles.append(
+                    f"The request names the current poster @海报 (image {original_count + 1}) and "
+                    "names this turn's references @图1 up to "
+                    f"@图{len(reference_asset_ids)} in the order above."
                 )
         merchant_block = f"\n\n{merchant_context}" if merchant_context else ""
         prompt = (
@@ -911,11 +918,10 @@ def run_edit(
             },
             "images": _model_input_images(
                 db,
-                task_input,
+                original_input,
                 source_asset_id=str(source_asset["_id"]),
                 include_style=False,
                 extra_reference_asset_ids=reference_asset_ids,
-                reference_mode=reference_mode,
             ),
         }
         version = _next_version(db, task_id)
@@ -958,7 +964,7 @@ def run_edit(
             client,
             task_id=task_id,
             version=version,
-            task_input=task_input,
+            original_input=original_input,
             source_asset=source_asset,
             size=size,
             image_model=image_model,
@@ -966,7 +972,6 @@ def run_edit(
             prompt=prompt,
             target_size=(width, height),
             reference_asset_ids=reference_asset_ids,
-            reference_mode=reference_mode,
         )
         updated = db.whole_tasks.find_one({"_id": task_id}) or {}
         gateway = ((updated.get("edit") or {}).get("branches") or {}).get("gateway") or {}
