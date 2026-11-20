@@ -277,14 +277,18 @@ def _attach_local_ids(db: Any, am_items: list[dict[str, Any]]) -> list[dict[str,
 def _resolve_item(item: dict[str, Any], local: dict[str, Any] | None) -> dict[str, Any]:
     if local is None:
         return item
+    local_merchant_id = str(local.get("merchant_id") or "")
     return {
         **item,
         "id": str(local["_id"]),
-        "original_name": str(local.get("original_name") or item["original_name"]),
-        "width": int(local.get("width") or 0),
-        "height": int(local.get("height") or 0),
-        "mime_type": str(local.get("mime_type") or item["mime_type"]),
+        "original_name": str(local.get("original_name") or item.get("original_name") or ""),
+        "width": int(local.get("width") or item.get("width") or 0),
+        "height": int(local.get("height") or item.get("height") or 0),
+        "mime_type": str(local.get("mime_type") or item.get("mime_type") or "image/png"),
         "source": "upload",
+        "thumb_url": asset_thumb_url(local_merchant_id, str(local["_id"]))
+        if local_merchant_id
+        else item.get("thumb_url"),
     }
 
 

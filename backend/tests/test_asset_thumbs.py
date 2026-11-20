@@ -155,3 +155,30 @@ def test_local_item_rows_expose_a_thumb_url():
     row = am_assets._local_item("m1", {"_id": "asset_2", "original_name": "dish.png"})
     assert row["thumb_url"] == "/api/merchants/m1/assets/asset_2/thumb?w=480"
     assert row["url"] == "/api/merchants/m1/assets/asset_2/file"
+
+
+def test_resolve_item_attaches_thumb_url_for_mapped_local_assets():
+    from app.services import am_assets
+
+    item = {"id": "am_123", "original_name": "dish.png", "url": "https://am/blob"}
+    resolved = am_assets._resolve_item(
+        item, {"_id": "asset_local", "merchant_id": "m1", "original_name": "dish.png"}
+    )
+    assert resolved["thumb_url"] == "/api/merchants/m1/assets/asset_local/thumb?w=480"
+
+
+def test_asset_out_exposes_a_thumb_url():
+    from app.routes.assets import asset_out
+
+    doc = {
+        "_id": "asset_abc",
+        "merchant_id": "m1",
+        "original_name": "photo.png",
+        "width": 1080,
+        "height": 1350,
+        "mime_type": "image/png",
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+    out = asset_out(doc)
+    assert out["thumb_url"] == "/api/merchants/m1/assets/asset_abc/thumb?w=480"
+    assert out["url"] == "/api/merchants/m1/assets/asset_abc/file"

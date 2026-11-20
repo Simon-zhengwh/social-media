@@ -682,6 +682,7 @@ export default function BrandStudio({
                     <ZoomableImage
                       className="brand-reference-image"
                       src={reference.url}
+                      previewSrc={reference.thumb_url || undefined}
                       alt={reference.original_name}
                       title={reference.original_name}
                     />

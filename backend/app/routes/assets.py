@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.api_errors import am_http_error
-from app.api_paths import asset_url
+from app.api_paths import asset_thumb_url, asset_url
 from app.middleware import is_local_bypass
 from app.request_context import request_db, request_merchant_id, request_store
 from app.services import (
@@ -74,13 +74,15 @@ def _queue_description(request: Request, asset_id: str) -> None:
 
 def asset_out(doc: dict[str, Any]) -> dict[str, Any]:
     merchant_id = str(doc.get("merchant_id") or "")
+    asset_id = str(doc["_id"])
     return {
         "id": doc["_id"],
         "original_name": doc["original_name"],
         "width": doc["width"],
         "height": doc["height"],
         "mime_type": doc["mime_type"],
-        "url": doc.get("prepared_url") or doc.get("url") or asset_url(merchant_id, str(doc["_id"])),
+        "url": doc.get("prepared_url") or doc.get("url") or asset_url(merchant_id, asset_id),
+        "thumb_url": asset_thumb_url(merchant_id, asset_id),
         "created_at": doc["created_at"],
         "source": doc.get("source") or "upload",
         "read_only": False,

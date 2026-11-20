@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from app.services import asset_index
-from app.api_paths import asset_url
+from app.api_paths import asset_thumb_url, asset_url
 from app.services.asset_index import AssetIndexError
 from app.services.asset_recognition import KEYWORD_NAMING_RULES
 from app.services.core_ai import CoreAIError
@@ -336,6 +336,7 @@ def _item(db: Any, record: dict[str, Any], merchant_id: str = "") -> dict[str, A
     # Local uploads keep no stored URL: the same file endpoint the library grid uses serves them.
     stored = str((asset or {}).get("prepared_url") or (asset or {}).get("url") or record.get("url") or "")
     url = stored or asset_url(merchant_id, asset_id)
+    effective_merchant_id = str((asset or {}).get("merchant_id") or merchant_id or "")
     item = {
         "id": asset_id,
         "original_name": name,
@@ -343,6 +344,7 @@ def _item(db: Any, record: dict[str, Any], merchant_id: str = "") -> dict[str, A
         "height": int((asset or {}).get("height") or 0),
         "mime_type": str((asset or {}).get("mime_type") or record.get("mime_type") or "image/png"),
         "url": url,
+        "thumb_url": asset_thumb_url(effective_merchant_id, asset_id) if asset else None,
         "created_at": record.get("created_at"),
         "source": str(record.get("source") or "upload"),
         "read_only": asset is None,

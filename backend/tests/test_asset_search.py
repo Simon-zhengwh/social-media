@@ -447,3 +447,4 @@ def test_search_items_fall_back_to_the_file_endpoint(db):
 
     # Local uploads keep no stored URL: without the fallback the card renders a broken image.
     assert page["items"][0]["url"] == "/api/merchants/m1/assets/local/file"
+    assert page["items"][0]["thumb_url"] == "/api/merchants/m1/assets/local/thumb?w=480"

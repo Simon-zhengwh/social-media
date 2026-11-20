@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from PIL import Image, ImageOps
 
-from app.api_paths import asset_url, brand_cover_url
+from app.api_paths import asset_thumb_url, asset_url, brand_cover_url
 from app.request_context import request_db, request_merchant_id, request_profile, request_store
 from app.schemas import BrandUpdate, DuplicateBrandRequest
 from app.services import (
@@ -84,6 +84,7 @@ def _reference_images(
             "asset_id": asset_id,
             "original_name": asset.get("original_name") or "",
             "url": asset.get("prepared_url") or asset.get("url") or asset_url(merchant_id, asset_id),
+            "thumb_url": asset_thumb_url(merchant_id, asset_id),
             "width": int(asset.get("width") or 0),
             "height": int(asset.get("height") or 0),
             "is_cover": asset_id == cover_asset_id,

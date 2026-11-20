@@ -2,6 +2,7 @@ export type BrandMode = 'preset' | 'reference' | 'none'
 export type Ratio = '1:1' | '9:16' | '4:5' | '16:9' | '3:4' | '4:3'
 export type ImageModel =
   | 'gpt-image-2.5-sunburst'
+  | 'gemini-3-pro-image'
   | 'gemini-3.1-flash-image'
   | 'seedream-5-pro-image-to-image'
   | 'seedream-5.5-image-to-image'
@@ -65,6 +66,7 @@ export type BrandReferenceImage = {
   asset_id: string
   original_name: string
   url: string
+  thumb_url?: string | null
   width: number
   height: number
   is_cover: boolean
