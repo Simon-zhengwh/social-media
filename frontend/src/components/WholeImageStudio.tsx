@@ -1023,7 +1023,7 @@ export default function WholeImageStudio({
     // The series workbench plans groups before it creates any page task, and one click
     // submits every model that has a group count instead of only the viewed model.
     if (seriesEnabled && mode === 'series') {
-      await submitSeriesRound()
+      await submitSeriesRound(onlyModel ?? selectedModel, explicitCount)
       return
     }
     const resolvedCount = (model: ImageModel) =>
@@ -1102,23 +1102,22 @@ export default function WholeImageStudio({
     }))
   }
 
-  const seriesGroupTotal = IMAGE_MODEL_OPTIONS.reduce((total, option) =>
-    total + Math.max(0, modelCounts[option.value] ?? 0), 0)
   const seriesSubmitError = Object.values(modelSubmissions).find(submission => submission?.error)?.error ?? null
 
-  const seriesGroupPlan = (onlyModel?: ImageModel) => IMAGE_MODEL_OPTIONS
-    .filter((option) => (!onlyModel || option.value === onlyModel) && (modelCounts[option.value] ?? 0) > 0)
-    .map((option) => ({ image_model: option.value, group_count: modelCounts[option.value] ?? 0 }))
-
   /**
-   * One series submission creates one round. The model count is a group count.
+   * One series submission creates one round for the selected model. The model count is a group count.
    */
-  const submitSeriesRound = async (onlyModel?: ImageModel) => {
-    const groups = seriesGroupPlan(onlyModel)
-    if (!groups.length) {
-      setError('请选择每个模型的组数')
+  const submitSeriesRound = async (onlyModel?: ImageModel, explicitCount?: number) => {
+    const targetModel = onlyModel ?? selectedModel
+    const count = explicitCount ?? Math.max(1, modelCounts[targetModel] ?? 1)
+    if (!IMAGE_MODEL_OPTIONS.some((option) => option.value === targetModel)) {
+      setError('当前模型不可用，请切换其他模型')
       return
     }
+    if ((modelCounts[targetModel] ?? 0) !== count) {
+      setModelCounts((previous) => ({ ...previous, [targetModel]: count }))
+    }
+    const groups = [{ image_model: targetModel, group_count: count }]
     let submittedPrompt: string
     try { submittedPrompt = serializeImagePrompt(prompt, promptImages) }
     catch (reason: unknown) { setError(errorMessage(reason)); return }
@@ -1130,7 +1129,7 @@ export default function WholeImageStudio({
     setError(null)
     setModelSubmissions((previous) => {
       const next = { ...previous }
-      models.forEach((model) => { next[model] = { batchId: submitId, count: modelCounts[model] ?? 0 } })
+      groups.forEach((group) => { next[group.image_model] = { batchId: submitId, count: group.group_count } })
       return next
     })
     try {
@@ -1795,11 +1794,12 @@ export default function WholeImageStudio({
             onSelectModel={seriesMode ? handleSelectSeriesModel : handleSelectModel}
             countUnit={seriesMode ? '组' : '张'}
             countNoun={seriesMode ? '生成组数' : '生成张数'}
-            seriesSubmit={seriesMode ? {
-              total: seriesGroupTotal,
+            seriesState={seriesMode ? {
               busy: seriesSubmitting,
+              running: resultModelTabs.some(item => item.value === selectedModel && item.running),
+              hasHistory: (series?.groups ?? []).some(group => normalizeImageModel(group.image_model) === selectedModel),
+              runningModels: resultModelTabs.filter(item => item.running).map(item => item.value),
               error: seriesSubmitError,
-              onGenerate: () => void handleGenerate(),
             } : undefined}
           />
         }

@@ -100,7 +100,6 @@ export default function OriginalReplacementPanel({
   const [loading, setLoading] = useState(true)
   const [operation, setOperation] = useState<'agent' | 'model' | 'feedback' | 'apply' | 'refresh' | 'restore' | 'retry' | null>(null)
   const [feedback, setFeedback] = useState('')
-  const [poolSelection, setPoolSelection] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [clock, setClock] = useState(Date.now)
@@ -166,8 +165,7 @@ export default function OriginalReplacementPanel({
   const defaultRows = () => initialPhotos ? carriedFrom(initialPhotos, task, assets) : carried(task, assets)
   const updateRow = (id: string, values: Partial<Row>) => setRows((previous) => previous.map((item) => item.id === id ? { ...item, ...values } : item))
   const addPoolRow = (assetId: string) => {
-    const asset = assets.find((item) => item.id === assetId)
-    setPoolSelection('')
+    const asset = poolAssets.find((item) => item.id === assetId) ?? assets.find((item) => item.id === assetId)
     if (!asset || rows.some((item) => item.asset.id === assetId)) return
     setRows((previous) => [...previous, row(asset)])
   }
@@ -392,16 +390,31 @@ export default function OriginalReplacementPanel({
             })}
           </div>
           {poolOptions.length ? (
-            <label className="original-replacement-pool">素材池
-              <select value={poolSelection} disabled={Boolean(operation)}
-                aria-label="从素材池添加原照"
-                onChange={(event) => addPoolRow(event.target.value)}>
-                <option value="">添加本任务素材池中的图片…</option>
-                {poolOptions.map((asset) => (
-                  <option key={asset.id} value={asset.id}>{assetDisplayName(asset.original_name)}</option>
-                ))}
-              </select>
-            </label>
+            <section className="original-replacement-pool" aria-label="从素材池添加原照">
+              <div className="original-replacement-pool-head">
+                <span>素材池</span>
+                <span className="original-replacement-pool-count">{poolOptions.length}</span>
+              </div>
+              <div className="original-replacement-pool-list">
+                {poolOptions.map((asset) => {
+                  const name = assetDisplayName(asset.original_name)
+                  return (
+                    <button
+                      key={asset.id}
+                      type="button"
+                      className="original-replacement-pool-item"
+                      disabled={Boolean(operation)}
+                      aria-label={`添加素材：${name}`}
+                      title={name}
+                      onClick={() => addPoolRow(asset.id)}
+                    >
+                      <img src={asset.thumb_url || asset.url} alt="" loading="lazy" decoding="async" />
+                      <span className="original-replacement-pool-add" aria-hidden="true">+</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </section>
           ) : null}
           {photos.length === 0 && !logo ? <p className="replacement-help">请先在设计需求中添加参考图或选择 Logo。</p> : null}
           {replacements.length > 5 ? <p className="original-replacement-warning" role="alert">最多提交 5 项，请移除部分原照或关闭 Logo。</p> : null}

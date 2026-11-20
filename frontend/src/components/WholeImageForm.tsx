@@ -146,7 +146,8 @@ export default function WholeImageForm({
           {seriesEnabled || headerAction ? (
             <div className="poster-mode-row">
               {seriesEnabled ? (
-                <div className="poster-mode-switch" role="group" aria-label="海报模式">
+                <div className={`poster-mode-switch${modeLocked ? ' is-locked' : ''}`} role="group" aria-label="海报模式"
+                  title={modeLocked ? '海报创建后模式已锁定，需要更换请新建海报' : undefined}>
                   <button type="button" className={mode === 'single' ? 'is-active' : ''} aria-pressed={mode === 'single'}
                     disabled={busy || modeLocked} onClick={() => onModeChange?.('single')}>单张</button>
                   <button type="button" className={mode === 'series' ? 'is-active' : ''} aria-pressed={mode === 'series'}

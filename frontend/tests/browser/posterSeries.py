@@ -507,7 +507,7 @@ def main() -> int:
         studio.wait_for("document.querySelectorAll('.original-replacement-row').length > 0", timeout=20)
         defaults = studio.eval_json('''JSON.stringify({
           targets: [...document.querySelectorAll('.original-replacement-row .replacement-target')].map(el => el.value),
-          poolOptions: [...document.querySelectorAll('.original-replacement-pool option')].map(el => el.textContent),
+          poolOptions: [...document.querySelectorAll('.original-replacement-pool .original-replacement-pool-item')].map(el => el.getAttribute('aria-label') || el.getAttribute('title') || ''),
         })''')
         check('replacement defaults come from the current version content refs',
               defaults['targets'] == ['莓果杯'], defaults)
