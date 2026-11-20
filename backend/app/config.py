@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     # Original-photo replacements retain the existing environment variable names.
     core_ai_background_replace_agent_id: str = "5a162c34-f333-453f-9835-de6a4f96e3fb"
     core_ai_background_replace_agent_timeout_seconds: int = 2700
+    # Opt-in poster series (cover + interior pages). Off in every environment until an
+    # operator turns it on; single-poster requests keep their existing behaviour.
+    poster_series_enabled: bool = False
+    poster_series_default_pages: int = 2
+    poster_series_max_pages: int = 12
+    # Bounded retry for transient network errors while uploading a page's assets to Core AI.
+    # Generation triggers are never retried: a duplicate trigger could render twice.
+    poster_series_asset_upload_attempts: int = 3
+    poster_series_asset_upload_retry_seconds: float = 1.0
+    # Native Core AI Agent that plans and generates each page through generate_image.
+    # Empty means series generation is unavailable (no silent direct-gateway fallback).
+    core_ai_series_agent_id: str = ""
+    core_ai_series_agent_timeout_seconds: int = 1800
     core_ai_image_model: str = "gpt-image-2.5-sunburst"
     core_ai_design_model: str = "gpt-6.1-sol"
     core_ai_image_quality: str = "high"

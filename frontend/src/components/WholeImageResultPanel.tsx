@@ -1,29 +1,20 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { ImageModel, WholeImageArtifact, WholeImageOutput, WholeImageTask, WholeImageVersion } from '../types'
+import { useState, type ReactNode } from 'react'
+import type { WholeImageArtifact, WholeImageOutput, WholeImageTask } from '../types'
 import WholeArtifactPreview from './WholeArtifactPreview'
-import ModelCandidateGroup from './ModelCandidateGroup'
-import CandidateVersionPicker from './CandidateVersionPicker'
 
 type Props = {
   task: WholeImageTask | null
   busy: boolean
   onRetry: (candidate: WholeImageTask) => void
-  selectedModel: ImageModel
-  candidates?: WholeImageTask[]
-  onSelectCandidate?: (candidate: WholeImageTask) => void
   onSelectOutput?: (versionId: string, outputId: string) => void
   selectingOutput?: boolean
-  selectingCandidateDisabled?: boolean
-  deletingCandidateId?: string | null
-  onDeleteCandidate: (candidate: WholeImageTask) => void
+  navigation?: ReactNode
+  loading?: boolean
+  emptyMessage?: string
   children?: ReactNode
-  versions: WholeImageVersion[]
-  versionsLoading: boolean
-  versionSelectionDisabled: boolean
-  onSelectVersion: (versionId: string) => Promise<boolean>
 }
 
-function GhostPreview() {
+function GhostPreview({ label }: { label?: string }) {
   return (
     <div className="preview-empty">
       <div className="ghost-card" aria-hidden="true">
@@ -32,7 +23,7 @@ function GhostPreview() {
         <span className="ghost-block ghost-block-short" />
       </div>
       <div className="preview-empty-copy">
-        <strong>选择素材后生成完整设计</strong>
+        <strong>{label || '选择素材后生成完整设计'}</strong>
       </div>
     </div>
   )
@@ -146,61 +137,17 @@ function OutputCard({
 }
 
 export default function WholeImageResultPanel({
-  task: confirmedTask,
+  task,
   busy,
   onRetry,
-  selectedModel,
-  candidates = [],
-  onSelectCandidate,
   onSelectOutput,
   selectingOutput = false,
-  selectingCandidateDisabled = false,
-  deletingCandidateId = null,
-  onDeleteCandidate,
+  navigation,
+  loading = false,
+  emptyMessage,
   children,
-  versions,
-  versionsLoading,
-  versionSelectionDisabled,
-  onSelectVersion,
 }: Props) {
   const [artifactPreview, setArtifactPreview] = useState<WholeImageArtifact | null>(null)
-  const previewRef = useRef<HTMLElement>(null)
-  const [versionAnchor, setVersionAnchor] = useState<{ taskId: string; element: HTMLButtonElement } | null>(null)
-  const closeVersionPicker = useCallback(() => setVersionAnchor(null), [])
-  const task = candidates.find(candidate => candidate.id === confirmedTask?.id) ?? confirmedTask
-  const selectionDisabled = selectingCandidateDisabled || deletingCandidateId !== null
-  const candidateIndex = Math.max(
-    0,
-    candidates.findIndex((candidate) => candidate.id === task?.id),
-  )
-  useEffect(() => {
-    if (candidates.length <= 1 || selectionDisabled || !onSelectCandidate) return
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      const offset = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1
-        : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : 0
-      if (!offset || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return
-      const target = event.target
-      if (target instanceof HTMLElement && (
-        target.isContentEditable ||
-        target.closest('input, textarea, select, [role="textbox"], [role="tab"], [role="menu"], [role="listbox"], [role="combobox"], [role="dialog"]')
-      )) return
-      if (document.querySelector('dialog[open], [aria-modal="true"]')) return
-
-      event.preventDefault()
-      setVersionAnchor(null)
-      const nextIndex = (candidateIndex + offset + candidates.length) % candidates.length
-      onSelectCandidate(candidates[nextIndex])
-      const thumbnail = previewRef.current?.querySelectorAll<HTMLButtonElement>('.candidate-thumbnail')[nextIndex]
-      thumbnail?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-      if (target instanceof HTMLElement && target.closest('.candidate-thumbnail')) {
-        thumbnail?.focus({ preventScroll: true })
-      }
-    }
-
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [candidateIndex, candidates, onSelectCandidate, selectionDisabled])
   const isActive = Boolean(task && (task.status === 'queued' || task.status === 'running'))
   const isEditing = task?.edit.status === 'running'
   const currentOutput =
@@ -220,31 +167,12 @@ export default function WholeImageResultPanel({
   const displayOutputs = isEditing
     ? branches?.gateway?.outputs ?? []
     : task?.outputs ?? []
-  const comparisonVisible = Boolean(
-    task && (displayOutputs.length > 1 || task.requires_output_selection),
-  )
+  const comparisonVisible = Boolean(task?.requires_output_selection)
 
   return (
-    <section ref={previewRef} className="studio-preview" aria-label="海报预览" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown">
-      <div className={`preview-workspace${candidates.length ? ' has-candidates' : ''}`}>
-        {candidates.length ? (
-          <aside className="candidate-carousel" aria-label="候选图片">
-            <div className="candidate-model-groups">
-              <ModelCandidateGroup model={selectedModel} candidates={candidates} selectedTaskId={task?.id}
-                selectionDisabled={selectionDisabled} deletingCandidateId={deletingCandidateId}
-                expandedTaskId={versionAnchor?.taskId === task?.id && !versionsLoading && versions.length > 1 ? versionAnchor?.taskId : null}
-                onSelect={(candidate, element) => {
-                  if (versionAnchor?.taskId === candidate.id) {
-                    setVersionAnchor(null)
-                    return
-                  }
-                  onSelectCandidate?.(candidate)
-                  setVersionAnchor({ taskId: candidate.id, element })
-                }}
-                onDelete={candidate => { setVersionAnchor(null); onDeleteCandidate(candidate) }} />
-            </div>
-          </aside>
-        ) : null}
+    <section className="studio-preview" aria-label="海报预览" aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown">
+      <div className={`preview-workspace${navigation ? ' has-image-nav' : ''}`}>
+        {navigation}
 
         <div className="preview-main">
           <div className={`preview-frame${isReady ? ' is-ready' : ''}`}>
@@ -252,10 +180,10 @@ export default function WholeImageResultPanel({
               <div className="poster-image-button poster-image-static">
                 <img className="poster-image" src={previewUrl} alt="生成的完整设计" />
               </div>
-            ) : isActive && task ? (
+            ) : isActive || loading ? (
               <LoadingPreview />
             ) : (
-              <GhostPreview />
+              <GhostPreview label={emptyMessage} />
             )}
             {isReady && isEditing ? (
               <div className="preview-edit-overlay">
@@ -280,11 +208,7 @@ export default function WholeImageResultPanel({
       {comparisonVisible && task ? (
         <div className="comparison-board">
           <div className="comparison-board-head">
-            <div>
-              <span className="eyebrow">SIDE BY SIDE</span>
-              <h3>{task.requires_output_selection ? '选择一张结果继续修改' : '本轮结果对比'}</h3>
-            </div>
-            {task.requires_output_selection ? <span className="comparison-required">需手动选择</span> : null}
+            <h3>选择一张结果继续修改</h3>
           </div>
           {task.edit.outcome === 'partial' ? (
             <p className="comparison-partial">本轮有一条链路失败，已保留成功结果。</p>
@@ -316,22 +240,13 @@ export default function WholeImageResultPanel({
         <div className="result-error" role="alert">
           <strong>{task?.edit.status === 'failed' ? '修改未完成' : '生成失败'}</strong>
           <span>{errorText}</span>
-          <button type="button" className="mp-btn-secondary mp-btn-small" disabled={selectingCandidateDisabled || task?.status === 'running' || task?.status === 'queued'} onClick={() => task && onRetry(task)}>
+          <button type="button" className="mp-btn-secondary mp-btn-small" disabled={selectingOutput || busy || task?.status === 'running' || task?.status === 'queued'} onClick={() => task && onRetry(task)}>
             {task?.edit.status === 'failed' ? '重新尝试这次修改' : '重新生成'}
           </button>
         </div>
       ) : null}
 
       {busy && !task ? <p className="result-hint">正在创建任务…</p> : null}
-      {versionAnchor ? (
-        <CandidateVersionPicker key={versionAnchor.taskId} anchor={versionAnchor.element}
-          versions={versionAnchor.taskId === task?.id ? versions : []}
-          loading={versionsLoading || versionAnchor.taskId !== task?.id}
-          currentVersionId={task?.current_version_id ?? null}
-          busy={versionSelectionDisabled || selectionDisabled}
-          onSelect={onSelectVersion}
-          onClose={closeVersionPicker} />
-      ) : null}
       <WholeArtifactPreview
         artifact={artifactPreview}
         onClose={() => setArtifactPreview(null)}

@@ -41,6 +41,24 @@ export function mergeCandidates(current: WholeImageTask[], incoming: WholeImageT
   return [...merged.values()]
 }
 
+export function candidateRounds(tasks: WholeImageTask[]) {
+  const batches = new Map<string, WholeImageTask[]>()
+  const ordered = [...tasks].sort((a, b) => a.created_at.localeCompare(b.created_at))
+  for (const task of ordered) {
+    // Legacy tasks without a batch ID each represent an independent generation.
+    const id = task.input.candidate_batch_id ?? task.id
+    const batch = batches.get(id)
+    if (batch) batch.push(task)
+    else batches.set(id, [task])
+  }
+  return Array.from(batches, ([id, candidates], index) => ({
+    id,
+    round: index + 1,
+    model: normalizeImageModel(candidates[0].input.image_model),
+    candidates: candidates.sort((a, b) => (a.input.candidate_index ?? 0) - (b.input.candidate_index ?? 0)),
+  }))
+}
+
 export function modelGenerationState(tasks: WholeImageTask[], model: ImageModel) {
   const matching = tasks.filter(task => normalizeImageModel(task.input.image_model) === normalizeImageModel(model))
   const latest = matching.at(-1)

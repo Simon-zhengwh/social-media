@@ -18,12 +18,14 @@ from app.api_paths import asset_url, original_replacement_download_url
 from app.config import Settings
 from app.schemas import OriginalReplacementInput
 from app.services import agent_image
+from app.services import poster_costs
 from app.services.core_ai import AgentRunResult, CoreAIClient, CoreAIError
 from app.services.object_store import ObjectStore
 from app.time_utils import utc_iso
 
 logger = logging.getLogger(__name__)
 ACTIVE = ["queued", "running"]
+SERIES_LOGO_OUTPUT_RULE = "替换交付的底图和 HTML 画布不要绘制或嵌入 Logo，保存时由应用统一合成官方原文件。"
 _UNSUPPORTED_FORMAT_MESSAGE = "不支持此格式"
 
 # The current Core AI KIE routes select from explicit aspect ratios.
@@ -68,7 +70,8 @@ def model_candidate(model: str, source: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacements: list[dict[str, str]],
-                split_all_elements: bool = False, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+                split_all_elements: bool = False, metadata: dict[str, Any] | None = None,
+                logo_reference_asset_id: str = "") -> dict[str, Any]:
     from pydantic import ValidationError
 
     try:
@@ -80,9 +83,11 @@ def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacemen
     if source["width"] <= 0 or source["height"] <= 0:
         raise OriginalReplacementError("reference_invalid", "原图尺寸无效，请重新上传", 422)
     items = [{"target": item.target, **_asset(db, item.asset_id)} for item in payload.replacements]
+    logo_reference = _asset(db, logo_reference_asset_id) if logo_reference_asset_id else None
     now = utcnow()
     doc = {"_id": f"brep_{uuid.uuid4().hex}", "status": "queued", "stage": "queued", "progress": 0,
            "whole_task_id": whole_task_id, "input": payload.model_dump(), "source": source, "replacements": items,
+           "logo_reference": logo_reference,
            "output": None, "agent_id": None, "run_id": None, "agent_input": None, "agent_output": None,
            "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now,
            **(metadata or {})}
@@ -106,6 +111,14 @@ def _fail(db: Any, task_id: str, exc: Exception) -> None:
     status = "partial" if code in {"agent_image_missing", "agent_image_ambiguous"} else "failed"
     _update(db, task_id, status=status, stage="failed", progress=0,
             error={"code": code, "message": getattr(exc, "message", None) or str(exc) or "替换失败"})
+
+
+def input_images(task: dict[str, Any]) -> list[dict[str, Any]]:
+    images = [{**task["source"], "role": "替换底图"},
+              *({**item, "role": item["target"] or "自动识别"} for item in task["replacements"])]
+    if logo_reference := task.get("logo_reference"):
+        images.append({**logo_reference, "role": "官方 Logo 参考"})
+    return images
 
 
 def _build_input(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient, task: dict[str, Any]) -> str:
@@ -152,11 +165,15 @@ def _build_input(db: Any, settings: Settings, store: ObjectStore, client: CoreAI
                 "未要求全部拆层时，只额外拆出 Logo，其他未指定设计保持固定。"
             )
     if data.get("split_all_elements", False):
+        logo_layer = "" if task.get("logo_reference") else "、Logo"
         instruction += (
-            "\n同时将整张海报的全部设计元素拆成可独立调整的图层，包括标题、所有文字组、Logo、笔刷、贴纸、插画、装饰、分隔线和照片。"
+            f"\n同时将整张海报的全部设计元素拆成可独立调整的图层，包括标题、所有文字组{logo_layer}、笔刷、贴纸、插画、装饰、分隔线和照片。"
             "文字按原稿内容与风格制作为独立艺术字透明 PNG 图层，不改写文案；照片使用对应原照，底图完整不透明。"
             "按 skill 的元素拆层流程交付离线 HTML、完整图层，以及与图1同尺寸的不透明最终 PNG。"
         )
+    if logo_reference := task.get("logo_reference"):
+        image_ids.append(logo_reference["asset_id"])
+        instruction += f"\n图{len(image_ids)}是官方 Logo，仅用于识别品牌标识。" + SERIES_LOGO_OUTPUT_RULE
     return instruction + "\n\n" + "\n".join(url(asset_id) for asset_id in image_ids)
 
 
@@ -342,7 +359,9 @@ def run_task(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClie
             agent_id = settings.core_ai_background_replace_agent_id
             timeout = settings.core_ai_background_replace_agent_timeout_seconds
             _update(db, task_id, agent_input=text, agent_id=agent_id)
-            run_id = client.trigger_agent(agent_id, text, timeout_seconds=timeout)
+            parent = db.whole_tasks.find_one({"_id": task.get("whole_task_id")}) or {}
+            with poster_costs.track_task(db, parent, "replace"):
+                run_id = client.trigger_agent(agent_id, text, timeout_seconds=timeout)
             started = utcnow()
             _update(db, task_id, run_id=run_id, started_at=started,
                     deadline_at=started + timedelta(seconds=timeout), stage="agent_running", progress=30)
@@ -437,7 +456,7 @@ def task_out(doc: dict[str, Any]) -> dict[str, Any]:
         } if candidate_output else None
         candidates.append(item)
     return {"id": task_id, "kind": doc.get("kind", "agent"), "candidates": candidates,
-            **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements", "feedback",
+            **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements", "logo_reference", "feedback",
             "retry_of", "applied_candidate_model",
             "agent_id", "run_id", "agent_input", "agent_output", "error", "whole_task_id", "source_version_id",
             "source_output_id", "source_version", "applied_version_id", "applied_version"]}, "output": output,

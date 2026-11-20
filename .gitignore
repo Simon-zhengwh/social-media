@@ -38,5 +38,8 @@ docs/superpowers/
 # Local AI tooling cache (media scratch files).
 .core-ai/
 
+# Local implementation notes and UAT evidence (never part of the repo).
+.scratch/
+
 # Local dev server logs (rotated per run).
 .logs/

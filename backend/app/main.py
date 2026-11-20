@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.db import create_client, get_database
 from app.middleware import local_bypass_enabled, merchant_context_middleware
+from app.services import poster_series as poster_series_service
+from app.services import poster_series_round
 from app.routes import (
     assets,
     agent_tests,
@@ -23,6 +25,7 @@ from app.routes import (
     merchant_context,
     platforms,
     poster_edit,
+    poster_series,
     prompts,
     task_center,
     whole_image,
@@ -51,7 +54,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 
-def _initialize_indexes(db) -> None:
+def _initialize_indexes(db, settings=None) -> None:
     db.material_filter_groups.create_index([("merchant_id", 1), ("scheme_id", 1), ("version", 1), ("count", -1)])
     db.material_filter_groups.create_index([("merchant_id", 1), ("folder_id", 1)])
     db.material_filter_attempts.create_index([("merchant_id", 1), ("run_id", 1), ("file_id", 1)], unique=True)
@@ -70,7 +73,18 @@ def _initialize_indexes(db) -> None:
     db.whole_tasks.create_index([("merchant_id", 1), ("created_at", -1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.candidate_batch_id", 1), ("input.candidate_index", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.generation_workspace_id", 1), ("created_at", 1)])
+    db.whole_cost_calls.create_index([("merchant_id", 1), ("workspace_id", 1), ("created_at", 1)])
+    db.whole_cost_calls.create_index([("merchant_id", 1), ("workspace_id", 1), ("needs_sync", 1), ("next_check_at", 1)])
     db.whole_workspace_titles.create_index([("merchant_id", 1), ("workspace_id", 1)], unique=True)
+    if settings is None or getattr(settings, "poster_series_enabled", False):
+        # Opt-in feature: do not create series-only indexes while it is disabled.
+        db.whole_workspace_modes.create_index([("merchant_id", 1), ("workspace_id", 1)], unique=True)
+        db.whole_series_runs.create_index([("merchant_id", 1), ("workspace_id", 1), ("submit_id", 1)], unique=True)
+        db.whole_series_runs.create_index([("merchant_id", 1), ("workspace_id", 1), ("created_at", 1)])
+        db.whole_series_runs.create_index([("workflow", 1), ("status", 1), ("merchant_id", 1)])
+        db.whole_series_groups.create_index([("merchant_id", 1), ("workspace_id", 1), ("order", 1)])
+        db.whole_series_pages.create_index([("merchant_id", 1), ("group_id", 1), ("order", 1)])
+        db.whole_series_html_saves.create_index([("merchant_id", 1), ("group_id", 1), ("page_id", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.product_asset_ids", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.reference_asset_ids", 1)])
     db.whole_tasks.create_index([("merchant_id", 1), ("input.style_reference_asset_ids", 1)])
@@ -159,6 +173,35 @@ def _resume_original_replacements(app: FastAPI) -> None:
             ).start()
 
 
+def _resume_poster_series(app: FastAPI) -> None:
+    if not getattr(app.state.settings, "poster_series_enabled", False):
+        return
+    raw = app.state.raw_db
+    merchant_ids = raw.whole_tasks.distinct(
+        "merchant_id",
+        {"series.run_id": {"$exists": True},
+         "series.status": {"$in": ["queued", "running"]},
+         "status": {"$in": ["queued", "running", "failed"]}},
+    )
+    for merchant_id in sorted(str(value) for value in merchant_ids if value):
+        db = ScopedDatabase(raw, merchant_id)
+        threading.Thread(
+            target=poster_series_service.resume_tasks,
+            args=(db, app.state.settings, _scoped_store(app, merchant_id, db), app.state.core_ai),
+            name=f"resume-poster-series-{merchant_id}", daemon=True,
+        ).start()
+    round_merchants = raw.whole_series_runs.distinct(
+        "merchant_id", {"workflow": poster_series_round.WORKFLOW, "status": {"$in": ["queued", "running"]}},
+    )
+    for merchant_id in sorted(str(value) for value in round_merchants if value):
+        db = ScopedDatabase(raw, merchant_id)
+        threading.Thread(
+            target=poster_series_round.resume_runs,
+            args=(db, app.state.settings, _scoped_store(app, merchant_id, db), app.state.core_ai),
+            name=f"resume-poster-series-round-{merchant_id}", daemon=True,
+        ).start()
+
+
 def _resume_poster_edits(app: FastAPI) -> None:
     raw = app.state.raw_db
     merchant_ids = raw.poster_edit_tasks.distinct(
@@ -228,11 +271,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.startup_error = None
     try:
         db.command("ping")
-        _initialize_indexes(db)
+        _initialize_indexes(db, settings)
         maintenance.initialize(db)
         whole_image_service.mark_interrupted(db)
         _resume_original_replacements(app)
         _resume_poster_edits(app)
+        _resume_poster_series(app)
         _resume_agent_tests(app)
         _mark_material_filter_runs_interrupted(app)
         _interrupt_asset_index_runs(app)
@@ -283,6 +327,7 @@ merchant_router.include_router(prompts.router)
 merchant_router.include_router(agent_tests.router)
 merchant_router.include_router(task_center.router)
 merchant_router.include_router(whole_image.router)
+merchant_router.include_router(poster_series.router)
 merchant_router.include_router(poster_edit.router)
 merchant_router.include_router(material_filters.router)
 merchant_router.include_router(asset_index.router)

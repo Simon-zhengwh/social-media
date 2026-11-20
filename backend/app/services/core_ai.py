@@ -17,7 +17,7 @@ import httpx
 from PIL import Image
 
 from app.config import Settings
-from app.services import image_payload
+from app.services import image_payload, poster_costs
 from app.services.image_ref import ImageRef
 
 MAX_REFERENCE_BYTES = image_payload.MAX_REFERENCE_BYTES
@@ -138,37 +138,61 @@ class CoreAIClient:
             raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
         url = f"{self.settings.core_ai_gateway_base_url.rstrip('/')}{path}"
         timeout = timeout_seconds or self.settings.core_ai_image_timeout_seconds
-        response: httpx.Response | None = None
+        kind = "image" if path.startswith("/images/") else "llm"
         for attempt in range(2):
+            call_id = poster_costs.begin(kind, str(payload.get("model") or ""))
+            headers = {"x-session-id": call_id} if call_id else None
             try:
-                response = self._client.post(url, json=payload, timeout=timeout)
+                response = self._client.post(url, json=payload, timeout=timeout, headers=headers)
             except httpx.TimeoutException as exc:
+                poster_costs.finish(call_id, status="unknown")
                 raise CoreAIError(
                     "gateway_timeout",
                     "core-ai 网关请求超时，结果未知，可能已产生费用；请确认后再重新生成。",
                     504,
                 ) from exc
-            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            except httpx.ConnectError as exc:
+                poster_costs.finish(call_id, status="failed", sync=False)
                 raise CoreAIError(
                     "gateway_unavailable",
                     "无法连接 core-ai 网关，请检查网络和 CORE_AI_GATEWAY_BASE_URL。",
                     502,
                 ) from exc
             except httpx.HTTPError as exc:
+                poster_costs.finish(call_id, status="unknown")
                 raise CoreAIError(
                     "gateway_error",
                     f"core-ai 网关请求失败：{exc}",
                     502,
                 ) from exc
             if response.status_code != 429 or attempt == 1:
-                break
+                try:
+                    result = self._json_or_error(response)
+                except CoreAIError:
+                    self._record_gateway_error(call_id, response)
+                    raise
+                poster_costs.finish(call_id, result, status="completed")
+                return result
+            self._record_gateway_error(call_id, response)
             try:
                 delay = float(response.headers.get("Retry-After", "5"))
             except ValueError:
                 delay = 5.0
             time.sleep(min(max(delay, 1.0), 30.0))
-        assert response is not None
-        return self._json_or_error(response)
+        raise AssertionError("Core AI retry loop did not return")
+
+    @staticmethod
+    def _record_gateway_error(call_id: str | None, response: httpx.Response) -> None:
+        if call_id is None:
+            return
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        poster_costs.finish(
+            call_id, body if isinstance(body, dict) else None, status="failed",
+            sync=False if response.status_code in {401, 403, 429} else None,
+        )
 
     def _json_or_error(self, response: httpx.Response) -> dict[str, Any]:
         try:
@@ -261,6 +285,7 @@ class CoreAIClient:
         if timeout_seconds <= 0:
             raise CoreAIError("invalid_timeout", "Agent 超时时间必须大于 0", 422)
         base = self.settings.core_ai_server_base_url.rstrip("/")
+        call_id = poster_costs.begin("agent", agent_id)
         try:
             response = self._client.post(
                 f"{base}/api/runs/agent/{agent_id}/trigger",
@@ -271,11 +296,18 @@ class CoreAIClient:
             candidate = run.get("run_id")
             if not isinstance(candidate, str) or not candidate:
                 raise CoreAIError("invalid_agent_run", "Agent 未返回有效 run_id")
+            poster_costs.finish(call_id, status="running", run_id=candidate)
             return candidate
         except httpx.TimeoutException as exc:
+            poster_costs.finish(call_id, status="unknown", sync=False)
             raise CoreAIError("agent_timeout", "图片 Agent 请求超时，结果未知", 504) from exc
         except httpx.HTTPError as exc:
+            poster_costs.finish(call_id, status="unknown", sync=False)
             raise CoreAIError("agent_unavailable", f"无法连接图片 Agent：{exc}") from exc
+
+        except CoreAIError:
+            poster_costs.finish(call_id, status="failed", sync=False)
+            raise
 
     def get_agent_run(self, run_id: str) -> dict[str, Any]:
         """Read the same run, including its transcript, trace_id and all artifact types."""
@@ -285,6 +317,53 @@ class CoreAIClient:
             raise CoreAIError("invalid_agent_run", "Agent run_id 无效", 422)
         base = self.settings.core_ai_server_base_url.rstrip("/")
         return self._json_or_error(self._client.get(f"{base}/api/runs/{run_id}", timeout=30))
+
+    def get_cost_trace(self, trace_id: str) -> dict[str, Any]:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", trace_id):
+            raise CoreAIError("invalid_agent_trace", "Core AI trace_id 无效", 422)
+        base = self.settings.core_ai_server_base_url.rstrip("/")
+        return self._json_or_error(self._client.get(f"{base}/api/traces/{trace_id}", timeout=10))
+
+    def list_cost_traces(self, session_id: str) -> list[dict[str, Any]]:
+        base = self.settings.core_ai_server_base_url.rstrip("/")
+        traces: dict[str, dict[str, Any]] = {}
+        offset = 0
+        while True:
+            payload = self._json_or_error(self._client.get(
+                f"{base}/api/traces",
+                params={"sessionId": session_id, "limit": 100, "offset": offset},
+                timeout=10,
+            ))
+            rows = payload.get("traces") or []
+            for row in rows:
+                if row.get("sessionId") == session_id and row.get("traceId"):
+                    traces[row["traceId"]] = row
+            offset += len(rows)
+            if not rows or offset >= (payload.get("total") or offset):
+                return list(traces.values())
+
+    def get_agent_trace_spans(self, trace_id: str) -> list[dict[str, Any]]:
+        """Read the persisted OTEL spans for one trace.
+
+        Run-detail rows can carry null tool names/arguments while the trace span records
+        the native ``generate_image`` call. This endpoint is the authoritative fallback
+        for proving a tool actually ran when structured arguments are not published.
+        """
+        if not self.settings.core_ai_api_key:
+            raise CoreAIError("not_configured", "未配置 CORE_AI_API_KEY", 503)
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", trace_id):
+            raise CoreAIError("invalid_agent_trace", "Agent trace_id 无效", 422)
+        base = self.settings.core_ai_server_base_url.rstrip("/")
+        payload = self._json_or_error(
+            self._client.get(f"{base}/api/traces/{trace_id}/spans", timeout=30)
+        )
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        if isinstance(payload, dict):
+            spans = payload.get("spans") or payload.get("items") or []
+            if isinstance(spans, list):
+                return [item for item in spans if isinstance(item, dict)]
+        return []
 
     def read_agent_html(self, url: str) -> bytes:
         """Read a submitted HTML artifact without forwarding API credentials to downloads."""
@@ -313,6 +392,20 @@ class CoreAIClient:
             raise CoreAIError('preview_download_failed', 'HTML 产物重定向次数过多')
         except httpx.HTTPError as exc:
             raise CoreAIError('preview_download_failed', 'HTML 预览暂时无法读取，可下载原文件查看') from exc
+
+    def agent_artifact_redirect(self, url: str) -> str | None:
+        """Read the storage URL declared by a registered Core AI file."""
+        try:
+            base, artifact = urlparse(self.settings.core_ai_server_base_url), urlparse(url)
+            if artifact.scheme != "https" or artifact.netloc != base.netloc:
+                return None
+            if not re.fullmatch(r"/api/public/artifacts/[\w-]+/content", artifact.path):
+                return None
+            with self._download_client.stream("GET", url, follow_redirects=False, timeout=5.0) as response:
+                location = response.headers.get("location")
+                return urljoin(url, location) if response.is_redirect and location else None
+        except (httpx.HTTPError, ValueError):
+            return None
 
     ARTIFACT_CONTENT_TYPES = (
         "text/html",

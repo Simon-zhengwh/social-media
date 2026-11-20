@@ -92,7 +92,10 @@ def list_task_center(
         raise HTTPException(status_code=422, detail="limit 需在 1 到 100 之间")
 
     db = request_db(request)
-    groups = whole_routes._list_task_groups(db)
+    settings = getattr(request.app.state, "settings", None)
+    groups = whole_routes._list_task_groups(
+        db, exclude_series=not getattr(settings, "poster_series_enabled", False)
+    )
     workspace_by_candidate = {candidate["id"]: group["id"] for group in groups for candidate in group["candidates"]}
     replacements = _workspace_replacements(db, workspace_by_candidate, status if kind == "original_replace" else "all")
     items: list[dict[str, Any]] = []

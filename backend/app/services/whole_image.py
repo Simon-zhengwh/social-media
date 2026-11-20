@@ -16,6 +16,7 @@ from app.config import Settings
 from app.schemas import MAX_REFERENCE_ASSETS, gateway_model_name
 from app.services import brand_rules, platform_presets, storage
 from app.services.canvas import canvas_size, gateway_image_size
+from app.services import poster_costs
 from app.services.core_ai import CoreAIClient, CoreAIError
 from app.services.image_ref import ImageRef, cleanup_image_refs, image_ref_from_asset
 from app.services.object_store import ObjectStore
@@ -446,6 +447,8 @@ def _commit_version(
     require_output_selection: bool = False,
     edit_outcome: str | None = None,
     message: str | None = None,
+    expect: dict[str, Any] | None = None,
+    unset: list[str] | None = None,
 ) -> None:
     version_id = str(version_doc["_id"])
     outputs = list(version_doc.get("outputs") or [])
@@ -455,6 +458,12 @@ def _commit_version(
         if selectable and selectable.get("asset_id")
         else str(version_doc["output_asset_id"])
     )
+    if db.whole_tasks.find_one({"_id": task_id, "series": {"$exists": True}}, {"series": 1}):
+        # Series pages keep one authoritative content-reference list per version so a
+        # replacement version never keeps counting the photo it replaced.
+        from app.services import poster_series as series_service
+
+        series_service.attach_series_refs(db, task_id, version_doc)
     db.whole_versions.insert_one(version_doc)
     update = {
         "selected_version_id": version_id,
@@ -494,14 +503,20 @@ def _commit_version(
             }
         )
     try:
-        result = db.whole_tasks.update_one({"_id": task_id}, {"$set": update})
+        # ``expect`` turns publication into a compare-and-set so a concurrent edit or a
+        # second editor session cannot be overwritten after the caller's precheck.
+        result = db.whole_tasks.update_one(
+            {"_id": task_id, **(expect or {})}, {"$set": update}
+        )
         if result.modified_count != 1:
-            raise StudioError("version_commit_failed", "版本保存失败，请重试", 500)
+            raise StudioError("version_commit_failed", "版本保存失败，请重试", 409)
     except Exception:
         db.whole_versions.delete_one({"_id": version_id})
         for output in outputs:
             _delete_asset(db, store, output.get("asset_id"))
         raise
+    if unset:
+        db.whole_tasks.update_one({"_id": task_id}, {"$unset": {key: "" for key in unset}})
     _append_message(
         db,
         task_id,
@@ -616,17 +631,18 @@ def run_generation(
                 }
             },
         )
-        if reference_images:
-            data = client.edit_image(
-                prompt,
-                reference_images,
-                size=size,
-                model=gateway_model_name(image_model),
-            )
-        else:
-            data = client.generate_image(
-                prompt, size=size, model=gateway_model_name(image_model)
-            )
+        with poster_costs.track_task(db, claimed, "generate"):
+            if reference_images:
+                data = client.edit_image(
+                    prompt,
+                    reference_images,
+                    size=size,
+                    model=gateway_model_name(image_model),
+                )
+            else:
+                data = client.generate_image(
+                    prompt, size=size, model=gateway_model_name(image_model)
+                )
         saved = _save_output_asset(
             db,
             settings,
@@ -835,6 +851,14 @@ def run_edit(
             if source_output
             else source.get("output_asset_id")
         )
+        series_task = isinstance(task.get("series"), dict)
+        series_base_asset_id = (
+            str(source.get("series_base_asset_id") or "") if series_task else ""
+        )
+        if series_base_asset_id:
+            # Series pages edit the no-Logo design and re-apply the official Logo below,
+            # so the Logo is never baked in twice or lost by the gateway edit.
+            source_asset_id = series_base_asset_id
         source_asset = db.assets.find_one({"_id": source_asset_id})
         if source_asset is None:
             raise StudioError("source_image_missing", "来源图片不存在", 404)
@@ -957,22 +981,23 @@ def run_edit(
                 }
             },
         )
-        outputs = _gateway_edit_branch(
-            db,
-            settings,
-            store,
-            client,
-            task_id=task_id,
-            version=version,
-            original_input=original_input,
-            source_asset=source_asset,
-            size=size,
-            image_model=image_model,
-            model_input=gateway_input,
-            prompt=prompt,
-            target_size=(width, height),
-            reference_asset_ids=reference_asset_ids,
-        )
+        with poster_costs.track_task(db, task, "edit"):
+            outputs = _gateway_edit_branch(
+                db,
+                settings,
+                store,
+                client,
+                task_id=task_id,
+                version=version,
+                original_input=original_input,
+                source_asset=source_asset,
+                size=size,
+                image_model=image_model,
+                model_input=gateway_input,
+                prompt=prompt,
+                target_size=(width, height),
+                reference_asset_ids=reference_asset_ids,
+            )
         updated = db.whole_tasks.find_one({"_id": task_id}) or {}
         gateway = ((updated.get("edit") or {}).get("branches") or {}).get("gateway") or {}
         if not outputs:
@@ -999,11 +1024,20 @@ def run_edit(
                 status="failed",
             )
             return
+        series_fields: dict[str, Any] = {}
+        output_asset_id = str(outputs[0]["asset_id"])
+        if series_task:
+            from app.services import poster_series as series_service
+
+            output_asset_id, outputs, series_fields = series_service.finalize_series_outputs(
+                db, settings, store, task=task, version=version, outputs=outputs,
+                canvas={"width": width, "height": height},
+            )
         document = _version_document(
             task_id=task_id,
             version=version,
             parent_version_id=source_version_id,
-            output_asset_id=str(outputs[0]["asset_id"]),
+            output_asset_id=output_asset_id,
             instruction=instruction,
             operation="edit",
             width=width,
@@ -1011,6 +1045,17 @@ def run_edit(
             model_input=outputs[0].get("model_input") or gateway_input,
             outputs=outputs,
         )
+        if series_task:
+            series = task.get("series") or {}
+            document["series_role"] = series.get("role")
+            document["series_page_id"] = series.get("page_id")
+            document["series_style_reference_ids"] = list(
+                source.get("series_style_reference_ids") or series.get("style_reference_ids") or []
+            )
+            document["series_cover_reference"] = (
+                source.get("series_cover_reference") or series.get("cover_reference")
+            )
+            document.update(series_fields)
         _commit_version(
             db,
             store,
@@ -1128,8 +1173,10 @@ def select_output(db: Database, task_id: str, version_id: str, output_id: str) -
 
 def mark_interrupted(db: Database) -> None:
     message = "本地服务重启，任务已中断。请重新发起设计。"
+    # Series pages with a saved Agent run id are resumed after restart instead of being
+    # marked interrupted, so PS-11 never pays for a duplicate image run.
     db.whole_tasks.update_many(
-        {"status": {"$in": ["queued", "running"]}},
+        {"status": {"$in": ["queued", "running"]}, "series": {"$exists": False}},
         {
             "$set": {
                 "status": "failed",

@@ -1,4 +1,4 @@
-import type { Asset, BrandMode, ImageModel, Ratio } from './types'
+import type { Asset, BrandMode, ImageModel, PosterSeriesMode, Ratio } from './types'
 import type { StoreSelection } from './components/StoreInfoSelector'
 import type { ModelCounts } from './modelGeneration'
 import { IMAGE_MODEL_OPTIONS } from './imageModels.ts'
@@ -18,12 +18,23 @@ export type PosterDraftForm = {
   storeSelection?: StoreSelection
   selectedModel: ImageModel
   modelCounts: ModelCounts
+  /** Opt-in poster series choice. Absent means the historical single-poster form. */
+  mode?: PosterSeriesMode
 }
 
 export type PosterSession =
-  | { kind: 'blank'; workspaceId: string; title: string }
+  | { kind: 'blank'; workspaceId: string; title: string; mode?: PosterSeriesMode }
   | { kind: 'draft'; workspaceId: string; title?: string; form: PosterDraftForm }
-  | { kind: 'task'; workspaceId: string; taskId: string | null; selectedModel: ImageModel }
+  | {
+    kind: 'task'
+    workspaceId: string
+    taskId: string | null
+    selectedModel: ImageModel
+    /** Series tasks also remember the current group/page so a reload lands on the same page. */
+    mode?: PosterSeriesMode
+    seriesGroupId?: string | null
+    seriesPageId?: string | null
+  }
 
 export function formatPosterTitle(value: Date | string): string {
   const date = new Date(value)
@@ -57,6 +68,14 @@ function isModel(value: unknown): boolean {
   return IMAGE_MODEL_OPTIONS.some(option => option.value === value)
 }
 
+function isOptionalMode(value: unknown): boolean {
+  return value === undefined || value === 'single' || value === 'series'
+}
+
+function isOptionalId(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === 'string' && Boolean(value))
+}
+
 function isAsset(value: unknown): boolean {
   return isRecord(value) && ['id', 'original_name', 'url', 'mime_type', 'created_at'].every(key => typeof value[key] === 'string') &&
     ['width', 'height'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))
@@ -75,7 +94,8 @@ function isDraftForm(value: unknown): boolean {
     (store === undefined || (isRecord(store) && typeof store.placeId === 'string' &&
     ['enabled', 'address', 'phone'].every(key => typeof store[key] === 'boolean'))) &&
     isRecord(counts) && Object.entries(counts).every(([model, count]) =>
-      isModel(model) && typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 3)
+      isModel(model) && typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 3) &&
+    isOptionalMode(value.mode)
 }
 
 /** Temporary editing state belongs to this tab and authenticated operator, never localStorage. */
@@ -87,12 +107,13 @@ export function readPosterSession(userId: string, merchantId: string): PosterSes
     const value: unknown = raw ? JSON.parse(raw) : null
     if (!isRecord(value) || typeof value.workspaceId !== 'string' || !value.workspaceId) return null
     const hasTitle = typeof value.title === 'string' && Boolean(value.title.trim()) && value.title.length <= 100
-    if (value.kind === 'blank' && hasTitle) return value as PosterSession
+    if (value.kind === 'blank' && hasTitle && isOptionalMode(value.mode)) return value as PosterSession
     if (value.kind === 'draft' && isDraftForm(value.form) && (value.title === undefined || hasTitle)) {
       return value as PosterSession
     }
     const taskModel = isModel(value.selectedModel) || value.selectedModel === 'gemini-3.1-flash-image' || value.selectedModel === 'minimax-h3-image'
-    if (value.kind === 'task' && (value.taskId === null || (typeof value.taskId === 'string' && Boolean(value.taskId))) && taskModel) {
+    if (value.kind === 'task' && (value.taskId === null || (typeof value.taskId === 'string' && Boolean(value.taskId))) && taskModel &&
+      isOptionalMode(value.mode) && isOptionalId(value.seriesGroupId) && isOptionalId(value.seriesPageId)) {
       return value as PosterSession
     }
   } catch { /* Storage may be disabled, full or left with an incompatible record. */ }
