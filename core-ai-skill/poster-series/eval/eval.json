@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "skill": "poster-series",
-  "dataset_version": "0.2.4",
+  "dataset_version": "0.2.6",
   "cases": [
     {
       "id": "agent-decides-images",
@@ -177,6 +177,37 @@
           "返回两个正确的组 ID",
           "组内图片按指定顺序列出"
         ]
+      }
+    },
+    {
+      "id": "batch-first-pass-and-selective-repair",
+      "dimension": "tool_accuracy",
+      "input": {
+        "user_request": "主题：在seejoy到底能吃到多少甜品\nlogo放左上角\n自由设计，出三张图",
+        "canvas": {"width": 1080, "height": 1440},
+        "scenario": "提供原照、风格图和固定 Logo 安全区。工具可并行。首轮假设只有第 3 页侵入安全区。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "首轮每页工具输入使用实际素材 URL，prompt 写明引用名及用途，按页指定 Logo 安全区旁的文字和图片边界"
+        },
+        {
+          "kind": "rubric",
+          "description": "三次首轮调用在同一条工具调用消息发出，齐图后批量检查"
+        },
+        {
+          "kind": "rubric",
+          "description": "只修第 3 页的实际缺陷，交付保留第 1、2 页首轮图，保持固定 Logo 框和 PNG 清单顺序"
+        }
+      ],
+      "expected": {
+        "checks": [
+          "首轮每页工具输入使用实际素材 URL，prompt 写明引用名及用途，按页指定 Logo 安全区旁的文字和图片边界",
+          "三次首轮调用在同一条工具调用消息发出，齐图后批量检查",
+          "只修第 3 页的实际缺陷，交付保留第 1、2 页首轮图，保持固定 Logo 框和 PNG 清单顺序"
+        ],
+        "tools": ["generate_image"]
       }
     },
     {

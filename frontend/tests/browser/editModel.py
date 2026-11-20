@@ -62,6 +62,8 @@ class EditFixture(Fixture):
     async def route(self, route):
         request = route.request
         path = re.sub(r"^/api/merchants/[^/]+", "/api", urlparse(request.url).path)
+        if path == "/api/whole-image/series-config":
+            return await route.fulfill(json={"enabled": False})
         if path == "/api/assets" and request.method == "POST":
             return await route.fulfill(status=201, json={
                 "id": "uploaded", "original_name": "uploaded.svg", "url": "/fixture/uploaded",
@@ -157,6 +159,7 @@ async def main():
             assert await models.locator("option").all_text_contents() == [
                 "GPT Image 2.5", "Gemini 3 Pro Image", "Seedream 5 Pro", "Seedream 5.5", "MiniMax H3",
             ]
+            await expect(page.get_by_role("button", name="切换到 Gemini 3 Pro Image", exact=True)).to_be_visible()
             await models.select_option(SEEDREAM)
             await expect(page.get_by_role("button", name="切换到 GPT Image 2.5", exact=True)).to_have_attribute("aria-pressed", "true")
             await editor.fill("只改标题，参考")
