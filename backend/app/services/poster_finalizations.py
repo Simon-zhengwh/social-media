@@ -15,6 +15,11 @@ from app.time_utils import utc_iso
 
 
 def group_key(task: dict[str, Any]) -> str:
+    # Series pages are independent finalization scopes: two pages that reuse the same
+    # original photo must each count as one reference.
+    series = task.get('series')
+    if isinstance(series, dict) and series.get('page_id'):
+        return 'series:' + str(series.get('group_id') or '') + ':' + str(series['page_id'])
     data = task.get('input') or {}
     return (str(data.get('generation_workspace_id') or '').strip()
             or str(data.get('candidate_batch_id') or '').strip() or str(task['_id']))
@@ -81,7 +86,48 @@ def _source(db: Any, task_id: str, version_id: str, output_id: str) -> tuple[dic
     return version, output
 
 
+def _series_photos(db: Any, task: dict, version: dict) -> list[dict]:
+    """Series pages count only the selected version's authoritative content refs."""
+    refs = version.get('series_content_refs')
+    if refs is None and version.get('parent_version_id'):
+        parent = db.whole_versions.find_one(
+            {'_id': version['parent_version_id'], 'task_id': task['_id']}
+        )
+        refs = (parent or {}).get('series_content_refs')
+    refs = refs if refs is not None else (task.get('series') or {}).get('content_refs') or []
+    input_data = task.get('input') or {}
+    logo_ids = {str(input_data.get('logo_asset_id') or '')}
+    logo_ids.update(str(value) for value in (task.get('brand') or {}).get('logo_asset_ids') or [])
+    logo_ids.discard('')
+    cover_reference = version.get('series_cover_reference') or (task.get('series') or {}).get('cover_reference') or {}
+    if cover_reference.get('asset_id'):
+        logo_ids.add(str(cover_reference['asset_id']))
+    ids = [
+        str(item.get('asset_id') if isinstance(item, dict) else item)
+        for item in refs
+        if (item.get('asset_id') if isinstance(item, dict) else item)
+    ]
+    # Replacement assets are already folded into the version list; include any that a
+    # legacy version records only under replacements.
+    ids.extend(
+        str(item['asset_id']) for item in version.get('replacements') or []
+        if item.get('asset_id')
+    )
+    documents = {
+        str(item['_id']): item
+        for item in db.assets.find({'_id': {'$in': list(dict.fromkeys(ids))}})
+    }
+    photos: dict[str, dict] = {}
+    for asset_id in ids:
+        asset = documents.get(asset_id)
+        if asset is not None and asset_id not in logo_ids and not is_generated_asset(asset):
+            photos.setdefault(_asset_key(asset), asset)
+    return list(photos.values())
+
+
 def _photos(db: Any, task: dict, version: dict, output: dict) -> list[dict]:
+    if isinstance(task.get('series'), dict):
+        return _series_photos(db, task, version)
     ids: list[str] = []
     logos = {str((task.get('input') or {}).get('logo_asset_id') or '')}
     logos.update(str(item) for item in (task.get('brand') or {}).get('logo_asset_ids') or [])

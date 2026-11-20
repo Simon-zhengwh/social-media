@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -9,10 +10,59 @@ from pymongo import ReturnDocument
 from app.config import Settings
 from app.services import original_replacement_runner, whole_image
 from app.services.canvas import gateway_image_size
+from app.services import poster_costs
 from app.services.core_ai import CoreAIClient
 from app.services.image_ref import cleanup_image_refs, image_ref_from_asset
 from app.services.object_store import ObjectStore
 from app.services.whole_image import StudioError
+
+# A series page's Logo is always the group's official file, composited by the series layer.
+# Asking the replacement Agent to redraw or swap the Logo makes the result show it twice.
+_LOGO_TARGET = re.compile(r"logo|标识|标志|商标", re.IGNORECASE)
+
+
+def is_series_task(task: dict[str, Any]) -> bool:
+    return isinstance(task.get("series"), dict)
+
+
+def series_logo_asset_ids(task: dict[str, Any]) -> set[str]:
+    """Official Logo assets bound to this page by the series group or the brand."""
+    series = task.get("series") or {}
+    ids = {
+        str(series.get("logo_asset_id") or ""),
+        str((task.get("input") or {}).get("logo_asset_id") or ""),
+    }
+    ids.update(str(value) for value in (task.get("brand") or {}).get("logo_asset_ids") or [])
+    ids.discard("")
+    return ids
+
+
+def replacement_requests_logo(task: dict[str, Any], replacements: list[Any] | None, *,
+                              official_logo_id: str = "") -> bool:
+    """True when a replacement record explicitly asks to replace the Logo itself."""
+    logo_ids = series_logo_asset_ids(task)
+    for item in replacements or []:
+        if not isinstance(item, dict):
+            continue
+        target = str(item.get("target") or "").strip()
+        asset_id = str(item.get("asset_id") or "").strip()
+        if target and _LOGO_TARGET.search(target):
+            return True
+        if asset_id and (asset_id == official_logo_id or asset_id in logo_ids):
+            return True
+    return False
+
+
+def _reject_series_logo_replacement(task: dict[str, Any], replacements: list[Any] | None, *,
+                                    official_logo_id: str = "") -> None:
+    if is_series_task(task) and replacement_requests_logo(task, replacements, official_logo_id=official_logo_id):
+        raise StudioError(
+            "series_logo_replacement_not_allowed",
+            "系列图页面的 Logo 由后台统一叠加，原照替换只能替换照片。请去掉 Logo 后重新生成仅替换照片的原照替换。",
+            422,
+        )
+
+
 
 def _task(db: Any, task_id: str) -> dict[str, Any]:
     task = db.whole_tasks.find_one({"_id": task_id})
@@ -34,13 +84,25 @@ def create(db: Any, task_id: str, *, source_version_id: str, source_output_id: s
                    if item.get("id") == source_output_id), None)
     if not output or not output.get("selectable"):
         raise StudioError("invalid_source", "请选择可编辑的完整海报结果，透明图层不能作为底图", 422)
+    source_asset_id = output["asset_id"]
+    logo_asset_id = ""
+    if is_series_task(task):
+        from app.services import poster_series
+
+        logo_asset_id, _ = poster_series.series_logo(db, task)
+        if version.get("series_base_asset_id"):
+            source_asset_id = str(version["series_base_asset_id"])
+            if db.assets.find_one({"_id": source_asset_id}) is None:
+                raise StudioError("source_image_missing", "来源底图不存在", 404)
     association = {"whole_task_id": task_id, "source_version_id": source_version_id,
                    "source_output_id": source_output_id, "source_version": version["version"]}
+    _reject_series_logo_replacement(task, replacements, official_logo_id=logo_asset_id)
     if kind == "model":
         association.update(kind=kind, retry_of=retry_of, feedback=feedback)
     return original_replacement_runner.create_task(
-        db, source_asset_id=output["asset_id"], whole_task_id=task_id, replacements=replacements,
-        split_all_elements=kind == "agent" and split_all_elements, metadata=association)
+        db, source_asset_id=source_asset_id, whole_task_id=task_id, replacements=replacements,
+        split_all_elements=kind == "agent" and split_all_elements, metadata=association,
+        logo_reference_asset_id=logo_asset_id)
 
 
 def retry_model_batch(db: Any, task_id: str, replacement_id: str, feedback: str) -> dict[str, Any]:
@@ -100,7 +162,10 @@ def _model_prompt(task: dict[str, Any]) -> str:
         "目标为场景时：保留原照的主要场景特征，可调整取景、透视与光色来融合。"
         "明确指定「背景」时可替换整张摄影底图，同时保留原海报的文字、排版和装饰。",
     ])
-    if any(item["target"].casefold() == "logo" for item in task["replacements"]):
+    if task.get("logo_reference"):
+        lines.append(f"图片 {len(task['replacements']) + 2} 是官方 Logo，仅用于识别品牌标识。"
+                     + original_replacement_runner.SERIES_LOGO_OUTPUT_RULE)
+    elif any(item["target"].casefold() == "logo" for item in task["replacements"]):
         lines.append("Logo 使用对应的官方原文件。在底稿 Logo 的原中心、原显示框内等比放置，"
                      "保留完整图案、文字、颜色和比例，禁止拉伸、压扁、裁切或重绘。")
     else:
@@ -145,9 +210,9 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
     if not candidates:
         return
 
+    parent = db.whole_tasks.find_one({"_id": batch.get("whole_task_id")}) or {}
     references = []
-    images = [{**batch["source"], "role": "替换底图"},
-              *({**item, "role": item["target"] or "自动识别"} for item in batch["replacements"])]
+    images = original_replacement_runner.input_images(batch)
     prompt = _model_prompt(batch)
     width, height = batch["source"]["width"], batch["source"]["height"]
     size = gateway_image_size(width, height)
@@ -167,7 +232,8 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
         if not claimed.matched_count:
             return
         try:
-            data = client.edit_image(prompt, references, size=size, model=model)
+            with poster_costs.track_task(db, parent, "replace"):
+                data = client.edit_image(prompt, references, size=size, model=model)
             output = whole_image._save_output_asset(
                 db, settings, store, task_id=batch_id, version=1, role=model,
                 data=data, target_size=None if for_crop else (width, height), allow_letterbox=False)
@@ -179,8 +245,12 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
         tasks.update_one({"_id": batch_id}, {"$set": {field: candidate, "updated_at": now}})
 
     try:
+        logo_reference = batch.get("logo_reference")
         for item in images:
-            references.append(image_ref_from_asset(db, store, item["asset_id"]))
+            references.append(image_ref_from_asset(
+                db, store, item["asset_id"],
+                use_original=bool(logo_reference and item["asset_id"] == logo_reference["asset_id"]),
+            ))
     except Exception as exc:  # noqa: BLE001 - report errors loading shared inputs
         error = whole_image._error_text(exc)
         for index, _ in candidates:
@@ -211,11 +281,17 @@ def get_task(db: Any, task_id: str, replacement_id: str) -> dict[str, Any]:
 
 
 def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_version_id: str,
-          expected_current_output_id: str, candidate_model: str | None = None) -> dict[str, Any]:
+          expected_current_output_id: str, candidate_model: str | None = None,
+          settings: Settings | None = None, store: ObjectStore | None = None) -> dict[str, Any]:
     current = _task(db, task_id)
     replacement = db.background_replace_tasks.find_one({"_id": replacement_id, "whole_task_id": task_id})
     if replacement is None:
         raise StudioError("replacement_missing", "原照替换任务不属于当前海报", 404)
+    # Old records may still carry an explicit Logo item from an earlier workbench. Applying
+    # one would composite the official Logo on top of a Logo the Agent already drew there.
+    _reject_series_logo_replacement(
+        current, replacement.get("replacements") or (replacement.get("input") or {}).get("replacements")
+    )
     candidate = None
     application_key = replacement_id
     if replacement.get("kind") == "model":
@@ -260,8 +336,7 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
         # A version left by an interrupted apply is safe to rebuild while holding this lock.
         db.whole_versions.delete_one({"_id": version_id, "task_id": task_id})
         now = whole_image.utcnow()
-        images = [{**replacement["source"], "role": "替换底图"}]
-        images.extend({**item, "role": item["target"] or "自动识别"} for item in replacement["replacements"])
+        images = original_replacement_runner.input_images(replacement)
         split_all_elements = replacement["input"].get("split_all_elements", False)
         model_input = {"channel": "agent", "endpoint": f"/api/runs/agent/{replacement.get('agent_id')}/trigger",
                        "model": replacement.get("agent_id") or "", "prompt": replacement.get("agent_input") or "",
@@ -283,13 +358,56 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
                       "artifacts": replacement.get("artifacts") or [], "created_at": now}])
         version.update(_id=version_id, replacement_task_id=replacement_id,
                        source_output_id=replacement["source_output_id"], replacements=replacement["input"]["replacements"])
+        if isinstance(current.get("series"), dict):
+            from app.services import poster_series as series_service
+
+            if settings is None or store is None:
+                raise StudioError("series_runtime_missing", "系列图配置缺失，请重启服务", 500)
+            base_output = {
+                "id": "original_replace_result",
+                "channel": model_input["channel"],
+                "role": "original_replace_result",
+                "label": "原照替换结果",
+                "asset_id": output["asset_id"],
+                "width": output["width"],
+                "height": output["height"],
+                "selectable": True,
+                "model_input": model_input,
+                "artifacts": replacement.get("artifacts") or [],
+                "created_at": now,
+            }
+            canvas = dict(current.get("canvas") or {}) or {
+                "width": output["width"], "height": output["height"],
+            }
+            final_asset_id, final_outputs, series_fields = series_service.finalize_series_outputs(
+                db, settings, store, task=current, version=version["version"],
+                outputs=[base_output], canvas=canvas,
+            )
+            version["output_asset_id"] = final_asset_id
+            version["outputs"] = final_outputs
+            version.update(series_fields)
+            version["series_style_reference_ids"] = list(
+                source.get("series_style_reference_ids")
+                or (current.get("series") or {}).get("style_reference_ids") or []
+            )
+            version["series_cover_reference"] = (
+                source.get("series_cover_reference")
+                or (current.get("series") or {}).get("cover_reference")
+            )
+            series_service.attach_series_refs(db, task_id, version)
+            current_output_id = next(
+                item["id"] for item in final_outputs if item.get("selectable")
+            )
+        else:
+            current_output_id = "original_replace_result"
         db.whole_versions.insert_one(version)
         inserted = True
         committed = db.whole_tasks.update_one(
             {"_id": task_id, "edit.original_apply_token": token},
             {"$set": {"selected_version_id": version_id, "current_version_id": version_id,
-                      "current_version": version["version"], "current_output_id": "original_replace_result",
-                      "output_asset_id": output["asset_id"], "canvas": {"width": output["width"], "height": output["height"]},
+                      "current_version": version["version"], "current_output_id": current_output_id,
+                      "output_asset_id": version["output_asset_id"],
+                      "canvas": {"width": output["width"], "height": output["height"]},
                       "status": "succeeded", "stage": "done", "progress": 100, "error": None,
                       "edit": {"status": "idle"}, "model_input_latest": model_input, "model_input_attempt": None,
                       f"original_replacement_versions.{application_key}": version_id,

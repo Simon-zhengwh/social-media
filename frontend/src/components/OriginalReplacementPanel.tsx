@@ -6,12 +6,31 @@ import { assetDisplayName } from '../assetNames'
 import { imageModelLabel } from '../modelGeneration'
 import { ZoomableImage } from './ImageLightbox'
 import PosterCropDialog from './PosterCropDialog'
+import SeriesPhotoEditor from './SeriesPhotoEditor'
 
 type Props = {
   task: WholeImageTask
   assets: Asset[]
   logo: BrandLogoImage | null
   onRefreshTask: () => Promise<void>
+  /**
+   * Series page hooks. `initialPhotos` replaces the "images carried by the prompt" defaults
+   * with the current version's content references, and `poolAssets` is the rest of this
+   * task's pool the operator may substitute in.
+   */
+  initialPhotos?: Array<{ asset_id: string; target: string }>
+  poolAssets?: Asset[]
+  /** Group canvas; set only for series pages, where "save to this page" is offered. */
+  seriesCanvas?: { width: number; height: number } | null
+  onSaveSeriesHtml?: (input: {
+    sourceVersionId: string
+    expectedOutputId: string | null
+    artifactId: string
+    sessionId: string
+    base64: string
+    width: number
+    height: number
+  }) => Promise<void>
 }
 type Row = { id: string; target: string; asset: Asset }
 const row = (asset: Asset): Row => ({ id: crypto.randomUUID(), target: '', asset })
@@ -46,8 +65,34 @@ function selectRecordUrl(id: string | null) {
   window.history.replaceState({}, '', url)
 }
 
-export default function OriginalReplacementPanel({ task, assets, logo, onRefreshTask }: Props) {
-  const [rows, setRows] = useState<Row[]>(() => carried(task, assets))
+/**
+ * A series page starts from the content references of its current version, so switching
+ * back to an earlier version restores the photos that version was generated from.
+ */
+function carriedFrom(page: Array<{ asset_id: string; target: string }>, task: WholeImageTask, assets: Asset[]): Row[] {
+  if (!page.length) return []
+  const images = task.model_input?.images ?? []
+  return page.map((ref) => {
+    const asset = assets.find((item) => item.id === ref.asset_id)
+    const meta = images.find((item) => item.asset_id === ref.asset_id)
+    return {
+      id: crypto.randomUUID(),
+      target: ref.target ?? '',
+      asset: asset ?? {
+        id: ref.asset_id,
+        original_name: meta?.name ?? '原照',
+        url: meta?.url || meta?.preview_url || merchantPath(`/api/assets/${encodeURIComponent(ref.asset_id)}/file`),
+        width: 0, height: 0, mime_type: 'image/png', created_at: task.created_at,
+      },
+    }
+  })
+}
+
+export default function OriginalReplacementPanel({
+  task, assets, logo, onRefreshTask, initialPhotos, poolAssets = [], seriesCanvas = null, onSaveSeriesHtml,
+}: Props) {
+  const [rows, setRows] = useState<Row[]>(() =>
+    initialPhotos ? carriedFrom(initialPhotos, task, assets) : carried(task, assets))
   const [splitAllElements, setSplitAllElements] = useState(false)
   const [records, setRecords] = useState<OriginalReplacementTask[]>([])
   const [crop, setCrop] = useState<{ src: string; width: number; height: number } | null>(null)
@@ -55,20 +100,29 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
   const [loading, setLoading] = useState(true)
   const [operation, setOperation] = useState<'agent' | 'model' | 'feedback' | 'apply' | 'refresh' | 'restore' | 'retry' | null>(null)
   const [feedback, setFeedback] = useState('')
+  const [poolSelection, setPoolSelection] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [clock, setClock] = useState(Date.now)
+  const [editorOpen, setEditorOpen] = useState(false)
   const lock = useRef(false)
   const mounted = useRef(true)
   const listRequest = useRef(0)
   const selected = records.find((item) => item.id === selectedId) ?? null
+  const recordedMaterials = [
+    ...(selected?.replacements ?? []),
+    ...(selected?.logo_reference ? [{ ...selected.logo_reference, target: '官方 Logo 参考' }] : []),
+  ]
   const htmlArtifact = selected?.artifacts?.find((item) => item.kind === 'html')
   const running = records.some(active)
   const photos = rows.filter((item) => item.asset.id !== logo?.asset_id)
+  // The backend adds the series group's Logo as a reference when it submits the request.
   const replacements = [
-    ...(logo ? [{ target: 'Logo', asset_id: logo.asset_id }] : []),
+    ...(logo && !seriesCanvas ? [{ target: 'Logo', asset_id: logo.asset_id }] : []),
     ...photos.map((item) => ({ target: item.target.trim(), asset_id: item.asset.id })),
   ]
+  const poolOptions = poolAssets.filter((asset) =>
+    asset.id !== logo?.asset_id && !rows.some((item) => item.asset.id === asset.id))
   const currentOutput = task.outputs.find((item) => item.id === task.current_output_id)
   const canSubmit = Boolean(task.status === 'succeeded' && task.current_version_id && currentOutput?.selectable && task.edit.status !== 'running')
 
@@ -109,7 +163,14 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
     return () => { cancelled = true; window.clearTimeout(timer); window.clearInterval(clockTimer) }
   }, [load, running])
 
+  const defaultRows = () => initialPhotos ? carriedFrom(initialPhotos, task, assets) : carried(task, assets)
   const updateRow = (id: string, values: Partial<Row>) => setRows((previous) => previous.map((item) => item.id === id ? { ...item, ...values } : item))
+  const addPoolRow = (assetId: string) => {
+    const asset = assets.find((item) => item.id === assetId)
+    setPoolSelection('')
+    if (!asset || rows.some((item) => item.asset.id === assetId)) return
+    setRows((previous) => [...previous, row(asset)])
+  }
   const perform = async (kind: NonNullable<typeof operation>, action: () => Promise<void>) => {
     if (lock.current) return
     lock.current = true; setOperation(kind); setError(null)
@@ -154,7 +215,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
         replacements, kind === 'agent' && splitAllElements, kind)
       if (!mounted.current) return
       openNewRecord(next)
-      setRows(carried(task, assets))
+      setRows(defaultRows())
       setSplitAllElements(false)
     })
   }
@@ -195,7 +256,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
               <div>
                 <span>替换素材</span>
                 <div className="original-model-references">
-                  {selected.replacements.map((item, index) => (
+                  {recordedMaterials.map((item, index) => (
                     <figure key={`${index}-${item.asset_id}`}>
                       <ZoomableImage src={item.preview_url} alt={item.name} title={item.target ? `${item.target} · ${item.name}` : item.name} />
                       {item.target ? <figcaption title={item.target}>{item.target}</figcaption> : null}
@@ -206,7 +267,7 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
             </div>
           ) : (
             <div className="original-replacement-targets">
-              {selected.replacements.map((item, index) => <div key={`${index}-${item.asset_id}`}><img src={item.preview_url} alt={item.name} /><span>{item.target || '自动识别'}</span></div>)}
+              {recordedMaterials.map((item, index) => <div key={`${index}-${item.asset_id}`}><img src={item.preview_url} alt={item.name} /><span>{item.target || '自动识别'}</span></div>)}
             </div>
           )}
           {selected.split_all_elements ? <p className="original-replacement-mode">全部拆分元素（含艺术字）</p> : null}
@@ -270,7 +331,37 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
               </button>
             </form> : null}
           </> : null}
-          {htmlArtifact?.preview_url ? <a className="mp-btn-primary replacement-submit" href={htmlArtifact.preview_url} target="_blank" rel="noopener noreferrer">打开 HTML</a> : null}
+          {htmlArtifact?.preview_url ? (
+            <div className="original-replacement-html-actions">
+              <a className="mp-btn-secondary replacement-submit" href={htmlArtifact.preview_url} target="_blank" rel="noopener noreferrer">打开 HTML</a>
+              {seriesCanvas && onSaveSeriesHtml ? (
+                <button type="button" className="mp-btn-primary replacement-submit" disabled={Boolean(operation)}
+                  onClick={() => setEditorOpen(true)}>保存到本页</button>
+              ) : null}
+            </div>
+          ) : null}
+          {htmlArtifact && seriesCanvas && onSaveSeriesHtml ? (
+            <SeriesPhotoEditor
+              open={editorOpen}
+              htmlUrl={htmlArtifact.preview_url}
+              canvas={seriesCanvas}
+              busy={Boolean(operation)}
+              onClose={() => {
+                setEditorOpen(false)
+                void load()
+                void onRefreshTask()
+              }}
+              onSave={(exported) => onSaveSeriesHtml({
+                sourceVersionId: selected.source_version_id ?? task.current_version_id ?? '',
+                expectedOutputId: selected.source_output_id ?? null,
+                artifactId: htmlArtifact.id,
+                sessionId: exported.sessionId,
+                base64: exported.base64,
+                width: exported.width,
+                height: exported.height,
+              })}
+            />
+          ) : null}
           {selected.artifact_error ? <p className="original-replacement-warning" role="status">{selected.artifact_error}</p> : null}
           {selected.run_id && !active(selected) && (!htmlArtifact || selected.artifact_error) ? <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation)} onClick={() => void perform('restore', async () => {
             const next = await restoreOriginalReplacementArtifacts(task.id, selected.id)
@@ -300,6 +391,18 @@ export default function OriginalReplacementPanel({ task, assets, logo, onRefresh
               </div>
             })}
           </div>
+          {poolOptions.length ? (
+            <label className="original-replacement-pool">素材池
+              <select value={poolSelection} disabled={Boolean(operation)}
+                aria-label="从素材池添加原照"
+                onChange={(event) => addPoolRow(event.target.value)}>
+                <option value="">添加本任务素材池中的图片…</option>
+                {poolOptions.map((asset) => (
+                  <option key={asset.id} value={asset.id}>{assetDisplayName(asset.original_name)}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           {photos.length === 0 && !logo ? <p className="replacement-help">请先在设计需求中添加参考图或选择 Logo。</p> : null}
           {replacements.length > 5 ? <p className="original-replacement-warning" role="alert">最多提交 5 项，请移除部分原照或关闭 Logo。</p> : null}
           <div className="original-replacement-actions">

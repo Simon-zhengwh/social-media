@@ -14,10 +14,18 @@ type Props = {
   selectedModel: ImageModel
   selectionDisabled: boolean
   onSelectModel: (model: ImageModel) => void
+  /** "张" for a single poster, "组" for a series round where the count is group count. */
+  countUnit?: string
+  countNoun?: string
+  /**
+   * Series mode submits one round for every model with a positive count, so the toolbar shows
+   * a single group-submitting button instead of one per model.
+   */
+  seriesSubmit?: { total: number; busy: boolean; error?: string | null; onGenerate: () => void }
 }
 
 export default function ImageModelSelector({ counts, tasks, submissions, disabled, disabledReasons, onChange, onGenerate,
-  selectedModel, selectionDisabled, onSelectModel }: Props) {
+  selectedModel, selectionDisabled, onSelectModel, countUnit = '张', countNoun = '生成张数', seriesSubmit }: Props) {
   const historicalModels = [...new Set(tasks.flatMap(task => {
     const model = normalizeImageModel(task.input.image_model)
     return IMAGE_MODEL_OPTIONS.some(option => option.value === model) ? [] : [model]
@@ -25,23 +33,24 @@ export default function ImageModelSelector({ counts, tasks, submissions, disable
   const models = [...IMAGE_MODEL_OPTIONS, ...historicalModels.map(value => ({ value, label: imageModelLabel(value) }))]
   const available = IMAGE_MODEL_OPTIONS.some(option => option.value === selectedModel)
   const countOptions = (model: ImageModel) => (
-    <div className="model-count-options" role="radiogroup" aria-label={`${imageModelLabel(model)} 生成张数`}>
+    <div className="model-count-options" role="radiogroup" aria-label={`${imageModelLabel(model)} ${countNoun}`}>
       {[0, 1, 2, 3].map(count => (
         <button key={count} type="button" role="radio" aria-checked={(counts[model] ?? 0) === count}
-          aria-label={`${imageModelLabel(model)} ${count} 张`}
+          aria-label={`${imageModelLabel(model)} ${count} ${countUnit}`}
           className={(counts[model] ?? 0) === count ? 'is-active' : ''}
           disabled={modelGenerationState(tasks, model).running || Boolean(submissions[model] && !submissions[model]?.error) || !available}
           onClick={() => onChange(model, count)}>{count}</button>
       ))}
     </div>
   )
+  const countMissingReason = `请选择${countNoun.replace('生成', '')}`
   const generateButton = (model: ImageModel) => {
     const state = modelGenerationState(tasks, model)
     const submission = submissions[model]
     const running = Boolean(submission && !submission.error) || state.running
     const count = counts[model] ?? 0
     // A zero count disables the button as well, so it has to say why on its own.
-    const reasons = !count ? [...disabledReasons, '请选择生成张数'] : disabledReasons
+    const reasons = !count ? [...disabledReasons, countMissingReason] : disabledReasons
     const blocked = disabled || !count || !available
     // The count sits in the pill row right after the button, so the button only carries the verb.
     const action = state.hasHistory ? '再生成' : '生成'
@@ -58,9 +67,15 @@ export default function ImageModelSelector({ counts, tasks, submissions, disable
       </button>
     )
   }
+
+  /*
+    Series mode submits one round for every model with a positive count, so a single model at
+    zero groups is not a blocker there: the count row already shows it, and the toolbar keeps
+    the area under the controls free of status copy.
+  */
   const blockedReasons = !available
     ? ['当前模型不可用，请切换其他模型']
-    : !(counts[selectedModel] ?? 0) ? [...disabledReasons, '请选择生成张数'] : disabledReasons
+    : !seriesSubmit && !(counts[selectedModel] ?? 0) ? [...disabledReasons, countMissingReason] : disabledReasons
   return (
     <div className="model-toolbar" aria-label="图片模型与生成">
       <strong className="model-toolbar-label">图片模型</strong>
@@ -75,11 +90,22 @@ export default function ImageModelSelector({ counts, tasks, submissions, disable
         ))}
       </div>
       <div className="model-toolbar-actions">
-        {generateButton(selectedModel)}
-        <div className="model-toolbar-count">{countOptions(selectedModel)}<span className="model-count-unit">张</span></div>
+        {seriesSubmit ? (
+          <button type="button" className="model-generate-button"
+            disabled={disabled || seriesSubmit.busy || seriesSubmit.total < 1}
+            aria-label="生成"
+            title={seriesSubmit.total < 1 ? `请选择至少一个模型的${countUnit}数` : blockedReasons[0]}
+            onClick={seriesSubmit.onGenerate}>
+            {seriesSubmit.busy ? '提交中…' : '生成'}
+          </button>
+        ) : generateButton(selectedModel)}
+        <div className="model-toolbar-count">{countOptions(selectedModel)}<span className="model-count-unit">{countUnit}</span></div>
       </div>
+      {seriesSubmit?.error ? <p className="model-generation-error" role="alert">{seriesSubmit.error}</p> : null}
       {submissions[selectedModel]?.error ? <p className="model-generation-error" role="alert">{submissions[selectedModel]?.error}</p> : null}
-      {!submissions[selectedModel]?.error && blockedReasons.length ? <p className="model-generation-hint" role="status">{blockedReasons[0]}</p> : null}
+      {/* Series rounds report a submitted error above; the area below the controls stays clean. */}
+      {!seriesSubmit && !submissions[selectedModel]?.error && blockedReasons.length
+        ? <p className="model-generation-hint" role="status">{blockedReasons[0]}</p> : null}
     </div>
   )
 }

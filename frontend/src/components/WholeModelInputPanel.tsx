@@ -9,6 +9,7 @@ type Props = {
 
 const IMAGE_ROLE_LABELS: Record<string, string> = {
   product: '内容素材',
+  content: '内容素材',
   reference: '参考图',
   edit_reference: '本轮参考图',
   logo: 'Logo',
@@ -24,6 +25,7 @@ function channelLabel(input: WholeImageModelInput) {
 }
 
 function InputView({ input }: { input: WholeImageModelInput }) {
+  const seriesRound = input.endpoint === 'agent:poster-series-generate' && input.parameters.reference_scope === 'round'
   return (
     <div className="model-output-input">
       <dl className="model-input-meta">
@@ -55,7 +57,7 @@ function InputView({ input }: { input: WholeImageModelInput }) {
       </section>
 
       <section className="model-input-section">
-        <h4>输入图片 <span>{input.images.length}</span></h4>
+        <h4>{seriesRound ? '本轮 Agent 收到的图片' : '输入图片'} <span>{input.images.length}</span></h4>
         {input.images.length ? (
           <div className="model-input-images">
             {input.images.map((image, index) => (
@@ -89,6 +91,8 @@ function InputView({ input }: { input: WholeImageModelInput }) {
 }
 
 export default function WholeModelInputPanel({ modelInput, outputs = [], branches }: Props) {
+  const hasSeriesFinal = outputs.some((output) => output.role === 'series_final')
+  const displayedOutputs = hasSeriesFinal ? outputs.filter((output) => output.selectable) : outputs
   const entries: Array<{
     key: string
     label: string
@@ -97,7 +101,7 @@ export default function WholeModelInputPanel({ modelInput, outputs = [], branche
     input: WholeImageModelInput | null
     error?: string | null
     runId?: string | null
-  }> = outputs.map((output) => ({
+  }> = displayedOutputs.map((output) => ({
     key: output.id,
     label: output.label,
     status: 'completed',
@@ -129,13 +133,7 @@ export default function WholeModelInputPanel({ modelInput, outputs = [], branche
   }
 
   return (
-    <section className="studio-panel model-input-panel">
-      <div className="studio-panel-head">
-        <div>
-          <span className="eyebrow">MODEL × IMAGE</span>
-          <h3>每张图片的模型输入</h3>
-        </div>
-      </div>
+    <section className="studio-panel model-input-panel" aria-label="模型输入">
       {!entries.length ? (
         <p className="model-input-empty">这个版本还没有可查看的模型输入。</p>
       ) : (

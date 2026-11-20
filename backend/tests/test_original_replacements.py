@@ -813,3 +813,103 @@ def test_metadata_failure_after_commit_can_be_retried_without_reverting_selectio
     assert apply(env, task)["current_version_id"] == env.source_id
     assert env.db.whole_versions.count_documents({"task_id": env.task_id}) == 2
     assert original_replacement_runner.get_task(env.db, task["id"])["applied_version_id"]
+
+
+# ------------------------------------------------------- series: Logo stays backend-owned
+
+def _as_series_page(env, *, logo_asset="logo"):
+    env.db.whole_tasks.update_one({"_id": env.task_id}, {"$set": {"series": {
+        "run_id": "run-1", "group_id": "grp-1", "page_id": "page-2", "order": 1,
+        "role": "detail", "page_count": 2, "user_prompt": "系列海报",
+        "logo_asset_id": logo_asset,
+        "logo_box": {"x": 40, "y": 40, "width": 200, "height": 70},
+    }}})
+
+
+@pytest.mark.parametrize("logo_asset", ["logo", None])
+def test_series_photo_replacement_sends_the_official_logo_to_the_agent_when_enabled(env, logo_asset):
+    _as_series_page(env, logo_asset="environment")
+    env.db.whole_series_groups.insert_one({"_id": "grp-1", "logo_asset_id": logo_asset})
+    logo = storage.prepare_upload(env.settings, env.store, png_bytes(32, 32), "official.png")
+    env.db.assets.update_one({"_id": "logo"}, {"$set": {
+        "path": logo.path, "prepared_path": logo.prepared_path,
+    }})
+    # Legacy page metadata can be stale. The group's explicit Logo choice wins.
+    task = create(env)
+    stored = complete(env, task)
+    _, text, _ = env.client.triggers[0]
+    assert stored["input"]["replacements"] == [{"target": "右下角牛肉", "asset_id": "beef"}]
+    if logo_asset:
+        assert text.endswith("https://example.com/input-3.png")
+        assert "图3是官方 Logo" in text
+        assert env.client.uploads[-1] == env.store.get_bytes(logo.path)
+        assert task["logo_reference"]["asset_id"] == logo_asset
+    else:
+        assert len(env.client.uploads) == 2
+        assert task.get("logo_reference") is None
+    assert stored["agent_input"] == text
+
+
+def test_series_model_replacement_sends_the_official_logo_with_the_photo(env):
+    _as_series_page(env)
+    task, background = model_batch(env)
+    run_background(background)
+    assert task["logo_reference"]["asset_id"] == "logo"
+    assert len(env.client.edit_calls) == 3
+    for call in env.client.edit_calls:
+        assert call["reference_names"][1:] == ["beef.png", "logo.png"]
+        assert "图片 3 是官方 Logo" in call["prompt"]
+
+
+def test_series_page_rejects_a_logo_replacement_request(env):
+    _as_series_page(env)
+    with pytest.raises(HTTPException) as error:
+        create(env, [{"target": "Logo", "asset_id": "logo"}])
+    assert error.value.status_code == 422
+    assert "仅替换照片" in str(error.value.detail)
+    # Naming the official Logo asset is a Logo request even under a photo-like target.
+    with pytest.raises(HTTPException) as error:
+        create(env, [{"target": "右下角牛肉", "asset_id": "logo"}])
+    assert error.value.status_code == 422
+    assert env.db.background_replace_tasks.count_documents({}) == 0
+    # A photo-only record is still accepted on the same series page.
+    task = create(env, [{"target": "右下角牛肉", "asset_id": "beef"}])
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    assert stored["input"]["replacements"] == [{"target": "右下角牛肉", "asset_id": "beef"}]
+
+
+def test_series_page_blocks_apply_of_a_logo_requesting_record(env):
+    from app.services import original_replacement
+    from app.services.whole_image import StudioError
+
+    _as_series_page(env)
+    env.db.background_replace_tasks.insert_one({
+        "_id": "brep_logo", "status": "succeeded", "stage": "done",
+        "whole_task_id": env.task_id, "kind": "agent",
+        "source_version_id": env.source_id, "source_output_id": env.output_id,
+        "source": {"asset_id": "beef", "name": "底图", "width": 640, "height": 640},
+        "input": {"replacements": [{"target": "Logo", "asset_id": "logo"}],
+                  "source_asset_id": "beef", "split_all_elements": False},
+        "replacements": [{"target": "Logo", "asset_id": "logo"}],
+        "output": {"asset_id": "beef", "width": 640, "height": 640},
+        "artifacts": [],
+    })
+    with pytest.raises(StudioError) as error:
+        original_replacement.apply(
+            env.db, env.task_id, "brep_logo",
+            expected_current_version_id=env.source_id,
+            expected_current_output_id=env.output_id,
+            settings=env.settings, store=env.store,
+        )
+    assert error.value.status_code == 422
+    assert "重新生成仅替换照片" in error.value.message
+    # Nothing was published for the blocked record.
+    current = env.db.whole_tasks.find_one({"_id": env.task_id})
+    assert current["current_version_id"] == env.source_id
+
+
+def test_single_poster_still_accepts_explicit_logo_replacement(env):
+    task = create(env, [{"target": "Logo", "asset_id": "logo"},
+                        {"target": "右下角牛肉", "asset_id": "beef"}])
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    assert [item["target"] for item in stored["input"]["replacements"]] == ["Logo", "右下角牛肉"]
