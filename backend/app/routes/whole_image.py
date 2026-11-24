@@ -23,7 +23,7 @@ from app.services.object_store import ObjectStoreError
 from app.services.whole_image import _version_outputs as _version_outputs_for_task
 from app.time_utils import utc_iso
 from app.services import poster_finalizations
-from app.services.canvas import canvas_size
+from app.services.canvas import canvas_size, image_model_supports_canvas
 
 router = APIRouter(prefix="/whole-image", tags=["whole-image"])
 
@@ -626,6 +626,8 @@ def build_task_document(
         if platform_config
         else canvas_size(ratio)
     )
+    if not image_model_supports_canvas(payload.image_model, width, height):
+        raise HTTPException(status_code=422, detail=f"图片模型 {payload.image_model} 不支持 {ratio} 画幅")
     task_id = f"wtask_{uuid.uuid4().hex}"
     now = whole_image.utcnow()
     doc = {

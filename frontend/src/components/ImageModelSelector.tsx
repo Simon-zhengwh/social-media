@@ -1,5 +1,5 @@
-import type { ImageModel, WholeImageTask } from '../types'
-import { IMAGE_MODEL_OPTIONS, normalizeImageModel } from '../imageModels'
+import type { ImageModel, Ratio, WholeImageTask } from '../types'
+import { IMAGE_MODEL_OPTIONS, imageModelSupportsRatio, normalizeImageModel } from '../imageModels'
 import { modelGenerationState, imageModelLabel, type ModelCounts, type ModelSubmission } from '../modelGeneration'
 
 type Props = {
@@ -12,6 +12,7 @@ type Props = {
   onChange: (model: ImageModel, count: number) => void
   onGenerate: (model: ImageModel, count?: number) => void
   selectedModel: ImageModel
+  ratio: Ratio
   selectionDisabled: boolean
   onSelectModel: (model: ImageModel) => void
   /** "张" for a single poster, "组" for a series round where the count is group count. */
@@ -28,15 +29,17 @@ type Props = {
 }
 
 export default function ImageModelSelector({ counts, tasks, submissions, disabled, disabledReasons, onChange, onGenerate,
-  selectedModel, selectionDisabled, onSelectModel, countUnit = '张', countNoun = '生成张数', seriesState }: Props) {
+  selectedModel, ratio, selectionDisabled, onSelectModel, countUnit = '张', countNoun = '生成张数', seriesState }: Props) {
   const historicalModels = [...new Set(tasks.flatMap(task => {
     const model = normalizeImageModel(task.input.image_model)
     return IMAGE_MODEL_OPTIONS.some(option => option.value === model) ? [] : [model]
   }))]
   const models = [...IMAGE_MODEL_OPTIONS, ...historicalModels.map(value => ({ value, label: imageModelLabel(value) }))]
-  const available = IMAGE_MODEL_OPTIONS.some(option => option.value === selectedModel)
+  const supported = imageModelSupportsRatio(selectedModel, ratio)
+  const available = supported && IMAGE_MODEL_OPTIONS.some(option => option.value === selectedModel)
   const effectiveCount = counts[selectedModel] || 1
-  const blockedReasons = !available ? ['当前模型不可用，请切换其他模型'] : disabledReasons
+  const blockedReasons = !supported ? [`当前模型不支持 ${ratio}，请切换模型`]
+    : !available ? ['当前模型不可用，请切换其他模型'] : disabledReasons
   const blocked = disabled || !available
 
   const singleState = modelGenerationState(tasks, selectedModel)
@@ -70,13 +73,15 @@ export default function ImageModelSelector({ counts, tasks, submissions, disable
           onChange={event => onSelectModel(event.target.value as ImageModel)}
         >
           {models.map(option => {
+            const optionSupported = imageModelSupportsRatio(option.value, ratio)
             const optionRunning = isSeries
               ? Boolean(seriesState?.runningModels.includes(option.value))
               : modelGenerationState(tasks, option.value).running
                 || Boolean(submissions[option.value] && !submissions[option.value]?.error)
+            const status = !optionSupported ? `（不支持 ${ratio}）` : optionRunning ? '（生成中）' : ''
             return (
-              <option key={option.value} value={option.value}>
-                {optionRunning ? `${option.label}（生成中）` : option.label}
+              <option key={option.value} value={option.value} disabled={!optionSupported}>
+                {option.label}{status}
               </option>
             )
           })}

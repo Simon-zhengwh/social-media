@@ -125,6 +125,41 @@ def _generate(db, settings, store, client, prompt="夏日冰美式海报"):
     return created["id"], task
 
 
+@pytest.mark.parametrize("model", ["seedream-5-pro-image-to-image", "seedream-5.5-image-to-image"])
+@pytest.mark.parametrize("canvas", [{"ratio": "4:5"}, {"platform_id": "instagram"}])
+def test_create_task_rejects_seedream_for_four_by_five(settings, store, model, canvas):
+    db = mongomock.MongoClient().db
+    request = _request(db, settings, store, FakeCoreAI())
+    background = BackgroundTasks()
+    payload = WholeImageTaskCreate(prompt="海报", image_model=model, **canvas)
+
+    with pytest.raises(HTTPException) as error:
+        whole_routes.create_task(payload, request, background)
+
+    assert error.value.status_code == 422
+    assert "不支持 4:5" in error.value.detail
+    assert db.whole_tasks.count_documents({}) == 0
+    assert not background.tasks
+
+
+@pytest.mark.parametrize(("model", "ratio"), [
+    ("seedream-5-pro-image-to-image", "3:4"),
+    ("seedream-5.5-image-to-image", "9:16"),
+    ("gpt-image-2.5-sunburst", "4:5"),
+    ("minimax-h3-image-edit", "4:5"),
+    ("minimax-h3-image", "4:5"),
+])
+def test_create_task_accepts_supported_model_ratio(settings, store, model, ratio):
+    db = mongomock.MongoClient().db
+    request = _request(db, settings, store, FakeCoreAI())
+    payload = WholeImageTaskCreate(prompt="海报", image_model=model, ratio=ratio)
+
+    result = whole_routes.create_task(payload, request, BackgroundTasks())
+
+    assert result["status"] == "queued"
+    assert result["input"]["ratio"] == ratio
+
+
 @pytest.mark.parametrize("optimized", [False, True])
 def test_common_rules_snapshot_is_immutable_for_generation(settings, store, optimized):
     from app.services import brand_rules

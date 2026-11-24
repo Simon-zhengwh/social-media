@@ -661,10 +661,10 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
         template["brand"]["reference_asset_ids"] = ["style-1"]
         return template
     prompt = "用原照做几张统一风格的图，内容自由。" + logo_clause
-    payload = _payload(prompt=prompt, reference_asset_ids=["asset-1"], logo_asset_id="logo-1",
+    payload = _payload(prompt=prompt, ratio="4:5", reference_asset_ids=["asset-1"], logo_asset_id="logo-1",
                        logo_position=logo_position, image_groups=[
         SeriesModelGroup(image_model="gpt-image-2.5-sunburst", group_count=1),
-        SeriesModelGroup(image_model="seedream-5.5-image-to-image", group_count=1),
+        SeriesModelGroup(image_model="minimax-h3-image-edit", group_count=1),
     ])
     launched = []
     for _ in range(2):
@@ -1405,6 +1405,34 @@ def test_create_series_route_returns_groups(tmp_path):
     assert result["groups"][0]["page_count"] == 0
     assert result["groups"][0]["pages"] == []
     assert len(background.tasks) == 1 and background.tasks[0].func is poster_series_round.run_generation
+
+
+def test_create_series_route_checks_canvas_for_every_model_before_queuing(tmp_path):
+    from app.routes import poster_series as routes
+
+    settings = _settings(tmp_path)
+    db = mongomock.MongoClient().db
+    store = LocalObjectStore(settings.storage_path / "objects")
+    _asset(db, store, "asset-1", "图")
+    request = _request(db, settings, store)
+    background = BackgroundTasks()
+    payload = _payload(
+        platform_id="instagram", placement_id="portrait", reference_asset_ids=["asset-1"],
+        image_groups=[
+            SeriesModelGroup(image_model="minimax-h3-image-edit"),
+            SeriesModelGroup(image_model="seedream-5.5-image-to-image"),
+        ],
+    )
+
+    with pytest.raises(HTTPException) as error:
+        routes.create_series_run("workspace-1", payload, request, background)
+
+    assert error.value.status_code == 422
+    assert "不支持 4:5" in error.value.detail
+    assert db.whole_workspace_modes.count_documents({}) == 0
+    assert db.whole_series_runs.count_documents({}) == 0
+    assert db.whole_series_groups.count_documents({}) == 0
+    assert not background.tasks
 
 
 def test_create_series_route_leaves_image_count_to_the_agent(tmp_path):

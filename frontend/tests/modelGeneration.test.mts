@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { IMAGE_MODEL_OPTIONS, imageModelSupportsRatio } from '../src/imageModels.ts'
 import { defaultModelCounts, restoreModelCounts, mergeCandidates, modelGenerationState, submitModelRound,
   candidateForModel, candidateRounds, normalizeModelCount, imageModelLabel } from '../src/modelGeneration.ts'
 import type { WholeImageTask } from '../src/types.ts'
@@ -8,6 +9,12 @@ const gpt = 'gpt-image-2.5-sunburst'
 const seed = 'seedream-5-pro-image-to-image'
 const minimax = 'minimax-h3-image-edit'
 const legacyMinimax = 'minimax-h3-image'
+
+test('4:5 disables both Seedream models and 3:4 makes them available again', () => {
+  const unsupported = IMAGE_MODEL_OPTIONS.filter(({ value }) => !imageModelSupportsRatio(value, '4:5'))
+  assert.deepEqual(unsupported.map(({ value }) => value), [seed, 'seedream-5.5-image-to-image'])
+  assert.ok(unsupported.every(({ value }) => imageModelSupportsRatio(value, '3:4')))
+})
 
 test('MiniMax aliases share their label and candidates without mixing other models', () => {
   const tasks = [candidate('legacy-ready', legacyMinimax), candidate('new-queued', minimax, 'new', 'queued'), candidate('gpt')]

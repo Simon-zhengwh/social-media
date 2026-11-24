@@ -1,4 +1,4 @@
-import type { ImageModel } from './types'
+import type { ImageModel, Ratio } from './types'
 
 export const DEFAULT_IMAGE_MODEL: ImageModel = 'gpt-image-2.5-sunburst'
 
@@ -11,14 +11,20 @@ export function normalizeImageModel(model?: string | null): string {
 export type ImageModelOption = {
   value: ImageModel
   label: string
+  unsupportedRatios?: Ratio[]
 }
 
 export const IMAGE_MODEL_OPTIONS: ImageModelOption[] = [
   { value: 'gpt-image-2.5-sunburst', label: 'GPT Image 2.5' },
   { value: 'gemini-3-pro-image', label: 'Gemini 3 Pro Image' },
   { value: 'gemini-3.1-flash-image', label: 'Gemini 3.1 Flash Image' },
-  { value: 'seedream-5-pro-image-to-image', label: 'Seedream 5 Pro' },
-  { value: 'seedream-5.5-image-to-image', label: 'Seedream 5.5' },
+  { value: 'seedream-5-pro-image-to-image', label: 'Seedream 5 Pro', unsupportedRatios: ['4:5'] },
+  { value: 'seedream-5.5-image-to-image', label: 'Seedream 5.5', unsupportedRatios: ['4:5'] },
   // MiniMax H3 also goes through the core-ai gateway; only the model id differs.
   { value: 'minimax-h3-image-edit', label: 'MiniMax H3' },
 ]
+
+export function imageModelSupportsRatio(model: ImageModel, ratio: Ratio) {
+  const option = IMAGE_MODEL_OPTIONS.find(item => item.value === normalizeImageModel(model))
+  return !option?.unsupportedRatios?.includes(ratio)
+}

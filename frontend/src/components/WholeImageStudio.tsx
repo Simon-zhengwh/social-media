@@ -57,7 +57,7 @@ import type {
   WholeImageTask,
   WholeImageVersion,
 } from '../types'
-import { DEFAULT_IMAGE_MODEL, IMAGE_MODEL_OPTIONS, normalizeImageModel } from '../imageModels'
+import { DEFAULT_IMAGE_MODEL, IMAGE_MODEL_OPTIONS, imageModelSupportsRatio, normalizeImageModel } from '../imageModels'
 import { candidateForModel, candidateRounds, defaultModelCounts, imageModelLabel, restoreModelCounts,
   mergeCandidates, modelGenerationState, submitModelRound, type ModelSubmission } from '../modelGeneration'
 import { hydrateImagePrompt, serializeImagePrompt, type PromptImage } from '../imageMentions'
@@ -404,6 +404,7 @@ export default function WholeImageStudio({
     selectedPlatform?.placements.find((item) => item.id === effectivePlacementId) ??
     selectedPlatform?.placements.find((item) => item.id === selectedPlatform.default_placement_id) ??
     null
+  const generationRatio = selectedPlacement?.ratio ?? selectedRatio
 
   useEffect(() => {
     if (acceptedRef.current || creating) return
@@ -1057,6 +1058,7 @@ export default function WholeImageStudio({
     }
     const models = IMAGE_MODEL_OPTIONS.filter(option =>
       (!onlyModel || option.value === onlyModel) && resolvedCount(option.value) > 0 &&
+      imageModelSupportsRatio(option.value, generationRatio) &&
       !modelLocks.current.has(option.value) && !modelGenerationState(visibleCandidates, option.value).running)
     const payload = {
             prompt: submittedPrompt,
@@ -1136,6 +1138,10 @@ export default function WholeImageStudio({
     const count = explicitCount ?? Math.max(1, modelCounts[targetModel] ?? 1)
     if (!IMAGE_MODEL_OPTIONS.some((option) => option.value === targetModel)) {
       setError('当前模型不可用，请切换其他模型')
+      return
+    }
+    if (!imageModelSupportsRatio(targetModel, generationRatio)) {
+      setError(`当前模型不支持 ${generationRatio}，请切换模型`)
       return
     }
     if ((modelCounts[targetModel] ?? 0) !== count) {
@@ -1814,6 +1820,7 @@ export default function WholeImageStudio({
             onChange={(model, count) => setModelCounts(previous => ({ ...previous, [model]: count }))}
             onGenerate={(model, count) => void handleGenerate(model, count)}
             selectedModel={selectedModel}
+            ratio={generationRatio}
             selectionDisabled={creating || editRunning || selectingOutput || deletingCandidateId !== null || seriesBusy}
             onSelectModel={seriesMode ? handleSelectSeriesModel : handleSelectModel}
             countUnit={seriesMode ? '组' : '张'}

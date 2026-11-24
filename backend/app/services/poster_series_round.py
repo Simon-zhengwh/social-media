@@ -13,6 +13,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.schemas import PosterSeriesRunCreate, WholeImageTaskCreate, gateway_model_name
 from app.services import poster_costs, poster_series as series, whole_image
+from app.services.canvas import image_model_supports_canvas
 
 
 logger = logging.getLogger(__name__)
@@ -39,11 +40,15 @@ def create_run(
         page_assets=[{"asset_id": asset_id} for asset_id in references], title=payload.workspace_title,
     ))
     template_input = template["input"]
+    canvas = template["canvas"]
+    for spec in models:
+        model = spec["image_model"]
+        if not image_model_supports_canvas(model, canvas["width"], canvas["height"]):
+            raise series.SeriesError("unsupported_format", f"图片模型 {model} 不支持 {template_input['ratio']} 画幅", 422)
     references = list(template_input.get("reference_asset_ids") or references)
     style_references = list(template_input.get("style_reference_asset_ids") or payload.style_reference_asset_ids)
     logo_id = template_input.get("logo_asset_id") or payload.logo_asset_id
     references = [asset_id for asset_id in references if asset_id != logo_id]
-    canvas = template["canvas"]
     logo_position = payload.logo_position if logo_id else None
     logo_hint = series.resolve_logo_box(canvas, payload.prompt, position_override=logo_position) if logo_id else None
     if logo_hint and logo_hint["source"] != "user":

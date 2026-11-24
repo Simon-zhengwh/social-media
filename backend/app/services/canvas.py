@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+from app.schemas import gateway_model_name
+
 MIN_GATEWAY_PIXELS = 1024 * 1024
 
 CANVAS_SIZES: dict[str, tuple[int, int]] = {
@@ -21,6 +23,22 @@ RATIO_RESOLUTIONS: dict[str, str] = {
     "3:4": "2K",
     "4:3": "2K",
 }
+
+# The current Core AI KIE routes select from explicit aspect ratios.
+_SEEDREAM_RATIOS = {(1, 1), (4, 3), (3, 4), (16, 9), (9, 16), (2, 3), (3, 2), (21, 9)}
+KIE_IMAGE_ASPECT_RATIOS = {
+    "seedream-5-pro-image-to-image": _SEEDREAM_RATIOS,
+    "seedream-5.5-image-to-image": _SEEDREAM_RATIOS,
+    "minimax-h3-image-edit": _SEEDREAM_RATIOS | {(5, 4), (4, 5)},
+}
+
+
+def image_model_supports_canvas(model: str, width: int, height: int) -> bool:
+    ratios = KIE_IMAGE_ASPECT_RATIOS.get(gateway_model_name(model))
+    if ratios is None:
+        return True
+    divisor = math.gcd(width, height)
+    return divisor > 0 and (width // divisor, height // divisor) in ratios
 
 
 def canvas_size(ratio: str) -> tuple[int, int]:

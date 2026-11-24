@@ -7,7 +7,6 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from math import gcd
 from typing import Any
 
 import httpx
@@ -19,6 +18,7 @@ from app.config import Settings
 from app.schemas import OriginalReplacementInput
 from app.services import agent_image
 from app.services import poster_costs
+from app.services.canvas import KIE_IMAGE_ASPECT_RATIOS, image_model_supports_canvas
 from app.services.core_ai import AgentRunResult, CoreAIClient, CoreAIError
 from app.services.object_store import ObjectStore
 from app.time_utils import utc_iso
@@ -27,15 +27,6 @@ logger = logging.getLogger(__name__)
 ACTIVE = ["queued", "running"]
 SERIES_LOGO_OUTPUT_RULE = "替换交付的底图和 HTML 画布不要绘制或嵌入 Logo，保存时由应用统一合成官方原文件。"
 _UNSUPPORTED_FORMAT_MESSAGE = "不支持此格式"
-
-# The current Core AI KIE routes select from explicit aspect ratios.
-_SEEDREAM_RATIOS = {(1, 1), (4, 3), (3, 4), (16, 9), (9, 16), (2, 3), (3, 2), (21, 9)}
-_MODEL_REPLACEMENT_RATIOS = {
-    "seedream-5-pro-image-to-image": _SEEDREAM_RATIOS,
-    "seedream-5.5-image-to-image": _SEEDREAM_RATIOS,
-    "minimax-h3-image-edit": _SEEDREAM_RATIOS | {(5, 4), (4, 5)},
-}
-
 
 class OriginalReplacementError(CoreAIError):
     pass
@@ -61,10 +52,7 @@ def _asset(db: Any, asset_id: str) -> dict[str, Any]:
 
 
 def model_candidate(model: str, source: dict[str, Any]) -> dict[str, Any]:
-    width, height = source["width"], source["height"]
-    divisor = gcd(width, height)
-    ratios = _MODEL_REPLACEMENT_RATIOS.get(model)
-    if ratios is not None and (width // divisor, height // divisor) not in ratios:
+    if not image_model_supports_canvas(model, source["width"], source["height"]):
         return {"model": model, "status": "unsupported", "error": _UNSUPPORTED_FORMAT_MESSAGE}
     return {"model": model, "status": "queued"}
 
@@ -92,7 +80,7 @@ def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacemen
            "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now,
            **(metadata or {})}
     if doc.get("kind") == "model":
-        doc["candidates"] = [model_candidate(model, source) for model in _MODEL_REPLACEMENT_RATIOS]
+        doc["candidates"] = [model_candidate(model, source) for model in KIE_IMAGE_ASPECT_RATIOS]
         if all(candidate["status"] == "unsupported" for candidate in doc["candidates"]):
             doc.update(status="failed", stage="failed", error={
                 "code": "unsupported_format", "message": _UNSUPPORTED_FORMAT_MESSAGE,
