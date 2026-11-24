@@ -47,7 +47,9 @@ def asset_public_url(
             pass
     data = store.get_bytes(key)
     content_type = str(asset.get("mime_type") or "image/png")
-    if not content_type.startswith("image/"):
+    if not use_original and key == asset.get("prepared_path") and Path(key).suffix.lower() == ".png":
+        content_type = "image/png"
+    elif not content_type.startswith("image/"):
         content_type = "image/png"
     return client.upload_image_blob(data, content_type=content_type)
 

@@ -530,6 +530,8 @@ def validate_png(
 ) -> tuple[int, int]:
     try:
         with Image.open(io.BytesIO(data)) as image:
+            if image.format != "PNG":
+                raise ValueError("Expected PNG format")
             image.load()
             size = image.size
     except Exception as exc:  # noqa: BLE001

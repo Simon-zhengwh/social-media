@@ -578,6 +578,23 @@ def test_agent_series_keeps_known_style_out_of_photo_replacement():
         poster_series_round._read_manifest(rejected, [group], style_reference_ids={"style-1"})
 
 
+@pytest.mark.parametrize("base_url", [None, "https://core-ai.test/final.png", "https://core-ai.test/unknown.png"])
+def test_agent_logo_delivery_requires_a_distinct_registered_base(base_url):
+    final = AgentArtifact("final.png", "image/png", "https://core-ai.test/final.png")
+    base = AgentArtifact("base.png", "image/png", "https://core-ai.test/base.png")
+    box = {"x": 49, "y": 49, "width": 154, "height": 52}
+    group = {"_id": "group", "image_model": "gpt-image-2.5-sunburst", "content_pool": [],
+             "canvas": {"width": 1080, "height": 1350}, "logo_asset_id": "logo", "prompt": "海报"}
+    manifest = {"groups": [{"id": "group", "model": group["image_model"], "logo_box": box,
+                            "images": [{"image_url": final.download_url, "base_image_url": base_url}]}]}
+    result = AgentRunResult("run", "COMPLETED", json.dumps(manifest), [final, base])
+
+    with pytest.raises(poster_series.SeriesError, match="无 Logo 底图"):
+        poster_series_round._read_manifest(result, [group], agent_composited_logo=True)
+    legacy = poster_series_round._read_manifest(result, [group])
+    assert legacy["group"]["images"][0]["artifact"] == final
+
+
 def test_round_queues_every_page_and_interior_runs_before_cover_finishes(tmp_path):
     settings = _settings(tmp_path)
     store = LocalObjectStore(settings.storage_path / "objects")
@@ -647,7 +664,7 @@ def test_round_queues_every_page_and_interior_runs_before_cover_finishes(tmp_pat
     ("Logo 放左上角并放大一点。", "bottom-right", "bottom-right"),
 ])
 def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
-    tmp_path, logo_clause, logo_position, expected_position,
+    tmp_path, monkeypatch, logo_clause, logo_position, expected_position,
 ):
     settings = _settings(tmp_path)
     store = LocalObjectStore(settings.storage_path / "objects")
@@ -655,6 +672,11 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
     _asset(db, store, "asset-1", "参考图")
     _asset(db, store, "logo-1", "Logo")
     _asset(db, store, "style-1", "品牌风格参考")
+    prepared_logo = _png(60, 60)
+    store.put_bytes("assets/logo-prepared.png", prepared_logo, "image/png")
+    db.assets.update_one({"_id": "logo-1"}, {"$set": {
+        "prepared_path": "assets/logo-prepared.png", "mime_type": "image/heif",
+    }})
 
     def build_with_brand_style(payload):
         template = _build_task(payload)
@@ -675,7 +697,18 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
     assert len(launched) == 1
     assert db.whole_tasks.count_documents({}) == 0
 
+    def reject_backend_overlay(*_args, **_kwargs):
+        pytest.fail("The application's compositor must not run for an Agent-composited poster")
+
+    monkeypatch.setattr(poster_series, "composite_logo", reject_backend_overlay)
+
     class SeriesClient(FakeCoreAI):
+        def upload_image_blob(self, data, *, content_type):
+            url = super().upload_image_blob(data, content_type=content_type)
+            if data == prepared_logo and content_type == "image/png":
+                self.prepared_logo_url = url
+            return url
+
         def trigger_agent(self, agent_id, input_text, *, timeout_seconds):
             self.calls.append(json.loads(input_text))
             return "agent-once"
@@ -686,8 +719,11 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
                 images = []
                 for index in range(count):
                     filename = f"{group['id']}-{index}.png"
-                    images.append({"file_name": filename, "content_refs": [{"asset_id": "asset-1", "target": str(index)}]})
-                    artifacts.append(AgentArtifact(filename, "image/png", f"https://core-ai.test/{filename}"))
+                    final = AgentArtifact(filename, "image/png", f"https://core-ai.test/final/{filename}")
+                    base = AgentArtifact(f"base-{filename}", "image/png", f"https://core-ai.test/base/{filename}")
+                    images.append({"image_url": final.download_url, "base_image_url": base.download_url,
+                                   "content_refs": [{"asset_id": "asset-1", "target": str(index)}]})
+                    artifacts.extend([base, final])
                 options = self.calls[0]["logo"].get("options") or []
                 box = options[-1]["logo_box"] if options else {"x": 100, "y": 200, "width": 176, "height": 176}
                 groups.append({**group, "logo_box": box, "images": images})
@@ -695,7 +731,12 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
 
         def download_image(self, url):
             index = int(url.rsplit("-", 1)[1].split(".")[0])
-            return _png(1080, 1350, (20 + index, 60, 90))
+            image = Image.new("RGB", (1080, 1350), (20 + index, 60, 90))
+            if "/final/" in url:
+                image.putpixel((49, 49), (255, 255, 255))
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG", compress_level=1)
+            return buffer.getvalue()
 
         def agent_artifact_redirect(self, url):
             raise AssertionError("Unique registered filenames need no redirect")
@@ -712,7 +753,9 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
     assert [(item["asset_id"], item["role"]) for item in full_input["references"]] == [
         ("asset-1", "content"), ("style-1", "style"), ("logo-1", "logo"),
     ]
-    assert full_input["references"][-1]["url"].startswith("https://")
+    assert full_input["references"][-1]["url"] == client.prepared_logo_url
+    assert full_input["logo"]["delivery"] == "agent_composited"
+    assert full_input["logo"]["artwork"]["image_size"] == [60, 60]
     options = full_input["logo"]["options"]
     assert len(options) == (1 if expected_position else 4)
     official_box = options[-1]["logo_box"]
@@ -743,8 +786,14 @@ def test_new_series_request_calls_agent_once_and_accepts_its_image_counts(
             assert [(item["asset_id"], item["role"]) for item in version["model_input"]["images"]] == [
                 ("asset-1", "content"), ("style-1", "style_reference"), ("logo-1", "logo"),
             ]
+            assert page["output_id"] == "series_final"
+            assert version["series_base_asset_id"] != version["output_asset_id"]
+            base = db.assets.find_one({"_id": version["series_base_asset_id"]})
+            file = f"{group['id']}-{order}.png"
+            assert store.get_bytes(base["path"]) == client.download_image(f"https://core-ai.test/base/{file}")
             data, name = poster_series.page_download(db, store, group["id"], page["page_id"])
-            assert data.startswith(b"\x89PNG") and name == f"{order + 1:02d}-图片.png"
+            assert data == client.download_image(f"https://core-ai.test/final/{file}")
+            assert name == f"{order + 1:02d}-图片.png"
 
 
 # --------------------------------------------------------------------------- PS-08/09

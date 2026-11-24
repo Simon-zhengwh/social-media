@@ -16,7 +16,7 @@
 
 - **素材上传**：`_agent_asset_urls` 只对连接重置、超时、DNS 等可判断的网络瞬时错误重试，最多 `POSTER_SERIES_ASSET_UPLOAD_ATTEMPTS` 次；素材不存在、未配置、空文件等永久错误立即失败。每成功上传一张就写入 `whole_series_groups.agent_asset_urls`，因此页重试只补传失败的素材，不重跑整个素材池。
 - **生图触发不重试**：触发请求结果未知时只核对已保存的 `run_id`，不会为了重试而重复触发生成。
-- **Logo 不接受替换**：系列页的 Logo 始终由后台用本组官方原文件在固定显示框叠加。原照替换请求只要目标名包含 Logo/标识/标志/商标，或引用了本组/品牌的官方 Logo 素材，创建时返回 422 `series_logo_replacement_not_allowed`，提示去掉 Logo 后重新生成仅替换照片的原照替换。旧记录（已有显式 Logo 项）在应用（apply）和 HTML「保存到本页」时同样被拦截，模板是第二个可见 Logo；重新生成照片记录后即可保存。单张海报的显式 Logo 替换行为不变。
+- **Logo 不接受替换**：系列页使用本组官方原文件及固定显示框。原照替换请求只要目标名包含 Logo/标识/标志/商标，或引用了本组/品牌的官方 Logo 素材，创建时返回 422 `series_logo_replacement_not_allowed`，提示去掉 Logo 后重新生成仅替换照片的原照替换。已有显式 Logo 项的旧记录在应用（apply）和 HTML「保存到本页」时也会拦截，重新生成照片记录后即可保存。单张海报支持显式替换 Logo。
 
 ## 演示启用（UAT/本地）
 
@@ -27,7 +27,9 @@
    CORE_AI_SERIES_AGENT_ID=a91e2488-0285-40e3-bff6-540a83e9d944
    ```
 
-   `a91e2488-0285-40e3-bff6-540a83e9d944` 是 UAT 的 `simon-image-generate`，绑定 `simon/poster-series` Skill。新版页面生成需要 Agent 和 Skill 支持下方的 `poster-series-generate`。
+   `a91e2488-0285-40e3-bff6-540a83e9d944` 是 UAT 的 `simon-image-generate`，绑定 `simon/poster-series` Skill。升级时先上传包含 `scripts/composite_logo.py` 的 `poster-series` 0.3.0 或更新版本，把 Agent 系统提示词中的 `Deliver the exact supplied logo_box in the manifest for the app to place the official Logo.` 替换为下句，再发布 Agent 并部署后端。更新后的 Skill 兼容旧后端请求。
+
+   > Deliver the exact supplied logo_box in the manifest. When logo.delivery is agent_composited, use the skill to apply the original Logo, visually review the actual composited PNG, and deliver it along with its matching no-Logo base. For older requests without logo.delivery, deliver the no-Logo PNG.
 
 2. 重启后端，确认开关：
 
@@ -41,8 +43,8 @@
 ## Core AI 整组交付
 
 - 输入操作是 `poster-series-generate`，`prompt` 是用户需求，`groups` 指定组 ID 和模型。素材、品牌资料、画布及 Logo 信息以独立字段传入。
-- Agent 自己决定每组张数、内容和用图，并维护整组视觉风格。需要 Logo 时，Agent 为整组设计同一个位置、尺寸和与画面融合的局部背景。应用按 `logo_box` 合成官方 Logo 文件。
-- Agent 提交各张 PNG，再返回 `groups` 数组。组内每张图片提供对应的制品 URL 及实际引用的原照。历史同协议回执也可使用能唯一匹配制品的文件名。数组顺序就是展示顺序。
+- Agent 决定每组张数、内容和用图。带 `logo.delivery: "agent_composited"` 的请求中，Agent 使用 Skill 脚本叠加官方 Logo，检查实际 PNG，并为每张图提交成品和同尺寸无 Logo 底图。后端校验并保存原样文件，展示 `image_url`，供后续改图使用 `base_image_url`。
+- Agent 返回 `groups` 数组及实际引用的原照，组内的数组顺序就是展示顺序。无 Logo 请求只需提交 `image_url`。已触发的旧协议任务保留旧交付方式。
 
 ```json
 {
@@ -52,7 +54,11 @@
       "model": "gpt-image-2.5-sunburst",
       "logo_box": { "x": 900, "y": 60, "width": 82, "height": 82 },
       "images": [
-        { "image_url": "https://example.com/group-1-image-1.png", "content_refs": [{ "asset_id": "asset_...", "target": "甜品" }] }
+        {
+          "image_url": "https://example.com/group-1-image-1.png",
+          "base_image_url": "https://example.com/group-1-image-1-base.png",
+          "content_refs": [{ "asset_id": "asset_...", "target": "甜品" }]
+        }
       ]
     }
   ]

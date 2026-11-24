@@ -146,6 +146,23 @@ def _save_output_asset(
     except Exception as exc:  # noqa: BLE001 - provider payload is untrusted
         raise StudioError("invalid_output", "模型返回的图片无法解码", 502) from exc
 
+    return _persist_output_png(db, settings, store, task_id=task_id, version=version,
+                               png=png, size=(width, height), role=role)
+
+
+def _persist_output_png(
+    db: Database,
+    settings: Settings,
+    store: ObjectStore,
+    *,
+    task_id: str,
+    version: int,
+    png: bytes,
+    size: tuple[int, int],
+    role: str | None = None,
+) -> dict[str, Any]:
+    """Store a decoded and validated PNG without rewriting the reviewed file."""
+    width, height = size
     suffix = f"_{role}" if role else ""
     relative = storage.object_key(
         settings,

@@ -14,10 +14,12 @@ from pymongo.errors import DuplicateKeyError
 from app.schemas import PosterSeriesRunCreate, WholeImageTaskCreate, gateway_model_name
 from app.services import poster_costs, poster_series as series, whole_image
 from app.services.canvas import image_model_supports_canvas
+from app.services.core_ai import AgentArtifact
 
 
 logger = logging.getLogger(__name__)
 WORKFLOW = "agent-series"
+AGENT_LOGO_DELIVERY = "agent_composited"
 AZURE_BLOB_SAS_FIELDS = {"se", "sig", "sip", "sp", "spr", "sr", "st", "sv"}
 
 
@@ -106,7 +108,7 @@ def _agent_input(db: Any, settings: Any, store: Any, client: Any,
     if logo_id:
         references.append({
             "asset_id": logo_id,
-            "url": series._upload_asset_url(db, settings, store, client, logo_id, use_original=True),
+            "url": series._upload_asset_url(db, settings, store, client, logo_id),
             "name": (rows.get(logo_id) or {}).get("original_name") or "官方 Logo",
             "role": "logo",
         })
@@ -117,12 +119,14 @@ def _agent_input(db: Any, settings: Any, store: Any, client: Any,
         instruction = (
             "For each group choose one supplied option before drawing any page. "
             "Use its exact logo_box for all pages and keep only its safe_area clear. "
-            "Compose freely outside it. The app overlays the official reference."
+            "Use the poster-series skill to overlay the official reference and visually review the composited PNG. "
+            "Register the reviewed PNG and its no-Logo base separately."
         )
         if logo_position:
             instruction += " The selected Logo position takes precedence over position wording in the design prompt."
         logo = {
             "artwork": artwork,
+            "delivery": AGENT_LOGO_DELIVERY,
             "placement": placement or None,
             "options": series._logo_options(run["canvas"], run["prompt"], artwork, position_override=logo_position),
             "instruction": instruction,
@@ -155,6 +159,7 @@ def _read_manifest(
     logo_options: list[dict[str, Any]] | None = None,
     style_reference_ids: frozenset[str] = frozenset(),
     artifact_redirect: Callable[[str], str | None] | None = None,
+    agent_composited_logo: bool = False,
 ) -> dict[str, dict[str, Any]]:
     manifest = series._extract_agent_payload(result.output)
     if manifest.get("error"):
@@ -175,6 +180,26 @@ def _read_manifest(
     urls_by_redirect: dict[str, set[str]] | None = None
     indexed: dict[str, dict[str, Any]] = {}
     used: set[str] = set()
+
+    def take_png(url: Any, *, file_name: Any = None, missing: str) -> AgentArtifact:
+        nonlocal urls_by_redirect
+        if url is None:
+            matches = urls_by_name.get(str(file_name or ""), set())
+            url = next(iter(matches)) if len(matches) == 1 else None
+        elif isinstance(url, str) and url not in artifacts_by_url and artifact_redirect is not None:
+            if urls_by_redirect is None:
+                urls_by_redirect = {}
+                for registered_url in artifacts_by_url:
+                    if redirect := artifact_redirect(registered_url):
+                        key = _artifact_url_key(redirect)
+                        urls_by_redirect.setdefault(key, set()).add(registered_url)
+            matches = urls_by_redirect.get(_artifact_url_key(url), set())
+            url = next(iter(matches)) if len(matches) == 1 else None
+        if not isinstance(url, str) or url not in artifacts_by_url or url in used:
+            raise series.SeriesError("agent_image_missing", missing, 502)
+        used.add(url)
+        return artifacts_by_url[url]
+
     for item in delivered:
         group = requested.get(str(item.get("id"))) if isinstance(item, dict) else None
         if group is None or group["_id"] in indexed:
@@ -212,29 +237,19 @@ def _read_manifest(
         for image in images:
             if not isinstance(image, dict):
                 raise series.SeriesError("agent_image_missing", "Agent 交付的图片清单无效", 502)
-            url = image.get("image_url")
-            if url is None:
-                matches = urls_by_name.get(str(image.get("file_name") or ""), set())
-                url = next(iter(matches)) if len(matches) == 1 else None
-            elif isinstance(url, str) and url not in artifacts_by_url and artifact_redirect is not None:
-                if urls_by_redirect is None:
-                    urls_by_redirect = {}
-                    for registered_url in artifacts_by_url:
-                        if redirect := artifact_redirect(registered_url):
-                            key = _artifact_url_key(redirect)
-                            urls_by_redirect.setdefault(key, set()).add(registered_url)
-                matches = urls_by_redirect.get(_artifact_url_key(url), set())
-                url = next(iter(matches)) if len(matches) == 1 else None
-            if not isinstance(url, str) or url not in artifacts_by_url or url in used:
-                raise series.SeriesError("agent_image_missing", "Agent 交付的图片文件缺失、重复或无法唯一匹配", 502)
-            used.add(url)
+            artifact = take_png(image.get("image_url"), file_name=image.get("file_name"),
+                                missing="Agent 交付的图片文件缺失、重复或无法唯一匹配")
+            base_artifact = None
+            if agent_composited_logo and group.get("logo_asset_id"):
+                base_artifact = take_png(image.get("base_image_url"),
+                                         missing="Agent 必须另行提交已注册的无 Logo 底图")
             refs = image.get("content_refs") or []
             if not isinstance(refs, list) or any(
                 not isinstance(ref, dict) or not isinstance(ref.get("asset_id"), str)
                 or ref["asset_id"] not in known_ids for ref in refs
             ):
                 raise series.SeriesError("agent_reference_invalid", "Agent 引用了素材池以外的原照", 502)
-            outputs.append({"artifact": artifacts_by_url[url], "content_refs": [
+            outputs.append({"artifact": artifact, "base_artifact": base_artifact, "content_refs": [
                 {"asset_id": ref["asset_id"], "target": str(ref.get("target") or "")}
                 for ref in refs if ref["asset_id"] in photo_ids
             ]})
@@ -271,13 +286,23 @@ def _save_image(db: Any, settings: Any, store: Any, client: Any, run: dict[str, 
     if run.get("title"):
         task["workspace_initial_title"] = run["title"]
     artifact = item["artifact"]
+    base_artifact = item.get("base_artifact")
     canvas = group["canvas"]
     width, height = canvas["width"], canvas["height"]
     data = client.download_image(artifact.download_url)
     saved_assets: list[str] = []
     try:
-        saved = whole_image._save_output_asset(db, settings, store, task_id=task_id, version=1,
-                                               data=data, role="series_base", target_size=(width, height))
+        if base_artifact:
+            base_data = client.download_image(base_artifact.download_url)
+            if base_data == data:
+                raise series.SeriesError("agent_logo_missing", "Agent 交付的成品与无 Logo 底图相同", 502)
+            series.validate_png(data, canvas)
+            series.validate_png(base_data, canvas)
+            saved = whole_image._persist_output_png(db, settings, store, task_id=task_id, version=1,
+                                                   png=base_data, role="series_base", size=(width, height))
+        else:
+            saved = whole_image._save_output_asset(db, settings, store, task_id=task_id, version=1,
+                                                   data=data, role="series_base", target_size=(width, height))
         saved_assets.append(saved["asset_id"])
         recorded_refs = run.get("agent_references")
         images = ([{**ref, "role": "style_reference" if ref["role"] == "style" else ref["role"]}
@@ -291,10 +316,23 @@ def _save_image(db: Any, settings: Any, store: Any, client: Any, run: dict[str, 
         base_output = {"id": "series_base", "channel": "agent", "role": "series_base", "label": "成品",
                        "asset_id": saved["asset_id"], "width": width, "height": height, "model_input": model_input,
                        "created_at": whole_image.utcnow()}
-        final_id, outputs, extra = series.finalize_series_outputs(db, settings, store, task=task, version=1,
-                                                                  outputs=[base_output], canvas=canvas)
-        if final_id != saved["asset_id"]:
+        if base_artifact:
+            final = whole_image._persist_output_png(db, settings, store, task_id=task_id, version=1,
+                                                   png=data, role="series_final", size=(width, height))
+            final_id = final["asset_id"]
             saved_assets.append(final_id)
+            outputs = [
+                {**base_output, "label": "无 Logo 底图", "selectable": False},
+                {**base_output, "id": "series_final", "role": "series_final", "asset_id": final_id,
+                 "selectable": True},
+            ]
+            extra = {"series_base_asset_id": saved["asset_id"], "series_logo_box": group["logo_box"],
+                     "series_logo_asset_id": group["logo_asset_id"]}
+        else:
+            final_id, outputs, extra = series.finalize_series_outputs(db, settings, store, task=task, version=1,
+                                                                      outputs=[base_output], canvas=canvas)
+            if final_id != saved["asset_id"]:
+                saved_assets.append(final_id)
         db.whole_series_pages.replace_one({"_id": page_id}, page, upsert=True)
         db.whole_tasks.replace_one({"_id": task_id}, task, upsert=True)
         version = whole_image._version_document(task_id=task_id, version=1, parent_version_id=None,
@@ -334,6 +372,7 @@ def run_generation(db: Any, settings: Any, store: Any, client: Any, run_id: str)
             with poster_costs.track(db, run["workspace_id"], "series"):
                 run["agent_run_id"] = client.trigger_agent(agent_id, json.dumps(payload, ensure_ascii=False), timeout_seconds=30)
             snapshot = {"agent_run_id": run["agent_run_id"], "agent_references": payload["references"],
+                        "agent_logo_delivery": (payload["logo"] or {}).get("delivery"),
                         "agent_logo_artwork": (payload["logo"] or {}).get("artwork"),
                         "agent_logo_options": (payload["logo"] or {}).get("options")}
             run.update(snapshot)
@@ -345,7 +384,8 @@ def run_generation(db: Any, settings: Any, store: Any, client: Any, run_id: str)
         indexed = _read_manifest(result, groups, logo_artwork=run.get("agent_logo_artwork"),
                                  logo_options=run.get("agent_logo_options"),
                                  style_reference_ids=style_reference_ids,
-                                 artifact_redirect=client.agent_artifact_redirect)
+                                 artifact_redirect=client.agent_artifact_redirect,
+                                 agent_composited_logo=run.get("agent_logo_delivery") == AGENT_LOGO_DELIVERY)
         for group in groups:
             delivered = indexed[group["_id"]]
             group.update(logo_box=delivered["logo_box"], page_count=len(delivered["images"]))

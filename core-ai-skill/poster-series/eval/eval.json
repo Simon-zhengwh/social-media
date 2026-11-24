@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "skill": "poster-series",
-  "dataset_version": "0.2.6",
+  "dataset_version": "0.3.0",
   "cases": [
     {
       "id": "agent-decides-images",
@@ -208,6 +208,36 @@
           "只修第 3 页的实际缺陷，交付保留第 1、2 页首轮图，保持固定 Logo 框和 PNG 清单顺序"
         ],
         "tools": ["generate_image"]
+      }
+    },
+    {
+      "id": "review-composited-logo-before-delivery",
+      "dimension": "tool_accuracy",
+      "input": {
+        "user_request": "生成三张同风格海报，官方 Logo 在统一的左上角，保留它的黑白字形。",
+        "scenario": "请求包含 logo.delivery=agent_composited、官方双色 Logo、以及固定的左上角安全区。首轮底图为米白色；一次合成后第二张仍有一段 Logo 字形难读。"
+      },
+      "assertions": [
+        {
+          "kind": "rubric",
+          "description": "在 skill 沙箱内使用官方原文件叠加 Logo，检查的是叠加后的整张 PNG 和 Logo 局部"
+        },
+        {
+          "kind": "rubric",
+          "description": "发现第二张 Logo 难读后只修第二张，再次合成并视觉检查"
+        },
+        {
+          "kind": "rubric",
+          "description": "每张用两个不同的已注册 PNG URL 交付成品和无 Logo 底图，保持同一组 Logo 框"
+        }
+      ],
+      "expected": {
+        "checks": [
+          "在 skill 沙箱内使用官方原文件叠加 Logo，检查的是叠加后的整张 PNG 和 Logo 局部",
+          "发现第二张 Logo 难读后只修第二张，再次合成并视觉检查",
+          "每张用两个不同的已注册 PNG URL 交付成品和无 Logo 底图，保持同一组 Logo 框"
+        ],
+        "tools": ["generate_image", "submit_artifacts"]
       }
     },
     {
