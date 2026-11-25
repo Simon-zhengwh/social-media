@@ -4,7 +4,7 @@ import type { Asset, BrandLogoImage, ImageModel, LogoOverlayBox, OriginalReplace
 import { parseServerDate } from '../time'
 import { assetDisplayName } from '../assetNames'
 import { imageModelLabel } from '../modelGeneration'
-import { ORIGINAL_REPLACEMENT_MODELS, defaultReplacementModel, imageModelSupportsRatio } from '../imageModels'
+import { ORIGINAL_REPLACEMENT_MODELS, canvasRatioOf, defaultReplacementModel, imageModelSupportsRatio } from '../imageModels'
 import { ZoomableImage } from './ImageLightbox'
 import { compositeLogoPng } from '../logoOverlay'
 import PosterCropDialog from './PosterCropDialog'
@@ -107,8 +107,11 @@ export default function OriginalReplacementPanel({
   const [splitAllElements, setSplitAllElements] = useState(false)
   // 仅替换元素 sends one model request per click; the rest stay idle candidates. Every model
   // stays selectable: one that cannot keep the canvas ratio runs at its own ratio and is
-  // cropped back in the crop dialog, so it is never hidden from the picker.
-  const replacementRatio = task.placement?.ratio ?? task.input.ratio
+  // cropped back in the crop dialog, so it is never hidden from the picker. The ratio comes
+  // from the source poster this batch replaces, because that is the size the backend judges.
+  const replacementSource = seriesCanvas ?? task.outputs.find((output) => output.id === task.current_output_id)
+  const replacementRatio = canvasRatioOf(replacementSource?.width, replacementSource?.height)
+    ?? task.placement?.ratio ?? task.input.ratio
   const [requestedModel, setRequestedModel] = useState<ImageModel>(
     () => defaultReplacementModel(replacementRatio))
   const candidateModel = requestedModel

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { IMAGE_MODEL_OPTIONS, ORIGINAL_REPLACEMENT_MODELS, defaultReplacementModel,
+import { IMAGE_MODEL_OPTIONS, ORIGINAL_REPLACEMENT_MODELS, canvasRatioOf, defaultReplacementModel,
   imageModelSupportsRatio } from '../src/imageModels.ts'
 import { defaultModelCounts, restoreModelCounts, mergeCandidates, modelGenerationState, submitModelRound,
   candidateForModel, candidateRounds, normalizeModelCount, imageModelLabel } from '../src/modelGeneration.ts'
@@ -22,6 +22,17 @@ test('仅替换元素 keeps all three models and defaults to one that fits the c
   assert.equal(defaultReplacementModel('4:5'), minimax)
   assert.equal(defaultReplacementModel('3:4'), seed)
   assert.equal(defaultReplacementModel(), seed)
+})
+
+test('模型选择器按底稿像素判断画布比例', () => {
+  assert.equal(canvasRatioOf(1080, 1350), '4:5')
+  assert.equal(canvasRatioOf(1080, 1440), '3:4')
+  assert.equal(canvasRatioOf(1088, 1360), '4:5')
+  assert.equal(canvasRatioOf(1024, 1024), '1:1')
+  assert.equal(canvasRatioOf(1920, 1080), '16:9')
+  // The crop dialog keeps the model's own ratio; an unknown one never hides a model.
+  assert.equal(canvasRatioOf(1000, 1400), undefined)
+  assert.equal(canvasRatioOf(null, 1350), undefined)
 })
 
 test('MiniMax aliases share their label and candidates without mixing other models', () => {

@@ -43,3 +43,14 @@ export function imageModelSupportsRatio(model: ImageModel, ratio: Ratio) {
   const option = IMAGE_MODEL_OPTIONS.find(item => item.value === normalizeImageModel(model))
   return !option?.unsupportedRatios?.includes(ratio)
 }
+
+const CANVAS_RATIO_PAIRS: readonly [Ratio, number][] = [
+  ['1:1', 1], ['9:16', 9 / 16], ['4:5', 4 / 5], ['16:9', 16 / 9], ['3:4', 3 / 4], ['4:3', 4 / 3],
+]
+
+/** Which canvas ratio a picture keeps. The backend judges the source pixels, so the picker does too. */
+export function canvasRatioOf(width?: number | null, height?: number | null): Ratio | undefined {
+  if (!width || !height) return undefined
+  const value = width / height
+  return CANVAS_RATIO_PAIRS.find(([, pair]) => Math.abs(value / pair - 1) < 0.01)?.[0]
+}
