@@ -48,8 +48,12 @@ import type {
 export type LocalDevProbe = {
   /** Merchant to open when the backend runs with AM_BYPASS_LOCAL, else empty. */
   merchantId: string
+  /** True when this backend runs with the local AM bypass (AM_BYPASS_LOCAL on loopback). */
+  localBypass: boolean
   /** True when /api/health could not be reached at all, usually a stopped backend. */
   backendUnreachable: boolean
+  /** Health error message when /api/health answered 503 (e.g. local MongoDB stopped). */
+  healthMessage?: string
 }
 
 /**
@@ -63,16 +67,28 @@ export async function probeLocalDevMerchant(): Promise<LocalDevProbe> {
   try {
     const response = await fetch('/api/health')
     if (!response.ok && response.status !== 503) {
-      return { merchantId: '', backendUnreachable: false }
+      return { merchantId: '', localBypass: false, backendUnreachable: false }
     }
-    const payload = (await response.json()) as { local_merchant_id?: unknown }
+    const payload = (await response.json()) as {
+      local_merchant_id?: unknown
+      local_bypass?: unknown
+      status?: unknown
+      message?: unknown
+    }
     const value = payload.local_merchant_id
+    const merchantId = typeof value === 'string' ? value.trim() : ''
+    const healthMessage =
+      payload.status === 'error' && typeof payload.message === 'string'
+        ? payload.message.trim()
+        : undefined
     return {
-      merchantId: typeof value === 'string' ? value.trim() : '',
+      merchantId,
+      localBypass: payload.local_bypass === true || Boolean(merchantId),
       backendUnreachable: false,
+      healthMessage,
     }
   } catch {
-    return { merchantId: '', backendUnreachable: true }
+    return { merchantId: '', localBypass: false, backendUnreachable: true }
   }
 }
 
@@ -87,7 +103,11 @@ export function merchantPath(path: string): string {
     // Merchant selection requires an existing AM context, validated by the server.
     path === '/api/merchants' ||
     path.startsWith('/api/merchants/') ||
-    path.startsWith('/api/merchants?')
+    path.startsWith('/api/merchants?') ||
+    // The media migration tool carries both merchant ids in its own body.
+    path === '/api/media-migration' ||
+    path.startsWith('/api/media-migration/') ||
+    path.startsWith('/api/media-migration?')
   ) {
     return path
   }
@@ -263,6 +283,10 @@ export type MerchantFeatures = {
   agent_tests?: boolean
   /** SMB material filtering reads this machine's folders, so it is local-only. */
   material_filters?: boolean
+  /** UAT → Prod media migration is a local operator tool as well. */
+  media_migration?: boolean
+  /** True when this backend runs with the local AM bypass. */
+  localBypass?: boolean
 }
 
 export type MerchantContext = {
@@ -1205,4 +1229,142 @@ export function posterSeriesPageDownloadPath(groupId: string, pageId: string): s
 
 export function posterSeriesGroupDownloadPath(groupId: string): string {
   return merchantPath(`/api/whole-image/series-groups/${encodeURIComponent(groupId)}/download`)
+}
+
+/* --- Local-only UAT → Prod AM media migration ---------------------------- */
+
+export type MediaMigrationDefaults = {
+  uat_base_url: string
+  prod_base_url: string
+}
+
+export type MediaMigrationPayload = {
+  uat_base_url: string
+  uat_merchant_id: string
+  /** Session cookie; travels with the request only and is never stored. */
+  uat_cookie: string
+  prod_base_url: string
+  prod_merchant_id: string
+  prod_cookie: string
+  skip_same_name?: boolean
+  force?: boolean
+  limit?: number
+}
+
+export type MediaMigrationItemStatus =
+  | 'planned'
+  | 'skipped_ledger'
+  | 'skipped_same_name'
+  | 'uploaded'
+  | 'failed'
+
+export type MediaMigrationItem = {
+  source_id: string
+  name: string
+  format: string
+  tags: string[]
+  thumbnail_url: string | null
+  status: MediaMigrationItemStatus
+  prod_media_id: string | null
+  reason?: string
+  error?: string | null
+}
+
+export type MediaMigrationCounters = {
+  uat_total: number
+  prod_total: number
+  planned: number
+  skipped_ledger: number
+  skipped_same_name: number
+  uploaded: number
+  compressed: number
+  failed: number
+  done: number
+}
+
+export type MediaMigrationPreview = {
+  uat_total: number
+  prod_total: number
+  planned: number
+  skipped_ledger: number
+  skipped_same_name: number
+  items: MediaMigrationItem[]
+}
+
+export type MediaMigrationJobStatus =
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'partial'
+  | 'failed'
+  | 'cancelled'
+
+export type MediaMigrationJob = {
+  job_id: string
+  status: MediaMigrationJobStatus
+  uat_base_url: string
+  uat_merchant_id: string
+  prod_base_url: string
+  prod_merchant_id: string
+  skip_same_name: boolean
+  force: boolean
+  limit?: number
+  counters: Partial<MediaMigrationCounters>
+  current: string
+  error: string | null
+  items: MediaMigrationItem[]
+  created_at: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export type MediaMigrationJobSummary = Omit<MediaMigrationJob, 'items' | 'current'>
+
+export async function getMediaMigrationDefaults(): Promise<MediaMigrationDefaults> {
+  return parseResponse(await apiFetch('/api/media-migration/defaults'))
+}
+
+export async function previewMediaMigration(
+  payload: MediaMigrationPayload,
+): Promise<MediaMigrationPreview> {
+  return parseResponse(await apiFetch('/api/media-migration/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }))
+}
+
+export async function startMediaMigrationJob(
+  payload: MediaMigrationPayload,
+): Promise<MediaMigrationJob> {
+  return parseResponse(await apiFetch('/api/media-migration/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }))
+}
+
+export async function getMediaMigrationJob(jobId: string): Promise<MediaMigrationJob> {
+  return parseResponse(await apiFetch(
+    `/api/media-migration/jobs/${encodeURIComponent(jobId)}`,
+  ))
+}
+
+export async function cancelMediaMigrationJob(jobId: string): Promise<MediaMigrationJob> {
+  return parseResponse(await apiFetch(
+    `/api/media-migration/jobs/${encodeURIComponent(jobId)}/cancel`,
+    { method: 'POST' },
+  ))
+}
+
+export async function listMediaMigrationJobs(
+  options: { uatMerchantId?: string; prodMerchantId?: string; limit?: number } = {},
+): Promise<MediaMigrationJobSummary[]> {
+  const params = new URLSearchParams({ limit: String(options.limit ?? 20) })
+  if (options.uatMerchantId?.trim()) params.set('uat_merchant_id', options.uatMerchantId.trim())
+  if (options.prodMerchantId?.trim()) params.set('prod_merchant_id', options.prodMerchantId.trim())
+  const body = await parseResponse<{ jobs: MediaMigrationJobSummary[] }>(await apiFetch(
+    `/api/media-migration/jobs?${params.toString()}`,
+  ))
+  return body.jobs ?? []
 }

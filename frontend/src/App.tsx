@@ -7,6 +7,7 @@ import WholeImageStudio from './components/WholeImageStudio'
 import AgentTestPage from './components/AgentTestPage'
 import PosterEditStudio from './components/PosterEditStudio'
 import MaterialFilterPage from './components/MaterialFilterPage'
+import MediaMigrationPage from './components/MediaMigrationPage'
 import {
   ApiError,
   createAssetIndexRun,
@@ -35,6 +36,7 @@ import { newPosterDesignUrl } from './posterSession'
 function readView(): AppView {
   const value = new URLSearchParams(window.location.search).get('view')
   if (value === 'material-filters') return 'material-filters'
+  if (value === 'media-migration') return 'media-migration'
   if (value === 'agent-tests') return 'agent-tests'
   if (value === 'assets') {
     return 'assets'
@@ -121,6 +123,24 @@ export default function App() {
   const [resolvingMerchant, setResolvingMerchant] = useState(() => !startup.id)
   // Set when local dev cannot even reach the backend, so the error screen can say so.
   const [backendUnreachable, setBackendUnreachable] = useState(false)
+  const [healthMessage, setHealthMessage] = useState<string | null>(null)
+  // The local-only operator tools need the bypass flag itself, not just a merchant id.
+  const [localBypass, setLocalBypass] = useState(false)
+  const [probingLocal, setProbingLocal] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    void probeLocalDevMerchant().then((probe) => {
+      if (cancelled) return
+      setLocalBypass(probe.localBypass)
+      setBackendUnreachable(probe.backendUnreachable)
+      setHealthMessage(probe.healthMessage ?? null)
+      setProbingLocal(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     if (initialMerchantId) return
@@ -285,7 +305,8 @@ export default function App() {
         storeMerchantId(merchantId)
         if (
           (startupView === 'agent-tests' && value.features?.agent_tests !== true) ||
-          (startupView === 'material-filters' && value.features?.material_filters !== true)
+          (startupView === 'material-filters' && value.features?.material_filters !== true) ||
+          (startupView === 'media-migration' && value.features?.media_migration !== true)
         ) {
           // A saved local-only page is not available on this deployment: leave the address bar
           // pointing at the poster studio instead of a page that will never render.
@@ -314,6 +335,7 @@ export default function App() {
   const handleViewChange = (next: AppView) => {
     if (next === 'agent-tests' && !agentTestsAllowed) return
     if (next === 'material-filters' && !materialFiltersAllowed) return
+    if (next === 'media-migration' && !mediaMigrationAllowed) return
     if (next === view && next === 'whole') return
     setView(next)
     updateUrl(next)
@@ -425,26 +447,40 @@ export default function App() {
   */
   const agentTestsAllowed = context?.features?.agent_tests === true
   const materialFiltersAllowed = context?.features?.material_filters === true
+  const mediaMigrationAllowed = context?.features?.media_migration === true
   const visibleView: AppView =
     (view === 'agent-tests' && !agentTestsAllowed) ||
-    (view === 'material-filters' && !materialFiltersAllowed)
+    (view === 'material-filters' && !materialFiltersAllowed) ||
+    (view === 'media-migration' && !mediaMigrationAllowed)
       ? 'whole'
       : view
+  /*
+    The migration page takes both merchant ids by hand, so it opens on a local backend
+    that has not imported (or lost) a merchant instead of blocking on the workspace error.
+  */
+  const standaloneMediaMigration = view === 'media-migration' && localBypass
 
-  if (contextLoading || resolvingMerchant) {
+  if (contextLoading || resolvingMerchant || (view === 'media-migration' && probingLocal)) {
     return <div className="app-loading">正在打开商家工作区…</div>
+  }
+  if (standaloneMediaMigration && (contextError || !context)) {
+    return (
+      <div className="app-main">
+        <MediaMigrationPage />
+      </div>
+    )
   }
   if (contextError || !context) {
     return (
       <div className="app-context-error">
         <strong>无法打开商家工作区</strong>
-        <p>{contextError || (backendUnreachable ? '无法连接后端服务，本地开发需先启动 backend（127.0.0.1:8000）再刷新页面' : '商家上下文不可用')}</p>
+        <p>{healthMessage || contextError || (backendUnreachable ? '无法连接后端服务，本地开发需先启动 backend（127.0.0.1:8000）再刷新页面' : '商家上下文不可用')}</p>
         {backendUnreachable ? (
           <p>
             启动命令：在 backend 目录执行<br />
             <code>.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000</code>
           </p>
-        ) : (
+        ) : localBypass ? null : (
           <a className="mp-btn-primary" href="https://am.connexup-uat.net">返回 AM Console 重新进入</a>
         )}
       </div>
@@ -458,6 +494,7 @@ export default function App() {
         onChange={handleViewChange}
         showAgentTests={agentTestsAllowed}
         showMaterialFilters={materialFiltersAllowed}
+        showMediaMigration={mediaMigrationAllowed || localBypass}
         merchantId={initialMerchantId}
         merchantName={context?.merchant.merchant_name ?? '商家工作区'}
       />
@@ -486,6 +523,8 @@ export default function App() {
         </div>
         {visibleView === 'material-filters' ? (
           <MaterialFilterPage />
+        ) : visibleView === 'media-migration' ? (
+          <MediaMigrationPage />
         ) : visibleView === 'poster-edit' ? (
             <PosterEditStudio
             assets={assets}

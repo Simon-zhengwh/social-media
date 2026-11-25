@@ -22,6 +22,7 @@ from app.routes import (
     brand_rules,
     brands,
     material_filters,
+    media_migration,
     merchant_context,
     platforms,
     poster_edit,
@@ -43,6 +44,7 @@ from app.services import (
 )
 from app.services import material_filter_files, material_filter_uat_sync
 from app.services import material_filters as material_filter_store
+from app.services import media_migration as media_migration_service
 from app.services.am_client import AMClient
 from app.services.core_ai import CoreAIClient
 from app.services.media_object_store import create_merchant_store
@@ -147,6 +149,28 @@ def _initialize_indexes(db, settings=None) -> None:
     db[asset_index_store.RUN_COLLECTION].create_index([("status", 1), ("merchant_id", 1)])
     db[asset_index_store.QUERY_COLLECTION].create_index([("merchant_id", 1), ("created_at", -1)])
     db[asset_index_store.QUERY_COLLECTION].create_index([("merchant_id", 1), ("expires_at", 1)])
+    # The UAT→Prod media migration keeps its checkpoints and run history in the local database.
+    db[media_migration_service.ITEM_COLLECTION].create_index(
+        [
+            ("uat_base_url", 1),
+            ("uat_merchant_id", 1),
+            ("prod_base_url", 1),
+            ("prod_merchant_id", 1),
+            ("source_media_id", 1),
+        ],
+        unique=True,
+    )
+    db[media_migration_service.ITEM_COLLECTION].create_index(
+        [("uat_merchant_id", 1), ("prod_merchant_id", 1), ("updated_at", -1)]
+    )
+    db[media_migration_service.JOB_COLLECTION].create_index([("status", 1)])
+    db[media_migration_service.JOB_COLLECTION].create_index([("created_at", -1)])
+    db[media_migration_service.JOB_COLLECTION].create_index(
+        [("uat_merchant_id", 1), ("prod_merchant_id", 1), ("created_at", -1)]
+    )
+    db[media_migration_service.JOB_COLLECTION].create_index(
+        [("prod_merchant_id", 1), ("created_at", -1)]
+    )
 
 
 def _scoped_store(app: FastAPI, merchant_id: str, db):
@@ -231,6 +255,13 @@ def _mark_material_filter_runs_interrupted(app: FastAPI) -> None:
         material_filter_uat_sync.mark_interrupted(db)
 
 
+def _mark_media_migration_jobs_interrupted(app: FastAPI) -> None:
+    """A restarted process cannot finish its uploads; the operator resumes them."""
+    interrupted = media_migration_service.mark_interrupted(app.state.raw_db)
+    if interrupted:
+        logger.warning("media migration jobs were interrupted by the restart: %s", interrupted)
+
+
 def _interrupt_asset_index_runs(app: FastAPI) -> None:
     """A restarted process cannot finish its claims; the operator starts a new pass."""
     raw = app.state.raw_db
@@ -279,6 +310,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _resume_poster_series(app)
         _resume_agent_tests(app)
         _mark_material_filter_runs_interrupted(app)
+        _mark_media_migration_jobs_interrupted(app)
         _interrupt_asset_index_runs(app)
         app.state.ready = True
         logger.info("social media initialization complete; database=%s", settings.mongodb_database)
@@ -333,6 +365,8 @@ merchant_router.include_router(material_filters.router)
 merchant_router.include_router(asset_index.router)
 app.include_router(merchant_router)
 app.include_router(platforms.router)
+# One-off local operator tool: every route inside re-checks the local bypass gate.
+app.include_router(media_migration.router)
 
 
 @app.exception_handler(material_filter_store.MaterialFilterError)
@@ -353,6 +387,14 @@ async def asset_index_error_handler(_: Request, exc) -> JSONResponse:
 
 @app.exception_handler(material_filter_uat_sync.SyncError)
 async def material_filter_sync_error_handler(_: Request, exc) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+    )
+
+
+@app.exception_handler(media_migration_service.MediaMigrationError)
+async def media_migration_error_handler(_: Request, exc) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "message": exc.message}},
@@ -392,6 +434,8 @@ def health(request: Request) -> JSONResponse:
                 "status": "error",
                 "initialized": False,
                 "message": getattr(request.app.state, "startup_error", None) or "服务尚未完成初始化",
+                "local_merchant_id": local_merchant_id,
+                "local_bypass": bypass,
             },
         )
     try:
@@ -399,7 +443,14 @@ def health(request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         return JSONResponse(
             status_code=503,
-            content={"status": "error", "initialized": True, "mongo": "unavailable", "message": f"MongoDB 不可用：{exc}", "local_merchant_id": local_merchant_id},
+            content={
+                "status": "error",
+                "initialized": True,
+                "mongo": "unavailable",
+                "message": f"MongoDB 不可用：{exc}",
+                "local_merchant_id": local_merchant_id,
+                "local_bypass": bypass,
+            },
         )
     try:
         storage.ensure_storage_dirs(settings)
@@ -414,6 +465,7 @@ def health(request: Request) -> JSONResponse:
                 "storage": "unavailable",
                 "message": f"临时存储不可写：{exc}",
                 "local_merchant_id": local_merchant_id,
+                "local_bypass": bypass,
             },
         )
     if not bypass and not settings.am_media_storage_service_key.strip():
@@ -430,5 +482,8 @@ def health(request: Request) -> JSONResponse:
             "media_storage": "local-bypass" if bypass else "configured",
             "storage_backend": "local" if bypass else "am-media",
             "local_merchant_id": local_merchant_id,
+            # The bypass flag itself lets the browser open the local-only tools even
+            # before any merchant is imported into this workspace.
+            "local_bypass": bypass,
         },
     )

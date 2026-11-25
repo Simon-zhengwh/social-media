@@ -2,7 +2,7 @@ import type { ReactElement } from 'react'
 
 import MerchantSwitcher from './MerchantSwitcher'
 
-export type AppView = 'whole' | 'poster-edit' | 'tasks' | 'assets' | 'brands' | 'agent-tests' | 'material-filters'
+export type AppView = 'whole' | 'poster-edit' | 'tasks' | 'assets' | 'brands' | 'agent-tests' | 'material-filters' | 'media-migration'
 
 type Props = {
   view: AppView
@@ -11,6 +11,8 @@ type Props = {
   showAgentTests: boolean
   /** SMB material filtering reads this machine's folders, so it is local-only too. */
   showMaterialFilters: boolean
+  /** UAT → Prod media migration is a local operator tool as well. */
+  showMediaMigration: boolean
   /** Merchant the workspace is scoped to; switching lives here so the page needs no header row. */
   merchantId: string
   merchantName: string
@@ -65,6 +67,16 @@ function AssetsIcon() {
   )
 }
 
+function MigrationIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M3.4 6.6h9.2l-2-2" />
+      <path d="M16.6 13.4H7.4l2 2" />
+      <rect x="3.4" y="9.4" width="13.2" height="1.2" rx=".6" />
+    </svg>
+  )
+}
+
 const NAV_ITEMS: Array<{
   key: AppView
   label: string
@@ -96,6 +108,12 @@ const NAV_ITEMS: Array<{
     icon: FilterIcon,
   },
   {
+    key: 'media-migration',
+    label: '素材迁移',
+    hint: 'UAT 素材库同步到 Prod',
+    icon: MigrationIcon,
+  },
+  {
     key: 'tasks',
     label: '任务中心',
     hint: '生成记录与候选',
@@ -120,12 +138,14 @@ export default function Sidebar({
   onChange,
   showAgentTests,
   showMaterialFilters,
+  showMediaMigration,
   merchantId,
   merchantName,
 }: Props) {
   const items = NAV_ITEMS.filter((item) => {
     if (item.key === 'agent-tests') return showAgentTests
     if (item.key === 'material-filters') return showMaterialFilters
+    if (item.key === 'media-migration') return showMediaMigration
     return true
   })
   return (

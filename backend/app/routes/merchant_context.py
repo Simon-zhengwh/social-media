@@ -46,6 +46,8 @@ def get_merchant_context(merchant_id: str, request: Request) -> dict[str, Any]:
             "agent_tests": bypass,
             # SMB material filtering reads this machine's folders, so it is local-only.
             "material_filters": bypass,
+            # UAT → Prod media-library migration is a local operator tool as well.
+            "media_migration": bypass,
         },
     }
 
