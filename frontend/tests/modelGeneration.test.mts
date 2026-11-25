@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { IMAGE_MODEL_OPTIONS, imageModelSupportsRatio } from '../src/imageModels.ts'
+import { IMAGE_MODEL_OPTIONS, ORIGINAL_REPLACEMENT_MODELS, defaultReplacementModel,
+  imageModelSupportsRatio } from '../src/imageModels.ts'
 import { defaultModelCounts, restoreModelCounts, mergeCandidates, modelGenerationState, submitModelRound,
   candidateForModel, candidateRounds, normalizeModelCount, imageModelLabel } from '../src/modelGeneration.ts'
 import type { WholeImageTask } from '../src/types.ts'
@@ -14,6 +15,13 @@ test('4:5 disables both Seedream models and 3:4 makes them available again', () 
   const unsupported = IMAGE_MODEL_OPTIONS.filter(({ value }) => !imageModelSupportsRatio(value, '4:5'))
   assert.deepEqual(unsupported.map(({ value }) => value), [seed, 'seedream-5.5-image-to-image'])
   assert.ok(unsupported.every(({ value }) => imageModelSupportsRatio(value, '3:4')))
+})
+
+test('仅替换元素 keeps all three models and defaults to one that fits the canvas', () => {
+  assert.deepEqual([...ORIGINAL_REPLACEMENT_MODELS], [seed, 'seedream-5.5-image-to-image', minimax])
+  assert.equal(defaultReplacementModel('4:5'), minimax)
+  assert.equal(defaultReplacementModel('3:4'), seed)
+  assert.equal(defaultReplacementModel(), seed)
 })
 
 test('MiniMax aliases share their label and candidates without mixing other models', () => {

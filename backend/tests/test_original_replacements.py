@@ -145,12 +145,29 @@ def test_idle_candidate_runs_on_demand_with_the_shared_input(env):
 
 
 @pytest.mark.parametrize("env", ["4:5"], indirect=True)
-def test_requested_model_that_cannot_keep_the_source_ratio_is_rejected_upfront(env):
-    with pytest.raises(HTTPException) as unsupported:
-        model_batch(env, candidate_model="seedream-5.5-image-to-image")
-    assert unsupported.value.status_code == 422
-    assert unsupported.value.detail == "所选模型不支持当前底稿的比例，请换一个模型"
-    assert env.db.background_replace_tasks.count_documents({}) == 0
+def test_requested_model_that_cannot_keep_the_source_ratio_generates_for_cropping(env):
+    task, background = model_batch(env, candidate_model="seedream-5.5-image-to-image")
+    edit = env.client.edit_image
+
+    def edit_image(prompt, refs, *, size, model):
+        edit(prompt, refs, size=size, model=model)
+        return png_bytes(768, 1024)
+
+    env.client.edit_image = edit_image
+    assert [(item["model"], item["status"], item.get("for_crop")) for item in task["candidates"]] == [
+        ("seedream-5-pro-image-to-image", "unsupported", None),
+        ("seedream-5.5-image-to-image", "queued", True),
+        ("minimax-h3-image-edit", "idle", None)]
+    run_background(background)
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    candidate = restored["candidates"][1]
+    assert candidate["for_crop"] is True and candidate["status"] == "succeeded"
+    assert (candidate["output"]["width"], candidate["output"]["height"]) == (768, 1024)
+    assert [call["model"] for call in env.client.edit_calls] == ["seedream-5.5-image-to-image"]
+    source = routes.get_original_replacement_crop_source(env.task_id, task["id"],
+                                                         "seedream-5.5-image-to-image", env.request)
+    with Image.open(BytesIO(source.body)) as image:
+        assert image.size == (768, 1024)
 
 
 @pytest.mark.parametrize("env", ["4:5"], indirect=True)

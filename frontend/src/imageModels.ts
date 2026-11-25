@@ -7,6 +7,16 @@ export const ORIGINAL_REPLACEMENT_MODELS: ImageModel[] = [
   'seedream-5-pro-image-to-image', 'seedream-5.5-image-to-image', 'minimax-h3-image-edit',
 ]
 
+/**
+ * The picker always offers every replacement model. Selecting one that cannot keep the canvas
+ * ratio defaults to a supported model, and the others still run at their own ratio so the
+ * operator can crop the result back to the canvas.
+ */
+export function defaultReplacementModel(ratio?: Ratio): ImageModel {
+  return ORIGINAL_REPLACEMENT_MODELS.find((model) => !ratio || imageModelSupportsRatio(model, ratio))
+    ?? ORIGINAL_REPLACEMENT_MODELS[0]
+}
+
 export function normalizeImageModel(model?: ImageModel | null): ImageModel
 export function normalizeImageModel(model: string | null | undefined): string
 export function normalizeImageModel(model?: string | null): string {

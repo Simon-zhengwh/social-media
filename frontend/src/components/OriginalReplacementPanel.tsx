@@ -4,7 +4,7 @@ import type { Asset, BrandLogoImage, ImageModel, LogoOverlayBox, OriginalReplace
 import { parseServerDate } from '../time'
 import { assetDisplayName } from '../assetNames'
 import { imageModelLabel } from '../modelGeneration'
-import { ORIGINAL_REPLACEMENT_MODELS, imageModelSupportsRatio } from '../imageModels'
+import { ORIGINAL_REPLACEMENT_MODELS, defaultReplacementModel, imageModelSupportsRatio } from '../imageModels'
 import { ZoomableImage } from './ImageLightbox'
 import { compositeLogoPng } from '../logoOverlay'
 import PosterCropDialog from './PosterCropDialog'
@@ -105,13 +105,13 @@ export default function OriginalReplacementPanel({
   // Remembering which asset was removed resets it automatically when the Logo changes.
   const [logoRemovedFor, setLogoRemovedFor] = useState<string | null>(null)
   const [splitAllElements, setSplitAllElements] = useState(false)
-  // 仅替换元素 sends one model request per click; the rest stay idle candidates.
+  // 仅替换元素 sends one model request per click; the rest stay idle candidates. Every model
+  // stays selectable: one that cannot keep the canvas ratio runs at its own ratio and is
+  // cropped back in the crop dialog, so it is never hidden from the picker.
   const replacementRatio = task.placement?.ratio ?? task.input.ratio
-  const replacementModels = ORIGINAL_REPLACEMENT_MODELS.filter((model) =>
-    !replacementRatio || imageModelSupportsRatio(model, replacementRatio))
   const [requestedModel, setRequestedModel] = useState<ImageModel>(
-    () => replacementModels[0] ?? ORIGINAL_REPLACEMENT_MODELS[0])
-  const candidateModel = replacementModels.includes(requestedModel) ? requestedModel : replacementModels[0]
+    () => defaultReplacementModel(replacementRatio))
+  const candidateModel = requestedModel
   const [records, setRecords] = useState<OriginalReplacementTask[]>([])
   const [crop, setCrop] = useState<{
     src: string; width: number; height: number; logoSrc?: string; defaultLogoBox?: LogoOverlayBox
@@ -416,14 +416,21 @@ export default function OriginalReplacementPanel({
                       aria-label={`用 ${label} 生成`} disabled={Boolean(operation)} onClick={() => void perform('retry', async () => {
                         updateRecord(await retryOriginalReplacementCandidate(task.id, selected.id, candidate.model))
                       })}>生成</button>
-                  </> : candidate.status === 'unsupported' || candidate.status === 'failed' ? <>
-                    <span>{candidate.status === 'unsupported' ? candidate.error : '替换失败'}</span>
+                  </> : candidate.status === 'unsupported' ? <>
+                    <span className="original-model-status">需生成后裁剪</span>
                     <button type="button" className="mp-btn-secondary mp-btn-small"
-                      aria-label={candidate.status === 'unsupported' ? `生成 ${label} 后裁剪` : `重试 ${label}`}
-                      disabled={Boolean(operation) || selected.status === 'queued'} onClick={() => void perform('retry', async () => {
+                      aria-label={`生成 ${label} 后裁剪`} disabled={Boolean(operation) || selected.status === 'queued'}
+                      onClick={() => void perform('retry', async () => {
+                        updateRecord(await retryOriginalReplacementCandidate(task.id, selected.id, candidate.model, true))
+                      })}>生成</button>
+                  </> : candidate.status === 'failed' ? <>
+                    <span>替换失败</span>
+                    <button type="button" className="mp-btn-secondary mp-btn-small"
+                      aria-label={`重试 ${label}`} disabled={Boolean(operation) || selected.status === 'queued'}
+                      onClick={() => void perform('retry', async () => {
                         updateRecord(await retryOriginalReplacementCandidate(task.id, selected.id, candidate.model,
-                          candidate.status === 'unsupported' || candidate.for_crop))
-                      })}>{candidate.status === 'unsupported' ? '生成后裁剪' : '重试'}</button>
+                          Boolean(candidate.for_crop)))
+                      })}>重试</button>
                   </> : <span className="original-model-status">
                     {candidate.status === 'queued' ? '等待处理' : '正在替换'}
                   </span>}
@@ -549,11 +556,17 @@ export default function OriginalReplacementPanel({
           ) : null}
           {photos.length === 0 && !logo ? <p className="replacement-help">请先在设计需求中添加参考图或选择 Logo。</p> : null}
           {replacements.length > 5 ? <p className="original-replacement-warning" role="alert">最多提交 5 项，请移除部分原照或关闭 Logo。</p> : null}
-          {replacementModels.length ? <div className="original-model-picker" role="radiogroup" aria-label="仅替换元素模型">
-            {replacementModels.map((model) => <button key={model} type="button" role="radio" aria-checked={model === candidateModel}
-              className={`original-model-option${model === candidateModel ? ' is-selected' : ''}`}
-              disabled={Boolean(operation)} onClick={() => setRequestedModel(model)}>{imageModelLabel(model)}</button>)}
-          </div> : null}
+          <div className="original-model-picker" role="radiogroup" aria-label="仅替换元素模型">
+            {ORIGINAL_REPLACEMENT_MODELS.map((model) => {
+              const label = imageModelLabel(model)
+              const needsCrop = Boolean(replacementRatio && !imageModelSupportsRatio(model, replacementRatio))
+              return <button key={model} type="button" role="radio" aria-checked={model === candidateModel}
+                className={`original-model-option${model === candidateModel ? ' is-selected' : ''}`}
+                title={needsCrop ? `${label}不支持 ${replacementRatio}，将先生成再裁剪` : undefined}
+                aria-label={needsCrop ? `${label}，生成后裁剪` : label}
+                disabled={Boolean(operation)} onClick={() => setRequestedModel(model)}>{label}</button>
+            })}
+          </div>
           <div className="original-replacement-actions">
             <button type="button" className="mp-btn-secondary replacement-submit" disabled={Boolean(operation) || !canSubmit || replacements.length === 0 || replacements.length > 5}
               onClick={() => submit('agent')}>{operation === 'agent' ? '提交中…' : '生成可编辑海报'}</button>

@@ -59,19 +59,24 @@ def model_candidate(model: str, source: dict[str, Any]) -> dict[str, Any]:
 
 
 def _model_candidates(doc: dict[str, Any], source: dict[str, Any], candidate_model: str) -> None:
-    """One click sends one model request; the remaining models wait as `idle` candidates."""
+    """One click sends one model request; the remaining models wait as `idle` candidates.
+
+    A model that cannot keep the source ratio is still offered: when it is the requested one
+    it runs at its own ratio as a `for_crop` candidate, and the operator crops it back to the
+    canvas in the crop dialog instead of being told the model is unusable.
+    """
     width, height = source["width"], source["height"]
     requested = candidate_model if candidate_model in KIE_IMAGE_ASPECT_RATIOS else ""
     if not requested:
         requested = next((model for model in KIE_IMAGE_ASPECT_RATIOS
                           if image_model_supports_canvas(model, width, height)), "")
-    if requested and not image_model_supports_canvas(requested, width, height):
-        raise OriginalReplacementError("unsupported_format", "所选模型不支持当前底稿的比例，请换一个模型", 422)
     doc["candidate_model"] = requested
     doc["candidates"] = []
     for model in KIE_IMAGE_ASPECT_RATIOS:
         candidate = model_candidate(model, source)
-        if candidate["status"] == "queued" and model != requested:
+        if candidate["status"] == "unsupported" and model == requested:
+            candidate = {"model": model, "status": "queued", "for_crop": True}
+        elif candidate["status"] == "queued" and model != requested:
             candidate["status"] = "idle"
         doc["candidates"].append(candidate)
     if all(candidate["status"] == "unsupported" for candidate in doc["candidates"]):
