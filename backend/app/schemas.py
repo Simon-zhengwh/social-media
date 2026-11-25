@@ -315,6 +315,8 @@ class WholeImageOriginalReplacementRequest(BaseModel):
     replacements: list[OriginalReplacementItem] = Field(min_length=1, max_length=5)
     split_all_elements: bool = False
     kind: Literal["agent", "model"] = "agent"
+    # One click spends one model request; candidates not named here stay idle until asked for.
+    candidate_model: ImageModel | None = None
 
     @field_validator("source_version_id", "source_output_id", mode="before")
     @classmethod
@@ -322,10 +324,22 @@ class WholeImageOriginalReplacementRequest(BaseModel):
         return str(value or "").strip()
 
 
+class LogoBoxPayload(BaseModel):
+    """Pixel box of the official Logo on the poster canvas, from the client overlay editor."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+
+
 class WholeImageOriginalReplacementApplyRequest(BaseModel):
     expected_current_version_id: str = Field(min_length=1, max_length=128)
     expected_current_output_id: str = Field(min_length=1, max_length=128)
     candidate_model: ImageModel | None = None
+    # The client composites the official Logo onto the clean base and posts the result.
+    composited_png_base64: str | None = Field(default=None, max_length=40_000_000)
+    logo_box: LogoBoxPayload | None = None
 
 
 class WholeImageOriginalReplacementFeedbackRequest(BaseModel):

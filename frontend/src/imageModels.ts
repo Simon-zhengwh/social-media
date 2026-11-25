@@ -2,6 +2,11 @@ import type { ImageModel, Ratio } from './types'
 
 export const DEFAULT_IMAGE_MODEL: ImageModel = 'gpt-image-2.5-sunburst'
 
+/** Models offered for "仅替换元素"; every click sends exactly one of them. */
+export const ORIGINAL_REPLACEMENT_MODELS: ImageModel[] = [
+  'seedream-5-pro-image-to-image', 'seedream-5.5-image-to-image', 'minimax-h3-image-edit',
+]
+
 export function normalizeImageModel(model?: ImageModel | null): ImageModel
 export function normalizeImageModel(model: string | null | undefined): string
 export function normalizeImageModel(model?: string | null): string {

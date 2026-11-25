@@ -13,7 +13,8 @@ import httpx
 from PIL import Image, ImageOps
 from pymongo import ReturnDocument
 
-from app.api_paths import asset_url, original_replacement_download_url
+from app.api_paths import (asset_url, original_replacement_candidate_source_url, original_replacement_download_url,
+                          original_replacement_logo_source_url)
 from app.config import Settings
 from app.schemas import OriginalReplacementInput
 from app.services import agent_image
@@ -57,9 +58,31 @@ def model_candidate(model: str, source: dict[str, Any]) -> dict[str, Any]:
     return {"model": model, "status": "queued"}
 
 
+def _model_candidates(doc: dict[str, Any], source: dict[str, Any], candidate_model: str) -> None:
+    """One click sends one model request; the remaining models wait as `idle` candidates."""
+    width, height = source["width"], source["height"]
+    requested = candidate_model if candidate_model in KIE_IMAGE_ASPECT_RATIOS else ""
+    if not requested:
+        requested = next((model for model in KIE_IMAGE_ASPECT_RATIOS
+                          if image_model_supports_canvas(model, width, height)), "")
+    if requested and not image_model_supports_canvas(requested, width, height):
+        raise OriginalReplacementError("unsupported_format", "所选模型不支持当前底稿的比例，请换一个模型", 422)
+    doc["candidate_model"] = requested
+    doc["candidates"] = []
+    for model in KIE_IMAGE_ASPECT_RATIOS:
+        candidate = model_candidate(model, source)
+        if candidate["status"] == "queued" and model != requested:
+            candidate["status"] = "idle"
+        doc["candidates"].append(candidate)
+    if all(candidate["status"] == "unsupported" for candidate in doc["candidates"]):
+        doc.update(status="failed", stage="failed", error={
+            "code": "unsupported_format", "message": _UNSUPPORTED_FORMAT_MESSAGE,
+        })
+
+
 def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacements: list[dict[str, str]],
                 split_all_elements: bool = False, metadata: dict[str, Any] | None = None,
-                logo_reference_asset_id: str = "") -> dict[str, Any]:
+                logo_reference_asset_id: str = "", candidate_model: str = "") -> dict[str, Any]:
     from pydantic import ValidationError
 
     try:
@@ -80,11 +103,7 @@ def create_task(db: Any, *, source_asset_id: str, whole_task_id: str, replacemen
            "started_at": None, "deadline_at": None, "error": None, "created_at": now, "updated_at": now,
            **(metadata or {})}
     if doc.get("kind") == "model":
-        doc["candidates"] = [model_candidate(model, source) for model in KIE_IMAGE_ASPECT_RATIOS]
-        if all(candidate["status"] == "unsupported" for candidate in doc["candidates"]):
-            doc.update(status="failed", stage="failed", error={
-                "code": "unsupported_format", "message": _UNSUPPORTED_FORMAT_MESSAGE,
-            })
+        _model_candidates(doc, source, candidate_model)
     # Keep the existing collection so linked replacement history survives retirement.
     db.background_replace_tasks.insert_one(doc)
     return db.background_replace_tasks.find_one({"_id": doc["_id"]})
@@ -416,6 +435,39 @@ def get_task(db: Any, task_id: str) -> dict[str, Any]:
     return doc
 
 
+def logo_source_png(store: ObjectStore, asset: dict[str, Any]) -> bytes:
+    """Official Logo as a lossless same-origin PNG so the browser can composite it."""
+    relative = str(asset.get("path") or asset.get("prepared_path") or "")
+    if not relative:
+        raise OriginalReplacementError("logo_missing", "Logo 原文件不存在", 404)
+    try:
+        with Image.open(io.BytesIO(store.get_bytes(relative))) as source:
+            image = ImageOps.exif_transpose(source)
+            image.load()
+            image = image.convert("RGBA")
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG", optimize=True)
+            return buffer.getvalue()
+    except Exception as exc:  # noqa: BLE001 - a broken Logo file must not 500 the workbench
+        raise OriginalReplacementError("logo_invalid", "Logo 原文件无法读取", 404) from exc
+
+
+def _logo_overlay_out(doc: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merchant_id = str(doc.get("merchant_id") or "")
+    task_id = str(doc["_id"])
+    asset_id = str(overlay.get("asset_id") or "")
+    return {
+        "asset_id": asset_id,
+        "name": overlay.get("name") or "Logo",
+        "width": int(overlay.get("width") or 0),
+        "height": int(overlay.get("height") or 0),
+        "preview_url": asset_url(merchant_id, asset_id),
+        "source_url": original_replacement_logo_source_url(
+            merchant_id, str(doc.get("whole_task_id") or ""), task_id),
+        "box": overlay.get("box"),
+    }
+
+
 def task_out(doc: dict[str, Any]) -> dict[str, Any]:
     output = doc.get("output")
     task_id = str(doc["_id"])
@@ -425,6 +477,7 @@ def task_out(doc: dict[str, Any]) -> dict[str, Any]:
                   "preview_url": asset_url(merchant_id, str(output["asset_id"])),
                   "download_url": original_replacement_download_url(merchant_id, str(doc["whole_task_id"]), task_id)}
     candidates = []
+    overlay = doc.get("logo_overlay") if isinstance(doc.get("logo_overlay"), dict) else None
     for candidate in doc.get("candidates", []):
         item = {key: candidate.get(key) for key in ("model", "status", "error")}
         if candidate.get("for_crop"):
@@ -438,16 +491,25 @@ def task_out(doc: dict[str, Any]) -> dict[str, Any]:
             preflight = model_candidate(item["model"], doc["source"])
             if preflight["status"] == "unsupported":
                 item.update(preflight)
+        # The published preview already carries the official Logo once it was applied.
+        shown = candidate.get("composited_output") or candidate_output
         item["output"] = {
-            "width": candidate_output["width"], "height": candidate_output["height"],
-            "preview_url": asset_url(merchant_id, candidate_output["asset_id"]),
-        } if candidate_output else None
+            "width": shown["width"], "height": shown["height"],
+            "preview_url": asset_url(merchant_id, shown["asset_id"]),
+        } if shown else None
+        if candidate.get("logo_box"):
+            item["logo_box"] = candidate["logo_box"]
+        if overlay is not None and candidate_output:
+            # Clean base for re-opening "调整 Logo": never composites on top of a Logo twice.
+            item["base_source_url"] = original_replacement_candidate_source_url(
+                merchant_id, str(doc["whole_task_id"]), task_id, item["model"])
         candidates.append(item)
     return {"id": task_id, "kind": doc.get("kind", "agent"), "candidates": candidates,
             **{key: doc.get(key) for key in ["status", "stage", "progress", "source", "replacements", "logo_reference", "feedback",
-            "retry_of", "applied_candidate_model",
+            "retry_of", "applied_candidate_model", "candidate_model",
             "agent_id", "run_id", "agent_input", "agent_output", "error", "whole_task_id", "source_version_id",
             "source_output_id", "source_version", "applied_version_id", "applied_version"]}, "output": output,
+            "logo_overlay": _logo_overlay_out(doc, overlay) if overlay and overlay.get("box") else None,
             "split_all_elements": (doc.get("input") or {}).get("split_all_elements", False),
             "artifacts": agent_image.artifacts_out(doc, str(doc.get("merchant_id") or "")),
             "artifact_error": doc.get("artifact_error"),

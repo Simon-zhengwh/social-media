@@ -1142,11 +1142,32 @@ def get_original_replacement_crop_source(task_id: str, replacement_id: str, cand
         batch = original_replacement.get_task(request_db(request), task_id, replacement_id)
     except whole_image.StudioError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    # Any finished candidate is a clean same-origin base: the Logo is composited in the browser.
     output = next((item.get("output") for item in batch.get("candidates", [])
-                   if item["model"] == candidate_model and item.get("for_crop") and item["status"] == "succeeded"), None)
+                   if item["model"] == candidate_model and item["status"] == "succeeded"), None)
     if not output:
         raise HTTPException(status_code=404, detail="裁剪图片尚未就绪")
     data = _artifact_bytes(request_store(request), output)
+    return Response(data, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/tasks/{task_id}/original-replacements/{replacement_id}/logo-source")
+def get_original_replacement_logo_source(task_id: str, replacement_id: str, request: Request) -> Response:
+    db = request_db(request)
+    try:
+        batch = original_replacement.get_task(db, task_id, replacement_id)
+    except whole_image.StudioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    overlay = batch.get("logo_overlay")
+    if not isinstance(overlay, dict) or not overlay.get("asset_id"):
+        raise HTTPException(status_code=404, detail="该批次没有需要叠加的 Logo")
+    asset = db.assets.find_one({"_id": overlay["asset_id"]})
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Logo 原文件不存在")
+    try:
+        data = original_replacement_runner.logo_source_png(request_store(request), asset)
+    except original_replacement_runner.OriginalReplacementError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return Response(data, media_type="image/png", headers={"Cache-Control": "private, no-store"})
 
 

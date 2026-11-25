@@ -4,6 +4,7 @@ import type {
   PosterFinalizationContext,
   OriginalReplacementItem,
   OriginalReplacementTask,
+  LogoOverlayBox,
   BrandDetail,
   BrandLogoImage,
   BrandMode,
@@ -307,11 +308,13 @@ export async function listOriginalReplacements(taskId: string): Promise<Original
 }
 
 export async function createOriginalReplacement(taskId: string, sourceVersionId: string, sourceOutputId: string,
-  replacements: OriginalReplacementItem[], splitAllElements = false, kind: 'agent' | 'model' = 'agent'): Promise<OriginalReplacementTask> {
+  replacements: OriginalReplacementItem[], splitAllElements = false, kind: 'agent' | 'model' = 'agent',
+  candidateModel?: ImageModel): Promise<OriginalReplacementTask> {
   return parseResponse<OriginalReplacementTask>(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(taskId)}/original-replacements`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_version_id: sourceVersionId, source_output_id: sourceOutputId, replacements,
-      split_all_elements: kind === 'agent' && splitAllElements, ...(kind === 'model' ? { kind } : {}) }),
+      split_all_elements: kind === 'agent' && splitAllElements,
+      ...(kind === 'model' ? { kind, candidate_model: candidateModel } : {}) }),
   }))
 }
 
@@ -329,10 +332,15 @@ export async function retryOriginalReplacementCandidate(taskId: string, replacem
   ))
 }
 
-export async function applyOriginalReplacement(task: WholeImageTask, replacementId: string, candidateModel?: ImageModel): Promise<WholeImageTask> {
+export async function applyOriginalReplacement(task: WholeImageTask, replacementId: string, candidateModel?: ImageModel,
+  compositedBase64?: string, logoBox?: LogoOverlayBox): Promise<WholeImageTask> {
   return parseResponse<WholeImageTask>(await apiFetch(`/api/whole-image/tasks/${encodeURIComponent(task.id)}/original-replacements/${encodeURIComponent(replacementId)}/apply`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ expected_current_version_id: task.current_version_id, expected_current_output_id: task.current_output_id, candidate_model: candidateModel }),
+    body: JSON.stringify({
+      expected_current_version_id: task.current_version_id, expected_current_output_id: task.current_output_id,
+      candidate_model: candidateModel,
+      ...(compositedBase64 ? { composited_png_base64: compositedBase64, logo_box: logoBox ?? null } : {}),
+    }),
   }))
 }
 

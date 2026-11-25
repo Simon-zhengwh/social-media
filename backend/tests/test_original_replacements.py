@@ -1,6 +1,6 @@
+import base64
 from datetime import timedelta
 from io import BytesIO
-from threading import Barrier
 from types import SimpleNamespace
 
 import mongomock
@@ -67,48 +67,90 @@ def run_background(background):
     job.func(*job.args, **job.kwargs)
 
 
-def model_batch(env, items=None):
-    env.client = FakeCoreAI()
+class LogoAwareCoreAI(FakeCoreAI):
+    """FakeCoreAI that counts Logo location calls and can answer them deterministically."""
+
+    def __init__(self, logo_payload=None, logo_error: Exception | None = None) -> None:
+        super().__init__()
+        self.chat_calls = 0
+        self.chat_model: str | None = None
+        self.logo_payload = {"status": "pass", "violations": []} if logo_payload is None else logo_payload
+        self.logo_error = logo_error
+
+    def chat_json(self, messages, *, model=None, timeout_seconds=None):
+        self.chat_calls += 1
+        self.chat_model = model
+        if self.logo_error is not None:
+            raise self.logo_error
+        return self.logo_payload
+
+
+def model_batch(env, items=None, candidate_model=None, client=None):
+    env.client = client or LogoAwareCoreAI()
     env.request.app.state.core_ai = env.client
     background = BackgroundTasks()
     task = routes.create_original_replacement(env.task_id,
         schemas.WholeImageOriginalReplacementRequest(
             source_version_id=env.source_id, source_output_id=env.output_id, kind="model",
+            candidate_model=candidate_model,
             replacements=items or [{"target": "右下角牛肉", "asset_id": "beef"}]),
         env.request, background)
     assert task["kind"] == "model"
     return task, background
 
 
-def test_model_replacement_runs_three_independent_candidates_with_shared_input(env):
-    task, background = model_batch(env, [{"target": "右下角牛肉", "asset_id": "beef"},
-        {"target": "", "asset_id": "environment"}, {"target": "Logo", "asset_id": "logo"}])
-    barrier = Barrier(3, timeout=5)
-    edit = env.client.edit_image
-
-    def edit_image(prompt, refs, *, size, model):
-        barrier.wait()
-        data = edit(prompt, refs, size=size, model=model)
-        if model == "seedream-5.5-image-to-image":
-            raise RuntimeError("模型暂不可用")
-        return data
-
-    env.client.edit_image = edit_image
+def test_model_replacement_sends_one_request_and_leaves_the_other_models_idle(env):
+    task, background = model_batch(env)
     run_background(background)
     restored = routes.list_original_replacements(env.task_id, env.request)[0]
     assert restored["id"] == task["id"]
     assert restored["status"] == "succeeded"
-    candidates = {item["model"]: item for item in restored["candidates"]}
-    assert set(candidates) == {"seedream-5-pro-image-to-image", "seedream-5.5-image-to-image", "minimax-h3-image-edit"}
-    assert candidates["seedream-5.5-image-to-image"]["status"] == "failed"
-    assert candidates["seedream-5.5-image-to-image"]["error"] == "模型暂不可用"
-    assert candidates["seedream-5-pro-image-to-image"]["output"]["width"] == task["source"]["width"]
-    assert len({call["prompt"] for call in env.client.edit_calls}) == 1
-    for call in env.client.edit_calls:
-        assert call["reference_names"][1:] == ["beef.png", "environment.png", "logo.png"]
-        assert "右下角牛肉" in call["prompt"]
-        assert "食物本身" in call["prompt"] and "透视" in call["prompt"] and "等比" in call["prompt"]
+    # One click spends one model request instead of three.
+    assert [call["model"] for call in env.client.edit_calls] == ["seedream-5-pro-image-to-image"]
+    assert [(item["model"], item["status"]) for item in restored["candidates"]] == [
+        ("seedream-5-pro-image-to-image", "succeeded"),
+        ("seedream-5.5-image-to-image", "idle"),
+        ("minimax-h3-image-edit", "idle")]
+    for item in restored["candidates"][:3]:
+        assert item["output"] is None if item["status"] == "idle" else item["output"] is not None
     assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+
+
+def test_idle_candidate_runs_on_demand_with_the_shared_input(env):
+    task, background = model_batch(env, [{"target": "右下角牛肉", "asset_id": "beef"},
+        {"target": "", "asset_id": "environment"}, {"target": "Logo", "asset_id": "logo"}])
+    run_background(background)
+    baseline = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    env.client.edit_calls.clear()
+    retry = BackgroundTasks()
+    response = routes.retry_original_replacement_candidate(env.task_id, task["id"], "seedream-5.5-image-to-image",
+                                                          env.request, retry)
+    assert [item["status"] for item in response["candidates"]] == ["succeeded", "queued", "idle"]
+    run_background(retry)
+    assert [call["model"] for call in env.client.edit_calls] == ["seedream-5.5-image-to-image"]
+    assert env.client.edit_calls[0]["prompt"] == baseline["candidates"][0]["model_input"]["prompt"]
+    # The official Logo file never reaches the edit model: the workbench composites it later.
+    assert env.client.edit_calls[0]["reference_names"][1:] == ["beef.png", "environment.png"]
+    assert "不要在画面任何位置绘制任何品牌 Logo" in baseline["candidates"][0]["model_input"]["prompt"]
+    assert [item["asset_id"] for item in baseline["candidates"][0]["model_input"]["images"]] == [
+        task["source"]["asset_id"], "beef", "environment"]
+    assert baseline["logo_overlay"]["asset_id"] == "logo"
+    restored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    assert restored["status"] == "succeeded"
+    assert [item["status"] for item in restored["candidates"]] == ["succeeded", "succeeded", "idle"]
+    assert restored["candidates"][1]["output"]["width"] == task["source"]["width"]
+    # One location per batch: the second candidate reused it instead of calling the model again.
+    assert restored["logo_overlay"] == baseline["logo_overlay"]
+    assert env.client.chat_calls == 1
+
+
+@pytest.mark.parametrize("env", ["4:5"], indirect=True)
+def test_requested_model_that_cannot_keep_the_source_ratio_is_rejected_upfront(env):
+    with pytest.raises(HTTPException) as unsupported:
+        model_batch(env, candidate_model="seedream-5.5-image-to-image")
+    assert unsupported.value.status_code == 422
+    assert unsupported.value.detail == "所选模型不支持当前底稿的比例，请换一个模型"
+    assert env.db.background_replace_tasks.count_documents({}) == 0
 
 
 @pytest.mark.parametrize("env", ["4:5"], indirect=True)
@@ -194,7 +236,7 @@ def test_crop_request_cannot_take_over_a_batch_before_its_worker_starts(env):
 
 
 def test_model_feedback_uses_original_source_and_applies_chosen_candidate(env):
-    task, background = model_batch(env)
+    task, background = model_batch(env, candidate_model="minimax-h3-image-edit")
     run_background(background)
     chosen_model = "minimax-h3-image-edit"
     applied = apply(env, task, candidate_model=chosen_model)
@@ -212,16 +254,19 @@ def test_model_feedback_uses_original_source_and_applies_chosen_candidate(env):
     assert rerun["retry_of"] == task["id"]
     run_background(background)
     assert len(routes.list_original_replacements(env.task_id, env.request)) == 2
-    for first, second in zip(env.client.edit_calls[:3], env.client.edit_calls[3:]):
-        assert first["reference_bytes"] == second["reference_bytes"]
-        assert "羊肉需要恢复到底稿大小" in second["prompt"]
-        assert "底稿上的 Logo" in second["prompt"]
+    # The rerun keeps the model the operator chose instead of re-requesting all three.
+    assert [call["model"] for call in env.client.edit_calls] == [chosen_model, chosen_model]
+    assert rerun["candidate_model"] == chosen_model
+    first, second = env.client.edit_calls
+    assert first["reference_bytes"] == second["reference_bytes"]
+    assert "羊肉需要恢复到底稿大小" in second["prompt"]
+    assert "底稿上的 Logo" in second["prompt"]
 
 
 @pytest.mark.parametrize("sibling_running", [False, True])
 def test_retry_only_queues_the_failed_candidate_in_the_same_batch(env, sibling_running):
-    task, background = model_batch(env)
     failed_model = "seedream-5.5-image-to-image"
+    task, background = model_batch(env, candidate_model=failed_model)
     edit = env.client.edit_image
 
     def fail_one(prompt, refs, *, size, model):
@@ -265,7 +310,7 @@ def test_retry_recovers_an_interrupted_candidate_in_a_historical_batch(env):
     batches = env.db.background_replace_tasks
     batches.update_one({"_id": task["id"]}, {"$set": {"status": "interrupted", "candidates.1.status": "running"}})
     before = routes.list_original_replacements(env.task_id, env.request)[0]
-    assert [candidate["status"] for candidate in before["candidates"]] == ["failed", "failed", "failed"]
+    assert [candidate["status"] for candidate in before["candidates"]] == ["failed", "failed", "idle"]
 
     model = before["candidates"][1]["model"]
     retry = BackgroundTasks()
@@ -274,7 +319,7 @@ def test_retry_recovers_an_interrupted_candidate_in_a_historical_batch(env):
 
     restored = routes.list_original_replacements(env.task_id, env.request)[0]
     assert restored["status"] == "succeeded"
-    assert [candidate["status"] for candidate in restored["candidates"]] == ["failed", "succeeded", "failed"]
+    assert [candidate["status"] for candidate in restored["candidates"]] == ["failed", "succeeded", "idle"]
     assert [call["model"] for call in env.client.edit_calls] == [model]
 
 
@@ -283,6 +328,9 @@ def test_successful_candidates_apply_independently_and_keep_legacy_versions(env)
     run_background(background)
     first_model = "seedream-5-pro-image-to-image"
     second_model = "minimax-h3-image-edit"
+    on_demand = BackgroundTasks()
+    routes.retry_original_replacement_candidate(env.task_id, task["id"], second_model, env.request, on_demand)
+    run_background(on_demand)
     first_id = apply(env, task, candidate_model=first_model)["current_version_id"]
     # Reproduce a batch that was applied before per-candidate application was supported.
     env.db.whole_tasks.update_one({"_id": env.task_id}, {"$set": {"original_replacement_versions": {task["id"]: first_id}}})
@@ -292,7 +340,7 @@ def test_successful_candidates_apply_independently_and_keep_legacy_versions(env)
     assert first_id != second_id
     assert apply(env, task, candidate_model=first_model)["current_version_id"] == second_id
     assert apply(env, task, candidate_model=second_model)["current_version_id"] == second_id
-    assert len(env.client.edit_calls) == 3
+    assert len(env.client.edit_calls) == 2
     versions = {doc["_id"]: doc for doc in env.db.whole_versions.find({"task_id": env.task_id})}
     assert len(versions) == 3
     assert versions[first_id]["parent_version_id"] == versions[second_id]["parent_version_id"] == env.source_id
@@ -304,7 +352,7 @@ def test_successful_candidates_apply_independently_and_keep_legacy_versions(env)
 
 
 def test_model_candidate_cannot_be_applied_to_a_deleted_poster(env):
-    task, background = model_batch(env)
+    task, background = model_batch(env, candidate_model="minimax-h3-image-edit")
     run_background(background)
     env.db.whole_tasks.update_one({"_id": env.task_id}, {"$set": {"candidate_deleted_at": whole_image.utcnow()}})
     with pytest.raises(HTTPException) as conflict:
@@ -314,7 +362,7 @@ def test_model_candidate_cannot_be_applied_to_a_deleted_poster(env):
 
 
 def test_model_candidate_with_different_aspect_ratio_is_not_letterboxed(env):
-    task, background = model_batch(env)
+    task, background = model_batch(env, candidate_model="minimax-h3-image-edit")
     edit = env.client.edit_image
 
     def edit_image(prompt, refs, *, size, model):
@@ -325,7 +373,7 @@ def test_model_candidate_with_different_aspect_ratio_is_not_letterboxed(env):
     env.client.edit_image = edit_image
     run_background(background)
     restored = routes.list_original_replacements(env.task_id, env.request)[0]
-    assert restored["status"] == "succeeded"
+    assert restored["status"] == "failed"
     candidate = next(item for item in restored["candidates"] if item["model"] == "minimax-h3-image-edit")
     assert candidate["status"] == "failed"
     assert candidate["output"] is None
@@ -855,7 +903,7 @@ def test_series_model_replacement_sends_the_official_logo_with_the_photo(env):
     task, background = model_batch(env)
     run_background(background)
     assert task["logo_reference"]["asset_id"] == "logo"
-    assert len(env.client.edit_calls) == 3
+    assert len(env.client.edit_calls) == 1
     for call in env.client.edit_calls:
         assert call["reference_names"][1:] == ["beef.png", "logo.png"]
         assert "图片 3 是官方 Logo" in call["prompt"]
@@ -913,3 +961,229 @@ def test_single_poster_still_accepts_explicit_logo_replacement(env):
                         {"target": "右下角牛肉", "asset_id": "beef"}])
     stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
     assert [item["target"] for item in stored["input"]["replacements"]] == ["Logo", "右下角牛肉"]
+
+
+def _logo_task(env, client, target="Logo"):
+    return model_batch(env, [{"target": "右下角牛肉", "asset_id": "beef"},
+                             {"target": target, "asset_id": "logo"}], client=client)
+
+
+def test_model_logo_overlay_uses_the_detected_box_and_erases_only_it(env):
+    detected = {"found": True, "x": 0.05, "y": 0.06, "width": 0.2, "height": 0.1}
+    env.client = LogoAwareCoreAI(detected)
+    task, background = _logo_task(env, env.client)
+    run_background(background)
+
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    source_w, source_h = stored["source"]["width"], stored["source"]["height"]
+    overlay = stored["logo_overlay"]
+    assert overlay["box"]["detected"] is True
+    assert overlay["box"]["x"] > 0 and overlay["box"]["y"] > 0
+    assert overlay["box"]["x"] + overlay["box"]["width"] <= source_w
+    assert overlay["box"]["y"] + overlay["box"]["height"] <= source_h
+    assert (overlay["width"], overlay["height"]) == (320, 240)
+    assert overlay["erase_box"] == {"x": round(0.05 * source_w), "y": round(0.06 * source_h),
+                                    "width": round(0.2 * source_w), "height": round(0.1 * source_h)}
+    # The official file keeps its own aspect ratio; only its scale follows the old frame.
+    assert round(overlay["box"]["width"] / overlay["box"]["height"], 4) == round(320 / 240, 4)
+
+    prompt = stored["candidates"][0]["model_input"]["prompt"]
+    assert "移除图片 1 中原有的品牌 Logo/商标标识" in prompt
+    assert "上 6%–16%" in prompt
+    assert "不要在画面任何位置绘制任何品牌 Logo" in prompt
+    assert "图片 2 是替换原照。目标：右下角牛肉。" in prompt
+    assert [item["asset_id"] for item in stored["candidates"][0]["model_input"]["images"]] == [
+        stored["source"]["asset_id"], "beef"]
+    assert env.client.edit_calls[0]["reference_names"][1:] == ["beef.png"]
+    assert env.client.chat_model == env.settings.asset_index_model
+
+    task_out = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert task_out["logo_overlay"]["box"] == overlay["box"]
+    assert task_out["logo_overlay"]["asset_id"] == "logo"
+    assert task_out["logo_overlay"]["source_url"].endswith(
+        f"/original-replacements/{task['id']}/logo-source")
+    assert task_out["logo_overlay"]["preview_url"]
+
+    logo_source = routes.get_original_replacement_logo_source(env.task_id, task["id"], env.request)
+    assert logo_source.media_type == "image/png"
+    with Image.open(BytesIO(logo_source.body)) as image:
+        assert image.size == (320, 240)
+        assert "A" in image.getbands()
+    base_source = routes.get_original_replacement_crop_source(
+        env.task_id, task["id"], "seedream-5-pro-image-to-image", env.request)
+    assert base_source.media_type == "image/png"
+    with Image.open(BytesIO(base_source.body)) as image:
+        assert image.size == (source_w, source_h)
+    assert task_out["candidates"][0]["base_source_url"].endswith("/crop-source")
+
+
+def test_model_logo_only_batch_still_sends_the_base_poster(env):
+    env.client = LogoAwareCoreAI({"found": False})
+    task, background = model_batch(env, [{"target": "Logo", "asset_id": "logo"}], client=env.client)
+    run_background(background)
+    # Dropping the Logo asset must not leave an empty reference list behind.
+    assert len(env.client.edit_calls[0]["reference_names"]) == 1
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    sent = stored["candidates"][0]["model_input"]["images"]
+    assert [item["asset_id"] for item in sent] == [stored["source"]["asset_id"]]
+    assert [item["role"] for item in sent] == ["替换底图"]
+    assert stored["status"] == "succeeded"
+    assert stored["logo_overlay"]["asset_id"] == "logo"
+
+
+@pytest.mark.parametrize("answer", [{"found": False}, RuntimeError("vision offline")])
+def test_model_logo_overlay_falls_back_to_a_corner_box(env, answer):
+    client = LogoAwareCoreAI(answer) if isinstance(answer, dict) else LogoAwareCoreAI(logo_error=answer)
+    env.client = client
+    task, background = _logo_task(env, client)
+    run_background(background)
+
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    assert stored["status"] == "succeeded"
+    overlay = stored["logo_overlay"]
+    assert overlay["box"]["detected"] is False
+    assert overlay["erase_box"] is None
+    margin = max(12, round(min(stored["source"]["width"], stored["source"]["height"]) * 0.045))
+    assert (overlay["box"]["x"], overlay["box"]["y"]) == (margin, margin)
+    assert overlay["box"]["x"] + overlay["box"]["width"] <= stored["source"]["width"]
+    assert overlay["box"]["y"] + overlay["box"]["height"] <= stored["source"]["height"]
+    prompt = stored["candidates"][0]["model_input"]["prompt"]
+    assert "若图片 1 中存在原有的小型品牌 Logo/商标标识" in prompt
+    assert "移除图片 1 中原有的品牌 Logo" not in prompt
+
+
+@pytest.mark.parametrize("target,position", [("右上角商标", "top-right"), ("左下角标志", "bottom-left"),
+                                             ("顶部居中标识", "top-center"), ("右下角 Logo", "bottom-right")])
+def test_model_logo_overlay_places_the_fallback_box_by_the_target_hint(env, target, position):
+    env.client = LogoAwareCoreAI({"found": False})
+    task, background = _logo_task(env, env.client, target=target)
+    run_background(background)
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    overlay = stored["logo_overlay"]
+    source_w, source_h = stored["source"]["width"], stored["source"]["height"]
+    vertical, horizontal = position.split("-")
+    if horizontal == "right":
+        assert overlay["box"]["x"] + overlay["box"]["width"] > source_w / 2
+    elif horizontal == "center":
+        assert abs(overlay["box"]["x"] + overlay["box"]["width"] / 2 - source_w / 2) <= 1
+    else:
+        assert overlay["box"]["x"] < source_w / 2
+    assert (overlay["box"]["y"] < source_h / 2) is (vertical == "top")
+
+
+def _composited_png(width, height, color=(20, 140, 90)):
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def test_apply_saves_the_client_composited_png_as_a_new_version(env):
+    env.client = LogoAwareCoreAI({"found": True, "x": 0.05, "y": 0.06, "width": 0.2, "height": 0.1})
+    task, background = _logo_task(env, env.client)
+    run_background(background)
+    model = "seedream-5-pro-image-to-image"
+    first_box = {"x": 40, "y": 30, "width": 150, "height": 110}
+    first_png = _composited_png(task["source"]["width"], task["source"]["height"])
+    applied = apply(env, task, candidate_model=model, composited_png_base64=f"data:image/png;base64,{first_png}",
+                    logo_box=first_box)
+    version = env.db.whole_versions.find_one({"_id": applied["current_version_id"]})
+    asset = env.db.assets.find_one({"_id": version["output_asset_id"]})
+    assert (asset["width"], asset["height"]) == (task["source"]["width"], task["source"]["height"])
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    assert stored["candidates"][0]["logo_box"] == first_box
+    assert stored["candidates"][0]["composited_output"]["asset_id"] == version["output_asset_id"]
+    # The candidate preview now shows the composited file instead of the raw model output.
+    task_out = routes.list_original_replacements(env.task_id, env.request)[0]
+    assert task_out["candidates"][0]["logo_box"] == first_box
+    assert task_out["candidates"][0]["output"]["preview_url"].endswith(
+        f"/assets/{version['output_asset_id']}/file")
+    assert task_out["candidates"][0]["base_source_url"].endswith("/crop-source")
+
+    # A tweaked box produces a second version instead of reusing the first one.
+    second_box = {"x": 90, "y": 60, "width": 210, "height": 140}
+    second_png = _composited_png(task["source"]["width"], task["source"]["height"], (10, 60, 200))
+    current = env.db.whole_tasks.find_one({"_id": env.task_id})
+    tweaked = apply(env, task, candidate_model=model, composited_png_base64=second_png, logo_box=second_box,
+                    expected_current_version_id=current["current_version_id"],
+                    expected_current_output_id=current["current_output_id"])
+    assert tweaked["current_version_id"] != applied["current_version_id"]
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    assert stored["candidates"][0]["logo_box"] == second_box
+    assert stored["candidates"][0]["applied_version_id"] == tweaked["current_version_id"]
+    assert env.db.whole_versions.count_documents({"task_id": env.task_id,
+                                                "operation": "original_replace"}) == 2
+
+
+def test_apply_rejects_a_broken_or_mismatched_composited_png(env):
+    env.client = LogoAwareCoreAI({"found": False})
+    task, background = _logo_task(env, env.client)
+    run_background(background)
+    model = "seedream-5-pro-image-to-image"
+    with pytest.raises(HTTPException) as wrong_size:
+        apply(env, task, candidate_model=model, composited_png_base64=_composited_png(120, 90),
+              logo_box={"x": 0, "y": 0, "width": 10, "height": 10})
+    assert wrong_size.value.status_code == 422
+    assert wrong_size.value.detail == "合成图片格式或尺寸无效"
+    with pytest.raises(HTTPException) as not_base64:
+        apply(env, task, candidate_model=model, composited_png_base64="not-a-png")
+    assert not_base64.value.status_code == 422
+    with pytest.raises(HTTPException) as not_png:
+        apply(env, task, candidate_model=model,
+              composited_png_base64=base64.b64encode(b"GIF89a-not-a-png").decode("ascii"))
+    assert not_png.value.status_code == 422
+    assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+    assert env.db.whole_versions.count_documents({"task_id": env.task_id,
+                                                 "operation": "original_replace"}) == 0
+
+
+def test_apply_keeps_a_negative_logo_box_off_the_canvas_edge(env):
+    env.client = LogoAwareCoreAI({"found": False})
+    task, background = _logo_task(env, env.client)
+    run_background(background)
+    model = "seedream-5-pro-image-to-image"
+    # A Logo with transparent padding may legally hang past the left/top edge.
+    box = {"x": -34, "y": -18, "width": 180, "height": 120}
+    applied = apply(env, task, candidate_model=model,
+                    composited_png_base64=_composited_png(task["source"]["width"], task["source"]["height"]),
+                    logo_box=box)
+    stored = env.db.background_replace_tasks.find_one({"_id": task["id"]})
+    assert stored["candidates"][0]["logo_box"] == box
+    assert stored["candidates"][0]["applied_version_id"] == applied["current_version_id"]
+    task_out = routes.list_original_replacements(env.task_id, env.request)[0]
+    # Reopening 调整 Logo must find the operator's placement again, not a clamped copy.
+    assert task_out["candidates"][0]["logo_box"] == box
+
+
+@pytest.mark.parametrize("box", [{"x": 12, "y": 9, "width": 0, "height": 40},
+                                {"x": 12, "y": 9, "width": 40, "height": -5}])
+def test_apply_rejects_a_logo_box_without_a_size(env, box):
+    env.client = LogoAwareCoreAI({"found": False})
+    task, background = _logo_task(env, env.client)
+    run_background(background)
+    with pytest.raises(HTTPException) as error:
+        apply(env, task, candidate_model="seedream-5-pro-image-to-image",
+              composited_png_base64=_composited_png(task["source"]["width"], task["source"]["height"]),
+              logo_box=box)
+    assert error.value.status_code == 422
+    assert error.value.detail == "Logo 位置无效，请重新调整"
+
+
+def test_feedback_rerun_reuses_the_logo_plan_instead_of_detecting_again(env):
+    env.client = LogoAwareCoreAI({"found": True, "x": 0.05, "y": 0.06, "width": 0.2, "height": 0.1})
+    task, background = _logo_task(env, env.client)
+    run_background(background)
+    assert env.client.chat_calls == 1
+    overlay = env.db.background_replace_tasks.find_one({"_id": task["id"]})["logo_overlay"]
+
+    rerun_background = BackgroundTasks()
+    rerun = routes.retry_model_replacement(env.task_id, task["id"],
+        schemas.WholeImageOriginalReplacementFeedbackRequest(feedback="Logo 再往右一些"),
+        env.request, rerun_background)
+    assert env.db.background_replace_tasks.find_one({"_id": rerun["id"]})["logo_overlay"] == overlay
+    run_background(rerun_background)
+    # The same base poster keeps its Logo plan, so the vision model is asked only once.
+    assert env.client.chat_calls == 1
+    stored = env.db.background_replace_tasks.find_one({"_id": rerun["id"]})
+    assert stored["logo_overlay"] == overlay
+    assert "移除图片 1 中原有的品牌 Logo/商标标识" in stored["candidates"][0]["model_input"]["prompt"]
+

@@ -56,3 +56,18 @@ def original_replacement_download_url(merchant_id: str, task_id: str, replacemen
     base = merchant_base(merchant_id) if merchant_id else "/api"
     return (f"{base}/whole-image/tasks/{quote(str(task_id), safe='')}/original-replacements/"
             f"{quote(str(replacement_id), safe='')}/download")
+
+
+def original_replacement_logo_source_url(merchant_id: str, task_id: str, replacement_id: str) -> str:
+    """Same-origin PNG of the official Logo, safe to draw into a canvas."""
+    base = merchant_base(merchant_id) if merchant_id else "/api"
+    return (f"{base}/whole-image/tasks/{quote(str(task_id), safe='')}/original-replacements/"
+            f"{quote(str(replacement_id), safe='')}/logo-source")
+
+
+def original_replacement_candidate_source_url(merchant_id: str, task_id: str, replacement_id: str,
+                                             candidate_model: str) -> str:
+    """Same-origin PNG of one candidate's raw model output (no official Logo)."""
+    base = merchant_base(merchant_id) if merchant_id else "/api"
+    return (f"{base}/whole-image/tasks/{quote(str(task_id), safe='')}/original-replacements/"
+            f"{quote(str(replacement_id), safe='')}/candidates/{quote(str(candidate_model), safe='')}/crop-source")

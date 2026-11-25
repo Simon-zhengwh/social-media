@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, applyOriginalReplacement, createOriginalReplacement, listOriginalReplacements, merchantPath, refreshOriginalReplacement, restoreOriginalReplacementArtifacts, retryModelReplacement, retryOriginalReplacementCandidate, selectWholeImageVersion } from '../api'
-import type { Asset, BrandLogoImage, OriginalReplacementTask, WholeImageTask } from '../types'
+import type { Asset, BrandLogoImage, ImageModel, LogoOverlayBox, OriginalReplacementCandidate, OriginalReplacementTask, WholeImageTask } from '../types'
 import { parseServerDate } from '../time'
 import { assetDisplayName } from '../assetNames'
 import { imageModelLabel } from '../modelGeneration'
+import { ORIGINAL_REPLACEMENT_MODELS, imageModelSupportsRatio } from '../imageModels'
 import { ZoomableImage } from './ImageLightbox'
+import { compositeLogoPng } from '../logoOverlay'
 import PosterCropDialog from './PosterCropDialog'
+import PosterLogoOverlayDialog from './PosterLogoOverlayDialog'
 import SeriesPhotoEditor from './SeriesPhotoEditor'
 
 type Props = {
@@ -37,6 +40,10 @@ const row = (asset: Asset): Row => ({ id: crypto.randomUUID(), target: '', asset
 const stages: Record<string, string> = { queued: '等待处理', preparing: '准备图片', agent_running: '正在替换', model_running: '模型正在替换', saving: '保存结果', done: '替换完成', failed: '处理未完成' }
 const active = (record: OriginalReplacementTask) => record.status === 'queued' || record.status === 'running'
 const message = (error: unknown) => error instanceof Error ? error.message : '请求失败，请稍后重试'
+const boxKey = (box: LogoOverlayBox) => `${box.x},${box.y},${box.width},${box.height}`
+/** Cached canvas composite; keyed by the applied box so a tweak forces a fresh render. */
+const compositedKey = (recordId: string, candidate: OriginalReplacementCandidate) =>
+  `${recordId}:${candidate.model}:${candidate.logo_box ? boxKey(candidate.logo_box) : 'raw'}`
 
 /** Reuse the images already attached to the design prompt so only positions stay empty. */
 function carried(task: WholeImageTask, assets: Asset[]): Row[] {
@@ -94,9 +101,21 @@ export default function OriginalReplacementPanel({
   const [rows, setRows] = useState<Row[]>(() =>
     initialPhotos ? carriedFrom(initialPhotos, task, assets) : carried(task, assets))
   const [removedPool, setRemovedPool] = useState<Array<{ asset: Asset; target: string }>>([])
+  // The official Logo is composited for model batches, so it must be removable from the list.
+  // Remembering which asset was removed resets it automatically when the Logo changes.
+  const [logoRemovedFor, setLogoRemovedFor] = useState<string | null>(null)
   const [splitAllElements, setSplitAllElements] = useState(false)
+  // 仅替换元素 sends one model request per click; the rest stay idle candidates.
+  const replacementRatio = task.placement?.ratio ?? task.input.ratio
+  const replacementModels = ORIGINAL_REPLACEMENT_MODELS.filter((model) =>
+    !replacementRatio || imageModelSupportsRatio(model, replacementRatio))
+  const [requestedModel, setRequestedModel] = useState<ImageModel>(
+    () => replacementModels[0] ?? ORIGINAL_REPLACEMENT_MODELS[0])
+  const candidateModel = replacementModels.includes(requestedModel) ? requestedModel : replacementModels[0]
   const [records, setRecords] = useState<OriginalReplacementTask[]>([])
-  const [crop, setCrop] = useState<{ src: string; width: number; height: number } | null>(null)
+  const [crop, setCrop] = useState<{
+    src: string; width: number; height: number; logoSrc?: string; defaultLogoBox?: LogoOverlayBox
+  } | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>()
   const [loading, setLoading] = useState(true)
   const [operation, setOperation] = useState<'agent' | 'model' | 'feedback' | 'apply' | 'refresh' | 'restore' | 'retry' | null>(null)
@@ -105,6 +124,8 @@ export default function OriginalReplacementPanel({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [clock, setClock] = useState(Date.now)
   const [editorOpen, setEditorOpen] = useState(false)
+  const [logoEditor, setLogoEditor] = useState<{ model: ImageModel; baseSrc: string; initialBox: LogoOverlayBox } | null>(null)
+  const [composited, setComposited] = useState<Record<string, string>>({})
   const lock = useRef(false)
   const mounted = useRef(true)
   const listRequest = useRef(0)
@@ -117,10 +138,16 @@ export default function OriginalReplacementPanel({
   const running = records.some(active)
   const photos = rows.filter((item) => item.asset.id !== logo?.asset_id)
   // The backend adds the series group's Logo as a reference when it submits the request.
+  const logoRemoved = Boolean(logo && logoRemovedFor === logo.asset_id)
+  const showLogo = Boolean(logo && !seriesCanvas && !logoRemoved)
   const replacements = [
-    ...(logo && !seriesCanvas ? [{ target: 'Logo', asset_id: logo.asset_id }] : []),
+    ...(showLogo && logo ? [{ target: 'Logo', asset_id: logo.asset_id }] : []),
     ...photos.map((item) => ({ target: item.target.trim(), asset_id: item.asset.id })),
   ]
+  const intoPoolLogo: Asset | null = logo && !seriesCanvas && logoRemoved ? {
+    id: logo.asset_id, original_name: logo.original_name, url: logo.url, thumb_url: logo.thumb_url,
+    width: logo.width, height: logo.height, mime_type: 'image/png', created_at: task.created_at,
+  } : null
   const poolOptions = [...new Map([
     ...poolAssets,
     ...removedPool.map((item) => item.asset),
@@ -152,6 +179,37 @@ export default function OriginalReplacementPanel({
     void load()
     return () => { mounted.current = false }
   }, [load])
+
+  // Polling rebuilds `selected` constantly, so the composite effect reads the record from a ref.
+  const latest = useRef(selected)
+  useEffect(() => { latest.current = selected }, [selected])
+
+  const logoOverlay = selected?.kind === 'model' ? selected.logo_overlay ?? null : null
+  const candidateSignature = (selected?.candidates ?? [])
+    .map((item) => `${item.model}:${item.status}:${item.logo_box ? boxKey(item.logo_box) : 'raw'}`).join('|')
+  // Candidates that have not been applied yet get their official Logo drawn here, so the
+  // first result an operator sees is already the composited poster.
+  useEffect(() => {
+    const record = latest.current
+    const layer = record?.kind === 'model' ? record.logo_overlay ?? null : null
+    if (!record || !layer) return
+    let cancelled = false
+    for (const candidate of record.candidates ?? []) {
+      const source = candidate.base_source_url
+      if (!source || candidate.logo_box || candidate.status !== 'succeeded') continue
+      const key = compositedKey(record.id, candidate)
+      void compositeLogoPng({
+        baseSrc: merchantPath(source), logoSrc: merchantPath(layer.source_url),
+        canvasWidth: record.source.width, canvasHeight: record.source.height, box: layer.box,
+        // A `for_crop` result keeps its own aspect ratio, so show the 100% centred crop.
+        coverBase: Boolean(candidate.for_crop),
+      }).then((url) => {
+        if (cancelled) return
+        setComposited((previous) => (previous[key] ? previous : { ...previous, [key]: url }))
+      }).catch(() => undefined)
+    }
+    return () => { cancelled = true }
+  }, [selected?.id, candidateSignature])
 
   useEffect(() => {
     if (!running) return
@@ -226,18 +284,34 @@ export default function OriginalReplacementPanel({
     if (replacements.length > 5) { setError('最多提交 5 项替换'); return }
     void perform(kind, async () => {
       const next = await createOriginalReplacement(task.id, task.current_version_id!, task.current_output_id!,
-        replacements, kind === 'agent' && splitAllElements, kind)
+        replacements, kind === 'agent' && splitAllElements, kind, candidateModel)
       if (!mounted.current) return
       openNewRecord(next)
       setRows(defaultRows())
       setRemovedPool([])
       setSplitAllElements(false)
+      setLogoRemovedFor(null)
     })
   }
 
   const chooseRecord = (id: string | null) => {
     setSelectedId(id); setError(null); setFeedback(''); selectRecordUrl(id)
-    if (!id) setSplitAllElements(false)
+    if (!id) { setSplitAllElements(false); setLogoRemovedFor(null) }
+  }
+
+  /** The official Logo is drawn here, then that PNG becomes the applied version. */
+  const applyComposited = (candidate: OriginalReplacementCandidate, box: LogoOverlayBox) => {
+    const baseSrc = candidate.base_source_url
+    if (!selected || !logoOverlay || !baseSrc) return
+    void perform('apply', async () => {
+      const png = composited[compositedKey(selected.id, candidate)] ?? await compositeLogoPng({
+        baseSrc: merchantPath(baseSrc), logoSrc: merchantPath(logoOverlay.source_url),
+        canvasWidth: selected.source.width, canvasHeight: selected.source.height, box,
+      })
+      await applyOriginalReplacement(task, selected.id, candidate.model, png, box)
+      await load()
+      await onRefreshTask()
+    })
   }
   const elapsed = selected ? Math.max(0, Math.floor((clock - parseServerDate(selected.started_at || selected.created_at).getTime()) / 1000)) : 0
 
@@ -298,27 +372,50 @@ export default function OriginalReplacementPanel({
               {selected.candidates?.map((candidate) => {
                 const label = imageModelLabel(candidate.model)
                 const versionId = candidate.applied_version_id
+                const preview = composited[compositedKey(selected.id, candidate)] ?? candidate.output?.preview_url
+                const box = candidate.logo_box ?? logoOverlay?.box ?? null
+                const baseSource = candidate.base_source_url ? merchantPath(candidate.base_source_url) : null
+                const canComposite = Boolean(logoOverlay && baseSource && box)
                 return <div key={candidate.model} className="original-model-candidate">
                   <strong title={label}>{label}</strong>
                   {candidate.output ? <>
-                    <ZoomableImage src={candidate.output.preview_url} alt={label} />
-                    {candidate.for_crop ? <button type="button" className="mp-btn-secondary mp-btn-small" aria-label={`裁剪 ${label}`}
+                    <ZoomableImage src={preview ?? candidate.output.preview_url} alt={label} />
+                    {candidate.for_crop ? <div className="original-model-actions">
+                      <button type="button" className="mp-btn-secondary mp-btn-small" aria-label={`裁剪 ${label}`}
                       onClick={() => setCrop({
                         src: merchantPath(`/api/whole-image/tasks/${encodeURIComponent(task.id)}/original-replacements/${encodeURIComponent(selected.id)}/candidates/${encodeURIComponent(candidate.model)}/crop-source`),
                         width: selected.source.width, height: selected.source.height,
-                      })}>裁剪导出</button> : versionId && versionId === task.current_version_id ? <span>当前 v{candidate.applied_version}</span>
-                      : <button type="button" className="mp-btn-secondary mp-btn-small"
-                          aria-label={versionId ? `切换到 ${label} v${candidate.applied_version}` : `应用 ${label}`}
-                          disabled={Boolean(operation) || !canSubmit}
-                          onClick={() => void perform('apply', async () => {
-                            if (versionId) {
-                              await selectWholeImageVersion(task.id, versionId)
-                            } else {
-                              await applyOriginalReplacement(task, selected.id, candidate.model)
-                              await load()
-                            }
-                            await onRefreshTask()
-                          })}>{versionId ? `切换到 v${candidate.applied_version}` : '应用'}</button>}
+                        // The model already erased the old Logo, so the crop must carry the official one.
+                        ...(logoOverlay ? { logoSrc: merchantPath(logoOverlay.source_url),
+                          defaultLogoBox: logoOverlay.box } : {}),
+                      })}>裁剪导出</button>
+                    </div> : <div className="original-model-actions">
+                      {canComposite ? <button type="button"
+                        className="mp-btn-secondary mp-btn-small" aria-label={`调整 ${label} 的 Logo`}
+                        disabled={Boolean(operation) || !canSubmit}
+                        onClick={() => setLogoEditor({ model: candidate.model, baseSrc: baseSource!, initialBox: box! })}>调整 Logo</button> : null}
+                      {versionId && versionId === task.current_version_id ? <span>当前 v{candidate.applied_version}</span>
+                        : <button type="button" className="mp-btn-secondary mp-btn-small"
+                            aria-label={versionId ? `切换到 ${label} v${candidate.applied_version}` : `应用 ${label}`}
+                            disabled={Boolean(operation) || !canSubmit}
+                            onClick={() => void (versionId
+                              ? perform('apply', async () => {
+                                  await selectWholeImageVersion(task.id, versionId)
+                                  await onRefreshTask()
+                                })
+                              : canComposite && box ? applyComposited(candidate, box)
+                              : perform('apply', async () => {
+                                  await applyOriginalReplacement(task, selected.id, candidate.model)
+                                  await load()
+                                  await onRefreshTask()
+                                }))}>{versionId ? `切换到 v${candidate.applied_version}` : '应用'}</button>}
+                    </div>}
+                  </> : candidate.status === 'idle' ? <>
+                    <span className="original-model-status">未生成</span>
+                    <button type="button" className="mp-btn-secondary mp-btn-small"
+                      aria-label={`用 ${label} 生成`} disabled={Boolean(operation)} onClick={() => void perform('retry', async () => {
+                        updateRecord(await retryOriginalReplacementCandidate(task.id, selected.id, candidate.model))
+                      })}>生成</button>
                   </> : candidate.status === 'unsupported' || candidate.status === 'failed' ? <>
                     <span>{candidate.status === 'unsupported' ? candidate.error : '替换失败'}</span>
                     <button type="button" className="mp-btn-secondary mp-btn-small"
@@ -389,10 +486,13 @@ export default function OriginalReplacementPanel({
       ) : (
         <>
           <div className="replacement-rows">
-            {logo ? <div className="replacement-row original-replacement-row original-replacement-logo is-checked">
+            {showLogo && logo ? <div className="replacement-row original-replacement-row original-replacement-logo is-checked">
               <div className="original-replacement-choice">
                 <img src={logo.thumb_url || logo.url} alt="Logo" />
                 <span className="original-replacement-name">Logo</span>
+                <button type="button" className="mp-btn-ghost mp-btn-small original-replacement-remove"
+                  aria-label="移除原照：Logo" disabled={Boolean(operation)}
+                  onClick={() => setLogoRemovedFor(logo.asset_id)}>移除</button>
               </div>
             </div> : null}
             {photos.map((item) => {
@@ -406,13 +506,27 @@ export default function OriginalReplacementPanel({
               </div>
             })}
           </div>
-          {poolOptions.length ? (
+          {intoPoolLogo || poolOptions.length ? (
             <section className="original-replacement-pool" aria-label="从素材池添加原照">
               <div className="original-replacement-pool-head">
                 <span>素材池</span>
-                <span className="original-replacement-pool-count">{poolOptions.length}</span>
+                <span className="original-replacement-pool-count">{poolOptions.length + (intoPoolLogo ? 1 : 0)}</span>
               </div>
               <div className="original-replacement-pool-list">
+                {intoPoolLogo ? (
+                  <button
+                    key="logo"
+                    type="button"
+                    className="original-replacement-pool-item"
+                    disabled={Boolean(operation)}
+                    aria-label="添加素材：Logo"
+                    title="Logo"
+                    onClick={() => setLogoRemovedFor(null)}
+                  >
+                    <img src={intoPoolLogo.thumb_url || intoPoolLogo.url} alt="" loading="lazy" decoding="async" />
+                    <span className="original-replacement-pool-add" aria-hidden="true">+</span>
+                  </button>
+                ) : null}
                 {poolOptions.map((asset) => {
                   const name = assetDisplayName(asset.original_name)
                   return (
@@ -435,6 +549,11 @@ export default function OriginalReplacementPanel({
           ) : null}
           {photos.length === 0 && !logo ? <p className="replacement-help">请先在设计需求中添加参考图或选择 Logo。</p> : null}
           {replacements.length > 5 ? <p className="original-replacement-warning" role="alert">最多提交 5 项，请移除部分原照或关闭 Logo。</p> : null}
+          {replacementModels.length ? <div className="original-model-picker" role="radiogroup" aria-label="仅替换元素模型">
+            {replacementModels.map((model) => <button key={model} type="button" role="radio" aria-checked={model === candidateModel}
+              className={`original-model-option${model === candidateModel ? ' is-selected' : ''}`}
+              disabled={Boolean(operation)} onClick={() => setRequestedModel(model)}>{imageModelLabel(model)}</button>)}
+          </div> : null}
           <div className="original-replacement-actions">
             <button type="button" className="mp-btn-secondary replacement-submit" disabled={Boolean(operation) || !canSubmit || replacements.length === 0 || replacements.length > 5}
               onClick={() => submit('agent')}>{operation === 'agent' ? '提交中…' : '生成可编辑海报'}</button>
@@ -446,6 +565,33 @@ export default function OriginalReplacementPanel({
       )}
       {error || loadError ? <div className="asset-notice asset-notice-error" role="alert"><p>{error || loadError}</p><button type="button" className="mp-btn-ghost mp-btn-small" disabled={Boolean(operation)} onClick={() => void load()}>刷新替换记录</button></div> : null}
       {crop ? <PosterCropDialog {...crop} onClose={() => setCrop(null)} /> : null}
+      {logoEditor && selected && logoOverlay ? <PosterLogoOverlayDialog
+        baseSrc={logoEditor.baseSrc}
+        logoSrc={merchantPath(logoOverlay.source_url)}
+        width={selected.source.width}
+        height={selected.source.height}
+        initialBox={logoEditor.initialBox}
+        defaultBox={logoOverlay.box}
+        busy={Boolean(operation)}
+        onClose={() => setLogoEditor(null)}
+        onApply={async ({ base64, box }) => {
+          lock.current = true
+          setOperation('apply')
+          setError(null)
+          try {
+            await applyOriginalReplacement(task, selected.id, logoEditor.model, base64, box)
+            await load()
+            await onRefreshTask()
+          } catch (reason: unknown) {
+            // A stale task after a version switch: refresh so the next click targets the new one.
+            if (reason instanceof ApiError && reason.code === 'http_409') await onRefreshTask().catch(() => undefined)
+            throw reason
+          } finally {
+            lock.current = false
+            if (mounted.current) setOperation(null)
+          }
+        }}
+      /> : null}
     </div>
   )
 }

@@ -444,14 +444,32 @@ export type OriginalReplacementReference = {
 
 export type OriginalReplacementItem = { target: string; asset_id: string }
 
+/** Pixel box of the official Logo on the poster canvas, plus whether it was detected. */
+export type LogoOverlayBox = { x: number; y: number; width: number; height: number; detected?: boolean }
+
+export type OriginalReplacementLogoOverlay = {
+  asset_id: string
+  name: string
+  width: number
+  height: number
+  preview_url: string
+  /** Same-origin PNG of the official Logo file, safe to draw into a canvas. */
+  source_url: string
+  box: LogoOverlayBox
+}
+
 export type OriginalReplacementCandidate = {
   model: ImageModel
-  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'unsupported'
+  status: 'idle' | 'queued' | 'running' | 'succeeded' | 'failed' | 'unsupported'
   for_crop?: boolean
   output: { width: number; height: number; preview_url: string } | null
   error: string | null
   applied_version_id?: string | null
   applied_version?: number | null
+  /** Last applied Logo box; reopens 调整 Logo on the clean base with the same tweak. */
+  logo_box?: LogoOverlayBox | null
+  /** Same-origin PNG of the raw model output, i.e. the poster without any Logo. */
+  base_source_url?: string | null
 }
 
 export type OriginalReplacementTask = {
@@ -461,6 +479,8 @@ export type OriginalReplacementTask = {
   retry_of?: string | null
   feedback?: string | null
   applied_candidate_model?: ImageModel | null
+  /** The single model this batch requested; the other candidates are idle until asked for. */
+  candidate_model?: ImageModel | null
   split_all_elements?: boolean
   artifacts?: WholeImageArtifact[]
   artifact_error?: string | null
@@ -476,6 +496,8 @@ export type OriginalReplacementTask = {
   source: OriginalReplacementReference
   replacements: Array<OriginalReplacementReference & { target: string }>
   logo_reference?: OriginalReplacementReference | null
+  /** Present when the batch replaces the brand Logo with the official file on the client canvas. */
+  logo_overlay?: OriginalReplacementLogoOverlay | null
   output: { asset_id: string; width: number; height: number; preview_url: string; download_url: string } | null
   agent_id: string | null
   run_id: string | null

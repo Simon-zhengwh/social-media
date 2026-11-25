@@ -1,22 +1,32 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import io
+import logging
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from PIL import Image, ImageOps
 from pymongo import ReturnDocument
 
 from app.config import Settings
+from app.schemas import gateway_model_name
 from app.services import original_replacement_runner, whole_image
-from app.services.canvas import gateway_image_size
+from app.services.canvas import KIE_IMAGE_ASPECT_RATIOS, gateway_image_size, image_model_supports_canvas
 from app.services import poster_costs
 from app.services.core_ai import CoreAIClient
 from app.services.image_ref import cleanup_image_refs, image_ref_from_asset
 from app.services.object_store import ObjectStore
 from app.services.whole_image import StudioError
 
-REPLACEMENT_MODELS = ("seedream-5-pro-image-to-image", "seedream-5.5-image-to-image", "minimax-h3-image-edit")
+logger = logging.getLogger(__name__)
+
+# A click on "仅替换元素" spends one model request. The other models stay as idle candidates
+# until an operator asks for them, so a three-way comparison costs three clicks, not three calls.
 
 # A series page's Logo is always the group's official file, composited by the series layer.
 # Asking the replacement Agent to redraw or swap the Logo makes the result show it twice.
@@ -65,6 +75,208 @@ def _reject_series_logo_replacement(task: dict[str, Any], replacements: list[Any
         )
 
 
+# ---------------------------------------------------------------------------
+# Logo overlay: the edit model erases the old Logo, the workbench composites the
+# official file on the client canvas. Keep the split so the backend never has to
+# splice pixels and can move to Java later.
+# ---------------------------------------------------------------------------
+
+_LOGO_MIN_RATIO = 0.015
+_LOGO_MAX_AREA = 0.35
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_LOGO_DETECT_PROMPT = (
+    "找出这张海报底稿中原来印着的品牌 Logo 或商标徽章，连同紧贴它的底衬。"
+    "品牌 Logo 通常只占画面宽度的 5%–25%，不要把它和海报主标题、副标题或正文艺术字混淆。"
+    "严格只返回一个 JSON 对象：找到时返回 "
+    '{"found": true, "x": 0.05, "y": 0.04, "width": 0.18, "height": 0.12}，'
+    "其中 x、y、width、height 都是相对整张海报宽高的 0.0–1.0 归一化比例；"
+    '画面中没有任何品牌 Logo 时返回 {"found": false}。'
+)
+
+
+def _logo_item(batch: dict[str, Any]) -> dict[str, Any] | None:
+    """The replacement row whose target is the brand Logo, for single model batches."""
+    if batch.get("kind") != "model" or batch.get("logo_reference"):
+        return None
+    return next((item for item in batch.get("replacements") or []
+                 if _LOGO_TARGET.search(str(item.get("target") or ""))), None)
+
+
+def _photo_replacements(batch: dict[str, Any]) -> list[dict[str, Any]]:
+    """Replacement rows that stay photo swaps; the Logo is composited by the workbench."""
+    logo = _logo_item(batch)
+    return [item for item in batch.get("replacements") or [] if item is not logo]
+
+
+def _model_input_images(batch: dict[str, Any]) -> list[dict[str, Any]]:
+    """Image 1 is the base poster; the official Logo never reaches the edit model."""
+    images = [{**batch["source"], "role": "替换底图"},
+              *({**item, "role": item["target"] or "自动识别"} for item in _photo_replacements(batch))]
+    if logo_reference := batch.get("logo_reference"):
+        images.append({**logo_reference, "role": "官方 Logo 参考"})
+    return images
+
+
+def _original_image_size(store: ObjectStore, asset: dict[str, Any]) -> tuple[int, int]:
+    """Real pixel size of an asset file; metadata may only describe a thumbnail."""
+    relative = str(asset.get("path") or asset.get("prepared_path") or "")
+    if relative:
+        try:
+            with Image.open(io.BytesIO(store.get_bytes(relative))) as image:
+                return ImageOps.exif_transpose(image).size
+        except Exception:  # noqa: BLE001 - fall back to the stored metadata
+            logger.warning("could not read the size of %s", relative)
+    return max(1, int(asset.get("width") or 1)), max(1, int(asset.get("height") or 1))
+
+
+def _poster_data_url(store: ObjectStore, asset: dict[str, Any]) -> str:
+    relative = str(asset.get("path") or asset.get("prepared_path") or "")
+    if not relative:
+        raise original_replacement_runner.OriginalReplacementError("source_missing", "底稿文件不存在", 422)
+    with Image.open(io.BytesIO(store.get_bytes(relative))) as source:
+        image = ImageOps.exif_transpose(source)
+        image.load()
+        image = image.convert("RGB")
+    image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=88)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _normalize_logo_box(payload: Any, source_w: int, source_h: int) -> dict[str, int] | None:
+    """Turn the model's normalized answer into a pixel box, or None when it is unusable."""
+    if not isinstance(payload, dict) or payload.get("found") is not True:
+        return None
+    try:
+        x, y, width, height = (float(payload[key]) for key in ("x", "y", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    values = (x, y, width, height)
+    if max(values) > 1.0:
+        # Answers occasionally arrive in per-mille or in pixels; rescale defensively.
+        divisor = 1000.0 if max(values) <= 1000.0 else float(max(source_w, source_h, 1))
+        x, y, width, height = (value / divisor for value in values)
+    x, y = min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0)
+    width, height = min(width, 1.0 - x), min(height, 1.0 - y)
+    # A sliver is noise and a huge box is the poster headline, not a Logo.
+    if width <= _LOGO_MIN_RATIO or height <= _LOGO_MIN_RATIO or width * height > _LOGO_MAX_AREA:
+        return None
+    return {"x": round(x * source_w), "y": round(y * source_h),
+            "width": max(1, round(width * source_w)), "height": max(1, round(height * source_h))}
+
+
+def _fit_logo_box(erase_box: dict[str, int], logo_w: int, logo_h: int,
+                  source_w: int, source_h: int) -> dict[str, Any]:
+    """Equal-ratio box matching the old Logo's visual size, centred on its frame."""
+    scale = min(erase_box["width"] / max(logo_w, 1), erase_box["height"] / max(logo_h, 1))
+    width = max(1, min(source_w, round(logo_w * scale)))
+    height = max(1, min(source_h, round(logo_h * scale)))
+    center_x = erase_box["x"] + erase_box["width"] / 2
+    center_y = erase_box["y"] + erase_box["height"] / 2
+    return {"x": max(0, min(source_w - width, round(center_x - width / 2))),
+            "y": max(0, min(source_h - height, round(center_y - height / 2))),
+            "width": width, "height": height, "detected": True}
+
+
+def _logo_anchor(target: str) -> tuple[str, str]:
+    text = str(target or "")
+    vertical = "bottom" if "下" in text else "top"
+    if "右" in text:
+        return "right", vertical
+    if "左" in text:
+        return "left", vertical
+    if "中" in text:
+        return "center", vertical
+    return "left", "top"
+
+
+def _fallback_logo_box(logo_item: dict[str, Any], logo_w: int, logo_h: int,
+                       source_w: int, source_h: int) -> dict[str, Any]:
+    """Deterministic corner box used when the poster's old Logo cannot be located."""
+    horizontal, vertical = _logo_anchor(logo_item.get("target") or "")
+    margin = max(12, round(min(source_w, source_h) * 0.045))
+    scale = (min(source_w, source_h) * 0.20) / max(logo_w, logo_h)
+    width = max(1, min(source_w, round(logo_w * scale)))
+    height = max(1, min(source_h, round(logo_h * scale)))
+    x = {"left": margin, "right": source_w - margin - width,
+         "center": round((source_w - width) / 2)}[horizontal]
+    y = margin if vertical == "top" else source_h - margin - height
+    return {"x": max(0, min(source_w - width, x)), "y": max(0, min(source_h - height, y)),
+            "width": width, "height": height, "detected": False}
+
+
+def _detect_logo_box(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
+                     batch: dict[str, Any], parent: dict[str, Any]) -> dict[str, int] | None:
+    asset = db.assets.find_one({"_id": batch["source"]["asset_id"]}) or {}
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": _LOGO_DETECT_PROMPT},
+        {"type": "image_url", "image_url": {"url": _poster_data_url(store, asset)}},
+    ]}]
+    # The default design model cannot read images, so the asset index model is explicit here.
+    with poster_costs.track_task(db, parent, "replace"):
+        payload = client.chat_json(
+            messages,
+            model=settings.asset_index_model,
+            timeout_seconds=min(settings.asset_index_timeout_seconds, 45),
+        )
+    return _normalize_logo_box(payload, int(batch["source"]["width"]), int(batch["source"]["height"]))
+
+
+def _logo_overlay(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
+                  batch: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any] | None:
+    """Locate the batch's Logo once and persist it, so every candidate shares one plan."""
+    logo_item = _logo_item(batch)
+    if logo_item is None:
+        return None
+    stored = batch.get("logo_overlay")
+    if isinstance(stored, dict) and stored.get("box"):
+        return stored
+    source_w = int(batch["source"]["width"])
+    source_h = int(batch["source"]["height"])
+    logo_asset = db.assets.find_one({"_id": logo_item["asset_id"]}) or {}
+    logo_w, logo_h = _original_image_size(store, logo_asset)
+    try:
+        erase_box = _detect_logo_box(db, settings, store, client, batch, parent)
+    except Exception as exc:  # noqa: BLE001 - locating the old Logo must never fail the batch
+        logger.warning("logo detection failed for %s: %s", batch.get("_id"), exc)
+        erase_box = None
+    box = _fit_logo_box(erase_box, logo_w, logo_h, source_w, source_h) if erase_box else None
+    overlay = {
+        "asset_id": logo_item["asset_id"],
+        "name": logo_item.get("name") or "Logo",
+        "width": logo_w,
+        "height": logo_h,
+        "box": box or _fallback_logo_box(logo_item, logo_w, logo_h, source_w, source_h),
+        "erase_box": erase_box,
+    }
+    db.background_replace_tasks.update_one(
+        {"_id": batch["_id"], "logo_overlay": {"$exists": False}}, {"$set": {"logo_overlay": overlay}})
+    # Another candidate may have stored the plan first; reuse that one.
+    winner = (db.background_replace_tasks.find_one({"_id": batch["_id"]}, {"logo_overlay": 1}) or {}).get("logo_overlay")
+    return winner if isinstance(winner, dict) and winner.get("box") else overlay
+
+
+def _decode_composited_png(payload: str, size: tuple[int, int]) -> bytes:
+    """Validate the client-composited PNG; anything else must not become a version."""
+    text = str(payload or "").strip()
+    if text.startswith("data:"):
+        text = text.partition(",")[2]
+    try:
+        data = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise StudioError("invalid_composited_png", "合成图片格式或尺寸无效", 422) from exc
+    if not data.startswith(_PNG_MAGIC):
+        raise StudioError("invalid_composited_png", "合成图片格式或尺寸无效", 422)
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            decoded = ImageOps.exif_transpose(image).size
+    except Exception as exc:  # noqa: BLE001 - untrusted client payload
+        raise StudioError("invalid_composited_png", "合成图片格式或尺寸无效", 422) from exc
+    if decoded != size:
+        raise StudioError("invalid_composited_png", "合成图片格式或尺寸无效", 422)
+    return data
+
+
 
 def _task(db: Any, task_id: str) -> dict[str, Any]:
     task = db.whole_tasks.find_one({"_id": task_id})
@@ -75,7 +287,7 @@ def _task(db: Any, task_id: str) -> dict[str, Any]:
 
 def create(db: Any, task_id: str, *, source_version_id: str, source_output_id: str,
            replacements: list[dict[str, str]], split_all_elements: bool = False, kind: str = "agent",
-           retry_of: str | None = None, feedback: str = "") -> dict[str, Any]:
+           retry_of: str | None = None, feedback: str = "", candidate_model: str | None = None) -> dict[str, Any]:
     task = _task(db, task_id)
     if task.get("status") != "succeeded":
         raise StudioError("source_not_ready", "请先生成并选择海报", 409)
@@ -100,20 +312,30 @@ def create(db: Any, task_id: str, *, source_version_id: str, source_output_id: s
     association = {"whole_task_id": task_id, "source_version_id": source_version_id,
                    "source_output_id": source_output_id, "source_version": version["version"]}
     if kind == "model":
-        association.update(kind=kind, retry_of=retry_of, feedback=feedback)
+        association.update(kind=kind, retry_of=retry_of, feedback=feedback,
+                           candidate_model=gateway_model_name(candidate_model) or None)
     return original_replacement_runner.create_task(
         db, source_asset_id=source_asset_id, whole_task_id=task_id, replacements=replacements,
         split_all_elements=kind == "agent" and split_all_elements, metadata=association,
-        logo_reference_asset_id=logo_asset_id)
+        logo_reference_asset_id=logo_asset_id,
+        candidate_model=str(association.get("candidate_model") or ""))
 
 
 def retry_model_batch(db: Any, task_id: str, replacement_id: str, feedback: str) -> dict[str, Any]:
     previous = get_task(db, task_id, replacement_id)
     if previous.get("kind") != "model" or previous["status"] in original_replacement_runner.ACTIVE:
         raise StudioError("batch_not_ready", "请等待本批模型处理结束", 409)
-    return create(db, task_id, source_version_id=previous["source_version_id"],
-                  source_output_id=previous["source_output_id"], replacements=previous["input"]["replacements"],
-                  kind="model", retry_of=replacement_id, feedback=feedback)
+    created = create(db, task_id, source_version_id=previous["source_version_id"],
+                     source_output_id=previous["source_output_id"], replacements=previous["input"]["replacements"],
+                     kind="model", retry_of=replacement_id, feedback=feedback,
+                     candidate_model=str(previous.get("applied_candidate_model") or previous.get("candidate_model") or ""))
+    overlay = previous.get("logo_overlay")
+    if isinstance(overlay, dict) and overlay.get("box"):
+        # The base poster is unchanged, so the old Logo sits where the first batch found it.
+        db.background_replace_tasks.update_one(
+            {"_id": created["_id"], "logo_overlay": {"$exists": False}}, {"$set": {"logo_overlay": overlay}})
+        return db.background_replace_tasks.find_one({"_id": created["_id"]})
+    return created
 
 
 def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, model: str, *, for_crop: bool = False) -> dict[str, Any]:
@@ -130,8 +352,8 @@ def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, mode
     field = f"candidates.{index}"
     current = candidates[index]["status"]
     terminal_failure = batch["status"] in {"failed", "interrupted"}
-    if current not in {"failed", "unsupported"} and not (terminal_failure and current in original_replacement_runner.ACTIVE):
-        raise StudioError("candidate_not_retryable", "只能重试失败的候选", 409)
+    if current not in {"idle", "failed", "unsupported"} and not (terminal_failure and current in original_replacement_runner.ACTIVE):
+        raise StudioError("candidate_not_retryable", "只能重试未生成或失败的模型", 409)
 
     query = {"_id": replacement_id, f"{field}.status": current}
     values: dict[str, Any] = {"status": "running", "stage": "model_running", "progress": 0,
@@ -151,10 +373,11 @@ def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, mode
     return claimed
 
 
-def _model_prompt(task: dict[str, Any]) -> str:
+def _model_prompt(batch: dict[str, Any]) -> str:
+    rows = _photo_replacements(batch)
     lines = ["图片 1 是唯一的海报底稿。保持原画布比例、取景、标题、文字、排版、装饰和未指定区域。"
              "只对下列素材对应的目标做局部替换。输出完整海报。"]
-    for index, item in enumerate(task["replacements"], start=2):
+    for index, item in enumerate(rows, start=2):
         target = item["target"] or "按素材内容匹配底稿中对应的对象或区域"
         lines.append(f"图片 {index} 是替换原照。目标：{target}。")
     lines.extend([
@@ -164,16 +387,33 @@ def _model_prompt(task: dict[str, Any]) -> str:
         "目标为场景时：保留原照的主要场景特征，可调整取景、透视与光色来融合。"
         "明确指定「背景」时可替换整张摄影底图，同时保留原海报的文字、排版和装饰。",
     ])
-    if task.get("logo_reference"):
-        lines.append(f"图片 {len(task['replacements']) + 2} 是官方 Logo，仅用于识别品牌标识。"
+    overlay = batch.get("logo_overlay")
+    erase_box = overlay.get("erase_box") if isinstance(overlay, dict) else None
+    if isinstance(overlay, dict) and overlay.get("box"):
+        if erase_box:
+            source_w = max(1, int(batch["source"]["width"]))
+            source_h = max(1, int(batch["source"]["height"]))
+            left = round(erase_box["x"] / source_w * 100)
+            right = round((erase_box["x"] + erase_box["width"]) / source_w * 100)
+            top = round(erase_box["y"] / source_h * 100)
+            bottom = round((erase_box["y"] + erase_box["height"]) / source_h * 100)
+            lines.append(
+                f"移除图片 1 中原有的品牌 Logo/商标标识及其紧邻底衬（位于画面约左 {left}%–{right}%、"
+                f"上 {top}%–{bottom}% 区域），用周围背景纹理与光影自然无痕补齐；"
+                "严禁误删海报主标题、副标题和正文艺术字；不要在画面任何位置绘制任何品牌 Logo 或商标标识。")
+        else:
+            lines.append("若图片 1 中存在原有的小型品牌 Logo/商标标识，请将其移除并用周围背景自然补齐"
+                         "（严禁误删海报主标题和正文艺术字）；不要在画面任何位置绘制任何品牌 Logo 或商标标识。")
+    elif batch.get("logo_reference"):
+        lines.append(f"图片 {len(rows) + 2} 是官方 Logo，仅用于识别品牌标识。"
                      + original_replacement_runner.SERIES_LOGO_OUTPUT_RULE)
-    elif any(item["target"].casefold() == "logo" for item in task["replacements"]):
+    elif any(item["target"].casefold() == "logo" for item in batch["replacements"]):
         lines.append("Logo 使用对应的官方原文件。在底稿 Logo 的原中心、原显示框内等比放置，"
                      "保留完整图案、文字、颜色和比例，禁止拉伸、压扁、裁切或重绘。")
     else:
         lines.append("保留底稿上的 Logo 或原有的无 Logo 状态。")
-    if task.get("feedback"):
-        lines.append(f"本轮反馈：{task['feedback']}。按反馈修正指定问题，仍以图片 1 为大小、位置和排版的基准。")
+    if batch.get("feedback"):
+        lines.append(f"本轮反馈：{batch['feedback']}。按反馈修正指定问题，仍以图片 1 为大小、位置和排版的基准。")
     return "\n".join(lines)
 
 
@@ -213,8 +453,11 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
         return
 
     parent = db.whole_tasks.find_one({"_id": batch.get("whole_task_id")}) or {}
+    overlay = _logo_overlay(db, settings, store, client, batch, parent)
+    if overlay is not None:
+        batch["logo_overlay"] = overlay
     references = []
-    images = original_replacement_runner.input_images(batch)
+    images = _model_input_images(batch)
     prompt = _model_prompt(batch)
     width, height = batch["source"]["width"], batch["source"]["height"]
     size = gateway_image_size(width, height)
@@ -284,7 +527,9 @@ def get_task(db: Any, task_id: str, replacement_id: str) -> dict[str, Any]:
 
 def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_version_id: str,
           expected_current_output_id: str, candidate_model: str | None = None,
-          settings: Settings | None = None, store: ObjectStore | None = None) -> dict[str, Any]:
+          settings: Settings | None = None, store: ObjectStore | None = None,
+          composited_png_base64: str | None = None,
+          logo_box: dict[str, Any] | Any | None = None) -> dict[str, Any]:
     current = _task(db, task_id)
     replacement = db.background_replace_tasks.find_one({"_id": replacement_id, "whole_task_id": task_id})
     if replacement is None:
@@ -294,14 +539,34 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
     )
     candidate = None
     application_key = replacement_id
+    composited_png: bytes | None = None
+    logo_box_value = logo_box.model_dump() if hasattr(logo_box, "model_dump") else logo_box
+    if isinstance(logo_box_value, dict):
+        # A Logo may legally hang past the left/top edge, so x and y keep their sign.
+        logo_box_value = {"x": int(logo_box_value.get("x") or 0), "y": int(logo_box_value.get("y") or 0),
+                          "width": int(logo_box_value.get("width") or 0),
+                          "height": int(logo_box_value.get("height") or 0)}
+        if logo_box_value["width"] <= 0 or logo_box_value["height"] <= 0:
+            raise StudioError("invalid_logo_box", "Logo 位置无效，请重新调整", 422)
+    else:
+        logo_box_value = None
     if replacement.get("kind") == "model":
         candidate = next((item for item in replacement["candidates"] if item["model"] == candidate_model), None)
         if candidate is None:
             raise StudioError("candidate_required", "请选择本批次的模型候选", 422)
         if candidate.get("for_crop"):
             raise StudioError("crop_required", "请裁剪后导出此候选", 409)
-        application_key = f"{replacement_id}_{candidate['model'].replace('.', '_')}"
+        base_key = f"{replacement_id}_{candidate['model'].replace('.', '_')}"
         output = candidate.get("output") if candidate["status"] == "succeeded" else None
+        if composited_png_base64:
+            if not output:
+                raise StudioError("result_not_ready", "替换结果尚未成功，请先查询并确认结果", 409)
+            composited_png = _decode_composited_png(
+                composited_png_base64, (int(output["width"]), int(output["height"])))
+            # Every tweak is its own version, so the digest joins the idempotency key.
+            application_key = f"{base_key}_{hashlib.sha256(composited_png).hexdigest()[:12]}"
+        else:
+            application_key = base_key
     else:
         output = replacement.get("output") if replacement["status"] == "succeeded" else None
 
@@ -336,6 +601,15 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
         # A version left by an interrupted apply is safe to rebuild while holding this lock.
         db.whole_versions.delete_one({"_id": version_id, "task_id": task_id})
         now = whole_image.utcnow()
+        # The client already drew the official Logo onto the clean base; keep that PNG as the result.
+        result = output
+        if composited_png is not None:
+            if settings is None or store is None:
+                raise StudioError("composited_runtime_missing", "合成图片运行时缺失，请重启服务", 500)
+            result = whole_image._save_output_asset(
+                db, settings, store, task_id=replacement_id, version=1,
+                role=f"{candidate['model']}_logo", data=composited_png,
+                target_size=(int(output["width"]), int(output["height"])), allow_letterbox=False)
         images = original_replacement_runner.input_images(replacement)
         split_all_elements = replacement["input"].get("split_all_elements", False)
         model_input = {"channel": "agent", "endpoint": f"/api/runs/agent/{replacement.get('agent_id')}/trigger",
@@ -350,11 +624,11 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
                 instruction += f"。本轮反馈：{replacement['feedback']}"
         version = whole_image._version_document(
             task_id=task_id, version=whole_image._next_version(db, task_id),
-            parent_version_id=source["_id"], output_asset_id=output["asset_id"], instruction=instruction,
-            operation="original_replace", width=output["width"], height=output["height"], model_input=model_input,
+            parent_version_id=source["_id"], output_asset_id=result["asset_id"], instruction=instruction,
+            operation="original_replace", width=result["width"], height=result["height"], model_input=model_input,
             outputs=[{"id": "original_replace_result", "channel": model_input["channel"], "role": "original_replace_result",
-                      "label": "原照替换结果", "asset_id": output["asset_id"], "width": output["width"],
-                      "height": output["height"], "selectable": True, "model_input": model_input,
+                      "label": "原照替换结果", "asset_id": result["asset_id"], "width": result["width"],
+                      "height": result["height"], "selectable": True, "model_input": model_input,
                       "artifacts": replacement.get("artifacts") or [], "created_at": now}])
         version.update(_id=version_id, replacement_task_id=replacement_id,
                        source_output_id=replacement["source_output_id"], replacements=replacement["input"]["replacements"])
@@ -368,16 +642,16 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
                 "channel": model_input["channel"],
                 "role": "original_replace_result",
                 "label": "原照替换结果",
-                "asset_id": output["asset_id"],
-                "width": output["width"],
-                "height": output["height"],
+                "asset_id": result["asset_id"],
+                "width": result["width"],
+                "height": result["height"],
                 "selectable": True,
                 "model_input": model_input,
                 "artifacts": replacement.get("artifacts") or [],
                 "created_at": now,
             }
             canvas = dict(current.get("canvas") or {}) or {
-                "width": output["width"], "height": output["height"],
+                "width": result["width"], "height": result["height"],
             }
             final_asset_id, final_outputs, series_fields = series_service.finalize_series_outputs(
                 db, settings, store, task=current, version=version["version"],
@@ -407,7 +681,7 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
             {"$set": {"selected_version_id": version_id, "current_version_id": version_id,
                       "current_version": version["version"], "current_output_id": current_output_id,
                       "output_asset_id": version["output_asset_id"],
-                      "canvas": {"width": output["width"], "height": output["height"]},
+                      "canvas": {"width": result["width"], "height": result["height"]},
                       "status": "succeeded", "stage": "done", "progress": 100, "error": None,
                       "edit": {"status": "idle"}, "model_input_latest": model_input, "model_input_attempt": None,
                       f"original_replacement_versions.{application_key}": version_id,
@@ -422,13 +696,16 @@ def apply(db: Any, task_id: str, replacement_id: str, *, expected_current_versio
             db.whole_tasks.update_one({"_id": task_id, "edit.original_apply_token": token},
                                      {"$set": {"edit": prior.get("edit") or {"status": "idle"}}})
             raise
-    _mark_applied(db, replacement_id, version)
+    _mark_applied(db, replacement_id, version,
+                  composited_output=result if composited_png is not None else None, logo_box=logo_box_value)
     whole_image._append_message(db, task_id, role="assistant", content=f"已应用原照替换，保存为 v{version['version']}。",
                                 version_id=version_id, version=version["version"])
     return _task(db, task_id)
 
 
-def _mark_applied(db: Any, replacement_id: str, version: dict[str, Any]) -> None:
+def _mark_applied(db: Any, replacement_id: str, version: dict[str, Any], *,
+                  composited_output: dict[str, Any] | None = None,
+                  logo_box: dict[str, Any] | None = None) -> None:
     tasks = db.background_replace_tasks
     values = {"applied_version_id": version["_id"], "applied_version": version["version"]}
     model_input = version.get("model_input") or {}
@@ -436,8 +713,15 @@ def _mark_applied(db: Any, replacement_id: str, version: dict[str, Any]) -> None
         model = model_input["model"]
         task = tasks.find_one({"_id": replacement_id})
         index, candidate = next((i, item) for i, item in enumerate(task["candidates"]) if item["model"] == model)
-        tasks.update_one({"_id": replacement_id}, {"$set": {f"candidates.{index}.{key}": value for key, value in values.items()}})
-        values.update(applied_candidate_model=model, output=candidate["output"])
+        extra = {f"candidates.{index}.{key}": value for key, value in values.items()}
+        # Keep the composited PNG and the tweaked box so reopening "调整 Logo" starts clean.
+        if composited_output is not None:
+            extra[f"candidates.{index}.composited_output"] = composited_output
+        if logo_box is not None:
+            extra[f"candidates.{index}.logo_box"] = logo_box
+        tasks.update_one({"_id": replacement_id}, {"$set": extra})
+        values.update(applied_candidate_model=model,
+                      output=composited_output or candidate.get("composited_output") or candidate["output"])
     # A retry for an older candidate must not replace the batch's latest download.
     tasks.update_one({"_id": replacement_id, "applied_version": {"$not": {"$gt": version["version"]}}}, {"$set": values})
 
