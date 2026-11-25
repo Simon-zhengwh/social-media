@@ -38,9 +38,9 @@ purpose按素材职责选择：dish-background、photo-template、background-for
 
 使用本会话实际已有的submit_artifacts或等价产物工具，按其真实schema提交：
 
-- HTML类：editor.html为主，附完整结果目录或离线ZIP、manifest、原生模型PNG/回执、完整原照、mask、审核及report。单独HTML须已内嵌全部素材，不依赖CDN。
+- HTML类：仅交付 `editor.html` 和同尺寸最终 PNG（不再打包或提交离线 ZIP 结果包；单独 HTML 须已内嵌全部素材，不依赖 CDN）。manifest、原生模型 PNG/回执、审核及 report 保留在工作目录或按需单独附带。
 - 改字：final.png为主，附sticker.png、原稿、两阶段回执/审核、edit-region、manifest和report。
 
 只用发布工具返回的真实download_url，不把远端沙箱路径或本机file://路径当作下载链接，不擅自改公开权限，不用静态PNG替代HTML主交付。保留模型图片原始Markdown链接和media_id；不能发布文件时如实报告，不编造产物链接。
 
-可复跑目录保留相对路径，不为缩小HTML把原照转JPEG。需在沙箱生成交付ZIP时可用Python标准库shutil.make_archive，只打包本次结果目录，不含密钥或整个工作区。不要调用旧版editor_workflow.py的local/local-artwork命令，本版只有SKILL.md列出的当前构建脚本。
+可复跑目录保留相对路径，不为缩小HTML把原照转JPEG。不再生成或提交交付 ZIP 包，由前端按单张文件直接下载 PNG 与 HTML。不要调用旧版editor_workflow.py的local/local-artwork命令，本版只有SKILL.md列出的当前构建脚本。

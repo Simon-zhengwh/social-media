@@ -2,7 +2,7 @@
 name: image-editor
 description: Use when the user asks to edit an existing poster by replacing original dish photos, backgrounds, photo windows or logos, changing text, or separating design elements into editable offline HTML. Scope is existing-poster editing through Core AI native generate_image and source-preserving compositing, not designing a new poster from scratch.
 metadata:
-  version: 1.2.0
+  version: 1.3.0
   author: simon
   tags: [image-editing, poster, logo, offline-html]
 ---
@@ -19,7 +19,7 @@ metadata:
 
 ## Output specification
 
-HTML 类交付 `editor.html`、同尺寸最终 PNG 及完整结果包；改字交付 `final.png` 和新字贴纸。保留原文件、manifest、真实模型回执及审核记录，按 `references/platform-runtime.md` 发布真实链接。
+HTML 类仅交付 `editor.html` 与同尺寸最终 PNG（不再打包或交付 ZIP 结果包，供用户逐张下载）；改字交付 `final.png` 和新字贴纸。保留原文件、manifest、真实模型回执及审核记录，按 `references/platform-runtime.md` 发布真实链接。
 
 ## Quality assurance
 
@@ -71,7 +71,7 @@ HTML 类交付 `editor.html`、同尺寸最终 PNG 及完整结果包；改字�
 1. 映射海报、原照、目标和准确文案。先选上表流程，批量读取输入信息；菜品使用上面的批量入口。
 2. 由Agent直接调用Core AI原生generate_image；参数按当前工具声明，见[工具协议](references/tool-interface.md)。透明素材请求原生真实alpha，补背景请求完全不透明。图片模型生成素材，Python构建器不发起模型请求。提示词见[模型提示词](references/model-prompts.md)，背景与改字另见各自参考。
 3. 先验素材再构建。菜品运行 `--prepare-background`，集中看原稿、模型背景、最终空背景及边界对照页。仅修补区/保护区出错时复用已有背景重新合成。审核最终空背景与每张抠图；改字第一阶段贴纸通过后才进行第二阶段。保留真实PENDING/FAIL，不挑“相对最好”的失败素材继续交付成品。
-4. 用对应脚本制作新版本。HTML图片内嵌、离线可用；不为构建HTML再次生图。用平台实际可用的submit_artifacts或同等工具发布HTML及完整结果目录/bundle，最终链接只用真实返回值。元素模式隐藏全部可调元素、移开所有照片后，整个canvas与导出PNG仍须完全不透明。
+4. 用对应脚本制作新版本。HTML图片内嵌、离线可用；不为构建HTML再次生图。用平台实际可用的submit_artifacts或同等工具发布 `editor.html` 与最终 PNG（不再打包或提交 ZIP 结果包），最终链接只用真实返回值。元素模式隐藏全部可调元素、移开所有照片后，整个canvas与导出PNG仍须完全不透明。
 5. 按[验收](references/verification.md)分别记录技术、视觉、浏览器结论，未执行不写通过。HTML主交付为 `editor.html`，说明“打开后拖动/缩放，点击下载PNG”；改字主交付为 `final.png`，同时附新字贴纸、可复跑manifest及记录。
 
 ## 本地命令
