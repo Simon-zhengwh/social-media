@@ -88,11 +88,12 @@ def test_ordered_mapping_and_reused_material_are_preserved(env):
     assert agent == "5a162c34-f333-453f-9835-de6a4f96e3fb"
     assert timeout == 2700
     assert text == (
-        "帮我把图1的牛肉替换成图2，并且把图1的左上人物替换成图2\n\n"
+        f"帮我把图1的牛肉替换成图2，并且把图1的左上人物替换成图2\n{env.service.EDITABLE_HTML_OUTPUT_RULE}\n\n"
         "https://example.com/input-1.png\nhttps://example.com/input-2.png"
     )
     assert len(result["input"]["replacements"]) == 2
     assert result["status"] == "succeeded"
+    assert result["artifact_error"] == env.service.HTML_MISSING_ERROR
     assert result["deadline_at"] - result["started_at"] == timedelta(seconds=2700)
     assert env.client.downloads == ["https://example.com/final.png"]
     saved = env.db.assets.find_one({"_id": result["output"]["asset_id"]})
@@ -104,7 +105,8 @@ def test_automatic_and_explicit_targets_keep_their_image_mapping(env):
     task = create(env, [{"asset_id": "beef"}, {"target": "左上角人物", "asset_id": "person"}])
     result = run(env, task)
     assert env.client.triggers[0][1] == (
-        "帮我根据图2的原照内容，自行识别图1中对应的替换对象和位置并替换，并且把图1的左上角人物替换成图3\n\n"
+        "帮我根据图2的原照内容，自行识别图1中对应的替换对象和位置并替换，并且把图1的左上角人物替换成图3"
+        f"\n{env.service.EDITABLE_HTML_OUTPUT_RULE}\n\n"
         "https://example.com/input-1.png\nhttps://example.com/input-2.png\nhttps://example.com/input-3.png"
     )
     assert result["status"] == "succeeded"
@@ -156,7 +158,8 @@ def test_background_request_explicitly_replaces_the_whole_photo_and_preserves_de
     run(env, create(env, [{"target": "背景", "asset_id": "beef"}]))
     assert env.client.triggers[0][1] == (
         "帮我把图1的整张摄影底图（包括照片中的主体和场景）替换成图2，"
-        "保留图1的文字、Logo、笔刷、贴纸、装饰和原有排版，保持图1的画布尺寸不变\n\n"
+        "保留图1的文字、Logo、笔刷、贴纸、装饰和原有排版，保持图1的画布尺寸不变"
+        f"\n{env.service.EDITABLE_HTML_OUTPUT_RULE}\n\n"
         "https://example.com/input-1.png\nhttps://example.com/input-2.png"
     )
 
@@ -165,7 +168,7 @@ def test_background_request_explicitly_replaces_the_whole_photo_and_preserves_de
 def test_specific_replacement_targets_are_sent_verbatim(env, target):
     run(env, create(env, [{"target": target, "asset_id": "beef"}]))
     assert env.client.triggers[0][1] == (
-        f"帮我把图1的{target}替换成图2\n\n"
+        f"帮我把图1的{target}替换成图2\n{env.service.EDITABLE_HTML_OUTPUT_RULE}\n\n"
         "https://example.com/input-1.png\nhttps://example.com/input-2.png"
     )
 
@@ -176,7 +179,7 @@ def test_whole_background_and_local_replacements_keep_their_image_mapping(env):
     assert env.client.triggers[0][1] == (
         "帮我把图1的整张摄影底图（包括照片中的主体和场景）替换成图2，"
         "保留图1的文字、Logo、笔刷、贴纸、装饰和原有排版，保持图1的画布尺寸不变，"
-        "并且把图1的左上人物替换成图3\n\n"
+        f"并且把图1的左上人物替换成图3\n{env.service.EDITABLE_HTML_OUTPUT_RULE}\n\n"
         "https://example.com/input-1.png\nhttps://example.com/input-2.png\nhttps://example.com/input-3.png"
     )
 

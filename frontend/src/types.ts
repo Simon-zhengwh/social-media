@@ -464,6 +464,7 @@ export type OriginalReplacementCandidate = {
   for_crop?: boolean
   output: { width: number; height: number; preview_url: string } | null
   error: string | null
+  review_failed?: boolean
   applied_version_id?: string | null
   applied_version?: number | null
   /** Last applied Logo box; reopens 调整 Logo on the clean base with the same tweak. */

@@ -70,14 +70,19 @@ def run_background(background):
 class LogoAwareCoreAI(FakeCoreAI):
     """FakeCoreAI that counts Logo location calls and can answer them deterministically."""
 
-    def __init__(self, logo_payload=None, logo_error: Exception | None = None) -> None:
+    def __init__(self, logo_payload=None, logo_error: Exception | None = None, *, review_payload=None) -> None:
         super().__init__()
         self.chat_calls = 0
         self.chat_model: str | None = None
-        self.logo_payload = {"status": "pass", "violations": []} if logo_payload is None else logo_payload
+        self.logo_payload = {"found": False} if logo_payload is None else logo_payload
         self.logo_error = logo_error
+        self.review_payload = {"status": "pass", "violations": []} if review_payload is None else review_payload
+        self.review_calls = []
 
     def chat_json(self, messages, *, model=None, timeout_seconds=None):
+        if len(messages[0]["content"]) == 3:
+            self.review_calls.append(messages)
+            return self.review_payload
         self.chat_calls += 1
         self.chat_model = model
         if self.logo_error is not None:
@@ -105,6 +110,7 @@ def test_model_replacement_sends_one_request_and_leaves_the_other_models_idle(en
     restored = routes.list_original_replacements(env.task_id, env.request)[0]
     assert restored["id"] == task["id"]
     assert restored["status"] == "succeeded"
+    assert len(env.client.review_calls) == 1
     # One click spends one model request instead of three.
     assert [call["model"] for call in env.client.edit_calls] == ["seedream-5-pro-image-to-image"]
     assert [(item["model"], item["status"]) for item in restored["candidates"]] == [
@@ -114,6 +120,49 @@ def test_model_replacement_sends_one_request_and_leaves_the_other_models_idle(en
     for item in restored["candidates"][:3]:
         assert item["output"] is None if item["status"] == "idle" else item["output"] is not None
     assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+
+
+@pytest.mark.parametrize(("violations", "reason"), [
+    (["text_changed"], "文案"),
+    (["logo_remaining"], "Logo"),
+    (["text_changed", "logo_remaining"], "文案和 Logo"),
+])
+def test_model_candidate_cannot_be_applied_after_visual_review_rejects_it(env, violations, reason):
+    client = LogoAwareCoreAI(review_payload={"status": "fail", "violations": violations})
+    task, background = model_batch(env, [{"target": "Logo", "asset_id": "logo"}], client=client)
+    run_background(background)
+
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]
+    candidate = restored["candidates"][0]
+    assert candidate["status"] == "failed"
+    assert candidate["output"] is None
+    assert candidate["review_failed"] is True
+    assert reason in candidate["error"]
+    assert restored["candidates"][1]["status"] == "idle"
+    with pytest.raises(HTTPException) as error:
+        apply(env, task, candidate_model=candidate["model"])
+    assert error.value.status_code == 409
+    assert env.db.whole_tasks.find_one({"_id": env.task_id})["current_version_id"] == env.source_id
+
+
+def test_unreadable_review_does_not_publish_a_candidate_for_cropping(env):
+    client = LogoAwareCoreAI(review_payload={"status": "pass"})
+    task, background = model_batch(env, client=client)
+    run_background(background)
+
+    retry = BackgroundTasks()
+    candidate = task["candidates"][1]
+    routes.retry_original_replacement_candidate(
+        env.task_id, task["id"], candidate["model"], env.request, retry, for_crop=True,
+    )
+    run_background(retry)
+
+    restored = routes.list_original_replacements(env.task_id, env.request)[0]["candidates"][1]
+    assert restored["status"] == "failed"
+    assert restored["for_crop"] is True
+    assert restored["output"] is None
+    assert restored["review_failed"] is True
+    assert "暂时无法校验" in restored["error"]
 
 
 def test_idle_candidate_runs_on_demand_with_the_shared_input(env):
@@ -438,6 +487,8 @@ def test_restore_html_from_existing_successful_run_without_regenerating(env):
     restored = routes.restore_original_replacement_artifacts(env.task_id, task['id'], env.request)
     again = routes.restore_original_replacement_artifacts(env.task_id, task['id'], env.request)
     assert restored['artifacts'] == again['artifacts']
+    assert restored['artifact_error'] is None
+    assert before['artifact_error'] == original_replacement_runner.HTML_MISSING_ERROR
     assert len(env.client.triggers) == 1
     assert len(env.client.file_downloads) == 2
     assert env.db.whole_artifacts.count_documents({}) == 2
@@ -583,7 +634,7 @@ def test_split_all_elements_defaults_to_off_and_keeps_the_original_prompt(env, o
     assert task["split_all_elements"] is False
     complete(env, task)
     assert env.client.triggers[0][1] == (
-        "帮我把图1的右下角牛肉替换成图2\n\n"
+        f"帮我把图1的右下角牛肉替换成图2\n{original_replacement_runner.EDITABLE_HTML_OUTPUT_RULE}\n\n"
         "https://example.com/input-1.png\nhttps://example.com/input-2.png"
     )
     env.db.background_replace_tasks.update_one({"_id": task["id"]}, {"$unset": {"input.split_all_elements": ""}})
@@ -598,7 +649,8 @@ def test_optional_position_reaches_agent_and_saved_version(env, target):
     task = create(env, [photo])
     complete(env, task)
     assert env.client.triggers[0][1] == (
-        "帮我根据图2的原照内容，自行识别图1中对应的替换对象和位置并替换\n\n"
+        "帮我根据图2的原照内容，自行识别图1中对应的替换对象和位置并替换"
+        f"\n{original_replacement_runner.EDITABLE_HTML_OUTPUT_RULE}\n\n"
         "https://example.com/input-1.png\nhttps://example.com/input-2.png"
     )
     restored = routes.list_original_replacements(env.task_id, env.request)[0]

@@ -13,14 +13,15 @@ def run(vite_url, output_dir):
     now = '2026-11-17T00:00:00Z'
     assets = [dict(id=name, original_name=name + '.png', url='/fixture/' + name + '.svg',
                    width=320, height=400, mime_type='image/png', created_at=now)
-              for name in ['photo1', 'photo2', 'photo3', 'photo4', 'photo5', 'logo1', 'logo2']]
+              for name in ['photo1', 'photo2', 'photo3', 'photo4', 'photo5', 'logo1', 'logo2', 'reference-poster']]
     logos = [dict(asset_id=a['id'], **{k: a[k] for k in ['original_name', 'url', 'width', 'height']})
              for a in assets if a['id'].startswith('logo')]
     output = dict(id='o1', channel='gateway', role='gateway_result', label='海报', status='completed',
                   asset_id='poster', selectable=True, width=320, height=400,
                   preview_url='/fixture/poster.svg', download_url='/fixture/poster.svg', model_input=None)
     task = dict(id='task1', status='succeeded', stage='done', progress=100,
-                input=dict(reference_asset_ids=[a['id'] for a in assets[:4]], logo_asset_id='logo1',
+                 input=dict(reference_asset_ids=[a['id'] for a in assets[:4]] + ['reference-poster'],
+                            product_asset_ids=[a['id'] for a in assets[:4]], logo_asset_id='logo1',
                            image_model='gpt-image-2.5-sunburst', brand_mode='none', ratio='4:5'),
                 canvas=dict(width=320, height=400), provider='gateway', outputs=[output],
                 current_output_id='o1', current_version_id='v1', selected_version_id='v1', current_version=1,
@@ -50,6 +51,7 @@ def run(vite_url, output_dir):
 
     def set_photos(ids):
         task['input']['reference_asset_ids'] = ids
+        task['input']['product_asset_ids'] = ids
         task['model_input']['images'] = [dict(asset_id=a['id'], name=a['original_name'], role='reference',
                                              url=a['url'], preview_url=a['url']) for a in assets if a['id'] in ids]
 
@@ -110,6 +112,8 @@ def run(vite_url, output_dir):
                     data = dict(finalization=None)
                 elif path.endswith('/finalizations'):
                     data = []
+                elif path.endswith('/series-config'):
+                    data = dict(enabled=False)
                 elif path.endswith('/versions'):
                     data = [version]
                 elif '/workspaces/' in path or '/batches/' in path:
@@ -125,18 +129,25 @@ def run(vite_url, output_dir):
             page.context.route('**/fixture/**', route_request)
             page.goto(vite_url + '/tests/browser/originalReplacement.html?merchant_id=m1&whole=task1&tab=original_replace')
             panel = page.locator('.original-replacement-panel')
+            expect(panel.get_by_role('button', name='添加素材：reference-poster')).to_be_visible()
             try:
                 expect(panel.locator('.replacement-target')).to_have_count(4)
             except AssertionError:
                 print(json.dumps(dict(errors=errors, unexpected=unexpected, text=page.locator('body').inner_text()), ensure_ascii=False))
                 raise
             expect(panel.locator('.original-replacement-logo')).to_have_count(1)
+            panel.get_by_role('button', name='添加素材：reference-poster').click()
+            expect(panel.get_by_role('textbox', name='替换位置：reference-poster')).to_be_visible()
+            panel.get_by_role('button', name='移除原照：reference-poster').click()
+            expect(panel.get_by_role('button', name='添加素材：reference-poster')).to_be_visible()
+            check('the reference poster becomes a replacement only when selected from the pool')
             split_all = panel.get_by_role('checkbox', name='全部拆分元素（含艺术字）', exact=True)
             top_gap = split_all.evaluate('(input) => input.closest("label").getBoundingClientRect().top - input.closest(".studio-inspector").getBoundingClientRect().top')
             check('whole-element option starts at the top of the inspector', 0 <= top_gap <= 24)
             check('whole-element option precedes all image cards', split_all.evaluate('(input) => input.getBoundingClientRect().bottom < input.closest(".original-replacement-panel").querySelector(".replacement-row").getBoundingClientRect().top'))
             check('photo cards have no filenames or field labels', panel.locator('.original-replacement-row:not(.original-replacement-logo) .original-replacement-name, .original-replacement-row label').count() == 0)
-            expect(panel.get_by_role('button', name='移除原照：', exact=False)).to_have_count(4)
+            expect(panel.locator('.replacement-row:not(.original-replacement-logo)')
+                   .get_by_role('button', name='移除原照：', exact=False)).to_have_count(4)
             check('every draft photo has a remove control')
             check('photo inputs sit beside their thumbnails with compact padding', panel.locator('.original-replacement-row:not(.original-replacement-logo)').evaluate_all('''rows => rows.every(row => {
               const card = row.getBoundingClientRect(), image = row.querySelector('img').getBoundingClientRect(), input = row.querySelector('input').getBoundingClientRect();
@@ -169,7 +180,7 @@ def run(vite_url, output_dir):
             check('request excludes the removed reference and retains explicit and automatic targets', submissions[-1]['replacements'] == [
                 dict(target='Logo', asset_id='logo2'), dict(target='右下角主菜', asset_id='photo1'),
                 *[dict(target='', asset_id='photo' + str(i)) for i in range(2, 4)]])
-            check('removing a replacement leaves the task references unchanged', task['input']['reference_asset_ids'] == ['photo1', 'photo2', 'photo3', 'photo4'])
+            check('removing a replacement leaves the task references unchanged', task['input']['reference_asset_ids'] == ['photo1', 'photo2', 'photo3', 'photo4', 'reference-poster'])
             check('checked whole-element option is submitted', submissions[-1]['split_all_elements'] is True)
             expect(panel.locator('iframe, .replacement-comparison')).to_have_count(0)
             expect(panel.get_by_role('button', name='应用为新版本', exact=True)).to_have_count(0)
@@ -188,6 +199,16 @@ def run(vite_url, output_dir):
             check('open HTML launches an interactive editor in a new tab without opener access', editor_tab.evaluate('window.opener === null'))
             editor_tab.close()
             records[0]['artifacts'] = []
+            records[0]['artifact_error'] = '该运行未返回 HTML 编辑器。'
+            page.reload()
+            expect(open_html).to_have_count(0)
+            expect(panel.get_by_text('该运行未返回 HTML 编辑器。', exact=True)).to_be_visible()
+            expect(panel.get_by_role('button', name='加载 HTML 编辑器', exact=True)).to_have_count(0)
+            expect(panel.locator('.original-replacement-fallback img')).to_have_count(1)
+            expect(panel.get_by_role('button', name='应用', exact=True)).to_be_enabled()
+            expect(panel.get_by_role('link', name='下载 PNG', exact=True)).to_have_attribute('href', '/fixture/poster.svg')
+            check('missing HTML hides the restore button and falls back to the saved PNG')
+            records[0]['artifact_error'] = None
             page.reload()
             expect(open_html).to_have_count(0)
             panel.get_by_role('button', name='加载 HTML 编辑器', exact=True).click()
@@ -279,13 +300,14 @@ def run(vite_url, output_dir):
                                            dict(model=retry_model, status='failed', error='Image fetch failed'),
                                            dict(model='minimax-h3-image-edit', status='succeeded', output=output)])]
             page.reload()
-            expect(panel.get_by_text('不支持此格式', exact=True)).to_be_visible()
+            expect(panel.get_by_text('需生成后裁剪', exact=True)).to_be_visible()
             expect(panel.get_by_role('button', name='重试 Seedream 5 Pro', exact=True)).to_have_count(0)
             check('an unsupported candidate explains the format limit and has no retry button')
             retry = panel.get_by_role('button', name='重试 Seedream 5.5', exact=True)
             expect(retry).to_be_enabled()
             expect(panel.locator('.replacement-status')).to_have_count(0)
             expect(panel).not_to_contain_text('Image fetch failed')
+            expect(panel.get_by_text('替换失败', exact=True)).to_have_attribute('title', 'Image fetch failed')
             expect(panel.get_by_role('button', name='应用 MiniMax H3')).to_be_enabled()
             retry.click()
             expect(retry).to_have_count(0)
@@ -319,7 +341,15 @@ def run(vite_url, output_dir):
                       centered.getpixel((540, 337))[:3] == (18, 131, 90) and changed.getpixel((540, 337))[:3] == (112, 43, 142))
                 check('the exported crop has no uncovered edges', changed.convert('RGBA').getchannel('A').getextrema() == (255, 255))
             expect(panel.get_by_role('button', name='应用 Seedream 5 Pro')).to_have_count(0)
-            check('no browser errors or unexpected API calls', not errors and not unexpected)
+            crop.get_by_role('button', name='关闭').click()
+            records[0]['candidates'][0] = dict(model='seedream-5-pro-image-to-image', status='failed',
+                                              review_failed=True, error='候选的文案和 Logo 均未通过校验')
+            page.reload()
+            expect(panel.get_by_text('候选的文案和 Logo 均未通过校验')).to_be_visible()
+            expect(panel.get_by_role('button', name='重试 Seedream 5 Pro')).to_be_visible()
+            expect(panel.get_by_role('button', name='应用 Seedream 5 Pro')).to_have_count(0)
+            assert not errors and not unexpected, (errors, sorted(set(unexpected)))
+            check('no browser errors or unexpected API calls')
         finally:
             browser.close()
     return dict(status='PASS', checks=checks, submissions=submissions, visual_review='not_performed')

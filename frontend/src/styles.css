@@ -8269,6 +8269,26 @@ label.product-add.is-disabled {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+.original-replacement-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0;
+}
+.original-replacement-fallback .zoomable-image {
+  display: block;
+  width: 100%;
+  border-radius: 8px;
+  background: var(--color-neutral-50, #f7f7f8);
+}
+.original-replacement-fallback img {
+  display: block;
+  width: 100%;
+  max-height: 280px;
+  object-fit: contain;
+  border-radius: 8px;
 }
 .series-editor-backdrop {
   position: fixed;

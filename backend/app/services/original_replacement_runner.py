@@ -27,6 +27,11 @@ from app.time_utils import utc_iso
 logger = logging.getLogger(__name__)
 ACTIVE = ["queued", "running"]
 SERIES_LOGO_OUTPUT_RULE = "替换交付的底图和 HTML 画布不要绘制或嵌入 Logo，保存时由应用统一合成官方原文件。"
+EDITABLE_HTML_OUTPUT_RULE = (
+    "本次为 ORIGINAL_REPLACEMENT（HTML 类）任务，不要走 ELEMENT_REPLACEMENT 或 --element-only 单图路径；"
+    "请交付离线可编辑 editor.html 以及与图1同尺寸的不透明最终 PNG（final.png）。"
+)
+HTML_MISSING_ERROR = "该运行未返回 HTML 编辑器。"
 _UNSUPPORTED_FORMAT_MESSAGE = "不支持此格式"
 
 class OriginalReplacementError(CoreAIError):
@@ -166,7 +171,7 @@ def _build_input(db: Any, settings: Settings, store: ObjectStore, client: CoreAI
             clause = (f"把图1的整张摄影底图（包括照片中的主体和场景）替换成图{image_number}，"
                       "保留图1的文字、Logo、笔刷、贴纸、装饰和原有排版，保持图1的画布尺寸不变")
         clauses.append(clause)
-    instruction = "帮我" + "，并且".join(clauses)
+    instruction = "帮我" + "，并且".join(clauses) + "\n" + EDITABLE_HTML_OUTPUT_RULE
     for item in data["replacements"]:
         if item["target"].casefold() == "logo":
             image_number = image_ids.index(item["asset_id"]) + 1
@@ -261,7 +266,8 @@ def _save_editor_artifacts(db: Any, settings: Settings, store: ObjectStore, clie
                            task: dict[str, Any], result: AgentRunResult) -> None:
     saved = list(task.get("artifacts") or [])
     failed = False
-    for artifact in (agent_image.pick_html_artifact(result), agent_image.pick_bundle_artifact(result)):
+    html = agent_image.pick_html_artifact(result)
+    for artifact in (html, agent_image.pick_bundle_artifact(result)):
         if artifact is None:
             continue
         try:
@@ -278,8 +284,12 @@ def _save_editor_artifacts(db: Any, settings: Settings, store: ObjectStore, clie
         except Exception:
             failed = True
             logger.exception("failed to store original replacement artifact for %s", task["_id"])
-    _update(db, task["_id"], artifacts=saved,
-            artifact_error="部分编辑器文件未能保存，可重新加载。" if failed else None)
+    artifact_error = (
+        "部分编辑器文件未能保存，可重新加载。" if failed
+        else HTML_MISSING_ERROR if html is None and not any(item.get("kind") == "html" for item in saved)
+        else None
+    )
+    _update(db, task["_id"], artifacts=saved, artifact_error=artifact_error)
 
 
 def restore_artifacts(db: Any, settings: Settings, store: ObjectStore, client: CoreAIClient,
@@ -291,8 +301,6 @@ def restore_artifacts(db: Any, settings: Settings, store: ObjectStore, client: C
     if result is None:
         raise OriginalReplacementError("artifacts_not_ready", "远端仍在处理中，请稍后加载", 409)
     _save_editor_artifacts(db, settings, store, client, task, result)
-    if agent_image.pick_html_artifact(result) is None:
-        _update(db, task_id, artifact_error="该运行未返回 HTML 编辑器。")
     return get_task(db, task_id)
 
 
@@ -485,6 +493,8 @@ def task_out(doc: dict[str, Any]) -> dict[str, Any]:
     overlay = doc.get("logo_overlay") if isinstance(doc.get("logo_overlay"), dict) else None
     for candidate in doc.get("candidates", []):
         item = {key: candidate.get(key) for key in ("model", "status", "error")}
+        if candidate.get("review_failed"):
+            item["review_failed"] = True
         if candidate.get("for_crop"):
             item["for_crop"] = True
         for key in ("applied_version_id", "applied_version"):

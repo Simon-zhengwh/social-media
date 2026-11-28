@@ -38,6 +38,7 @@ type Props = {
 type Row = { id: string; target: string; asset: Asset }
 const row = (asset: Asset): Row => ({ id: crypto.randomUUID(), target: '', asset })
 const stages: Record<string, string> = { queued: '等待处理', preparing: '准备图片', agent_running: '正在替换', model_running: '模型正在替换', saving: '保存结果', done: '替换完成', failed: '处理未完成' }
+const HTML_MISSING_ERROR = '该运行未返回 HTML 编辑器。'
 const active = (record: OriginalReplacementTask) => record.status === 'queued' || record.status === 'running'
 const message = (error: unknown) => error instanceof Error ? error.message : '请求失败，请稍后重试'
 const boxKey = (box: LogoOverlayBox) => `${box.x},${box.y},${box.width},${box.height}`
@@ -45,22 +46,23 @@ const boxKey = (box: LogoOverlayBox) => `${box.x},${box.y},${box.width},${box.he
 const compositedKey = (recordId: string, candidate: OriginalReplacementCandidate) =>
   `${recordId}:${candidate.model}:${candidate.logo_box ? boxKey(candidate.logo_box) : 'raw'}`
 
-/** Reuse the images already attached to the design prompt so only positions stay empty. */
-function carried(task: WholeImageTask, assets: Asset[]): Row[] {
+function carriedAssets(task: WholeImageTask, assets: Asset[], ids: string[]): Asset[] {
   const images = task.model_input?.images ?? []
-  const declared = [...(task.input.reference_asset_ids ?? []), ...(task.input.product_asset_ids ?? [])]
-  const ids = declared.length
-    ? declared
-    : images.filter((item) => item.role === 'reference' || item.role === 'product').map((item) => item.asset_id)
   return [...new Set(ids)].map((id) => {
     const asset = assets.find((item) => item.id === id)
     const meta = images.find((item) => item.asset_id === id)
-    return row(asset ?? {
+    return asset ?? {
       id, original_name: meta?.name ?? '原照',
       url: meta?.url || meta?.preview_url || merchantPath(`/api/assets/${encodeURIComponent(id)}/file`),
       width: 0, height: 0, mime_type: 'image/png', created_at: task.created_at,
-    })
+    }
   })
+}
+
+function carriedProducts(task: WholeImageTask, assets: Asset[]): Row[] {
+  const ids = task.input.product_asset_ids?.length ? task.input.product_asset_ids
+    : (task.model_input?.images ?? []).filter((item) => item.role === 'product').map((item) => item.asset_id)
+  return carriedAssets(task, assets, ids).map(row)
 }
 
 function selectRecordUrl(id: string | null) {
@@ -99,7 +101,7 @@ export default function OriginalReplacementPanel({
   task, assets, logo, onRefreshTask, initialPhotos, poolAssets = [], seriesCanvas = null, onSaveSeriesHtml,
 }: Props) {
   const [rows, setRows] = useState<Row[]>(() =>
-    initialPhotos ? carriedFrom(initialPhotos, task, assets) : carried(task, assets))
+    initialPhotos ? carriedFrom(initialPhotos, task, assets) : carriedProducts(task, assets))
   const [removedPool, setRemovedPool] = useState<Array<{ asset: Asset; target: string }>>([])
   // The official Logo is composited for model batches, so it must be removable from the list.
   // Remembering which asset was removed resets it automatically when the Logo changes.
@@ -138,6 +140,7 @@ export default function OriginalReplacementPanel({
     ...(selected?.logo_reference ? [{ ...selected.logo_reference, target: '官方 Logo 参考' }] : []),
   ]
   const htmlArtifact = selected?.artifacts?.find((item) => item.kind === 'html')
+  const htmlConfirmedMissing = selected?.artifact_error === HTML_MISSING_ERROR
   const running = records.some(active)
   const photos = rows.filter((item) => item.asset.id !== logo?.asset_id)
   // The backend adds the series group's Logo as a reference when it submits the request.
@@ -151,7 +154,12 @@ export default function OriginalReplacementPanel({
     id: logo.asset_id, original_name: logo.original_name, url: logo.url, thumb_url: logo.thumb_url,
     width: logo.width, height: logo.height, mime_type: 'image/png', created_at: task.created_at,
   } : null
+  // Unified design references can be complete posters. The operator picks which to swap in.
+  const designReferences = seriesCanvas ? [] : carriedAssets(task, assets,
+    task.input.reference_asset_ids
+      ?? (task.model_input?.images ?? []).filter((item) => item.role === 'reference').map((item) => item.asset_id))
   const poolOptions = [...new Map([
+    ...designReferences,
     ...poolAssets,
     ...removedPool.map((item) => item.asset),
   ].map((asset) => [asset.id, asset])).values()].filter((asset) =>
@@ -227,7 +235,7 @@ export default function OriginalReplacementPanel({
     return () => { cancelled = true; window.clearTimeout(timer); window.clearInterval(clockTimer) }
   }, [load, running])
 
-  const defaultRows = () => initialPhotos ? carriedFrom(initialPhotos, task, assets) : carried(task, assets)
+  const defaultRows = () => initialPhotos ? carriedFrom(initialPhotos, task, assets) : carriedProducts(task, assets)
   const updateRow = (id: string, values: Partial<Row>) => setRows((previous) => previous.map((item) => item.id === id ? { ...item, ...values } : item))
   const removeRow = (item: Row) => {
     const resolved = assets.find((candidate) => candidate.id === item.asset.id) ?? item.asset
@@ -239,9 +247,7 @@ export default function OriginalReplacementPanel({
   }
   const addPoolRow = (assetId: string) => {
     const remembered = removedPool.find((entry) => entry.asset.id === assetId)
-    const asset = remembered?.asset
-      ?? poolAssets.find((item) => item.id === assetId)
-      ?? assets.find((item) => item.id === assetId)
+    const asset = poolOptions.find((item) => item.id === assetId)
     if (!asset || rows.some((item) => item.asset.id === assetId)) return
     setRemovedPool((previous) => previous.filter((entry) => entry.asset.id !== assetId))
     setRows((previous) => [...previous, { id: crypto.randomUUID(), target: remembered?.target ?? '', asset }])
@@ -427,7 +433,7 @@ export default function OriginalReplacementPanel({
                         updateRecord(await retryOriginalReplacementCandidate(task.id, selected.id, candidate.model, true))
                       })}>生成</button>
                   </> : candidate.status === 'failed' ? <>
-                    <span>替换失败</span>
+                    <span title={candidate.error || undefined}>{(candidate.review_failed && candidate.error) || '替换失败'}</span>
                     <button type="button" className="mp-btn-secondary mp-btn-small"
                       aria-label={`重试 ${label}`} disabled={Boolean(operation) || selected.status === 'queued'}
                       onClick={() => void perform('retry', async () => {
@@ -484,8 +490,37 @@ export default function OriginalReplacementPanel({
               })}
             />
           ) : null}
+          {selected.kind !== 'model' && !active(selected) && !htmlArtifact && selected.output ? (
+            <div className="original-replacement-fallback">
+              <ZoomableImage src={selected.output.preview_url} alt="替换成图" />
+              <div className="original-replacement-html-actions">
+                {selected.applied_version_id && selected.applied_version_id === task.current_version_id ? (
+                  <span>当前 v{selected.applied_version}</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="mp-btn-primary mp-btn-small"
+                    disabled={Boolean(operation) || !canSubmit}
+                    onClick={() => void (selected.applied_version_id
+                      ? perform('apply', async () => {
+                          await selectWholeImageVersion(task.id, selected.applied_version_id!)
+                          await onRefreshTask()
+                        })
+                      : perform('apply', async () => {
+                          await applyOriginalReplacement(task, selected.id)
+                          await load()
+                          await onRefreshTask()
+                        }))}
+                  >
+                    {selected.applied_version_id ? `切换到 v${selected.applied_version}` : '应用'}
+                  </button>
+                )}
+                <a className="mp-btn-secondary mp-btn-small" href={selected.output.download_url} download>下载 PNG</a>
+              </div>
+            </div>
+          ) : null}
           {selected.artifact_error ? <p className="original-replacement-warning" role="status">{selected.artifact_error}</p> : null}
-          {selected.run_id && !active(selected) && (!htmlArtifact || selected.artifact_error) ? <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation)} onClick={() => void perform('restore', async () => {
+          {selected.run_id && !active(selected) && !htmlConfirmedMissing && (!htmlArtifact || selected.artifact_error) ? <button type="button" className="mp-btn-secondary mp-btn-small" disabled={Boolean(operation)} onClick={() => void perform('restore', async () => {
             const next = await restoreOriginalReplacementArtifacts(task.id, selected.id)
             if (mounted.current) {
               listRequest.current++
@@ -557,7 +592,8 @@ export default function OriginalReplacementPanel({
               </div>
             </section>
           ) : null}
-          {photos.length === 0 && !logo ? <p className="replacement-help">请先在设计需求中添加参考图或选择 Logo。</p> : null}
+          {replacements.length === 0 ? <p className="replacement-help">{poolOptions.length
+            ? '从素材池选入要替换的原照。' : '请先在设计需求中添加参考图或选择 Logo。'}</p> : null}
           {replacements.length > 5 ? <p className="original-replacement-warning" role="alert">最多提交 5 项，请移除部分原照或关闭 Logo。</p> : null}
           <div className="original-model-picker" role="radiogroup" aria-label="仅替换元素模型">
             {ORIGINAL_REPLACEMENT_MODELS.map((model) => {

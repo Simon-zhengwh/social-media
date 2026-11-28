@@ -133,7 +133,11 @@ def _poster_data_url(store: ObjectStore, asset: dict[str, Any]) -> str:
     relative = str(asset.get("path") or asset.get("prepared_path") or "")
     if not relative:
         raise original_replacement_runner.OriginalReplacementError("source_missing", "底稿文件不存在", 422)
-    with Image.open(io.BytesIO(store.get_bytes(relative))) as source:
+    return _review_image_url(store.get_bytes(relative))
+
+
+def _review_image_url(data: bytes) -> str:
+    with Image.open(io.BytesIO(data)) as source:
         image = ImageOps.exif_transpose(source)
         image.load()
         image = image.convert("RGB")
@@ -141,6 +145,49 @@ def _poster_data_url(store: ObjectStore, asset: dict[str, Any]) -> str:
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=88)
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _review_model_candidate(client: CoreAIClient, settings: Settings, source_url: str,
+                            data: bytes, *, remove_logo: bool) -> str | None:
+    violations = {"text_changed": "候选未保留底稿文案", "logo_remaining": "候选底图仍有 Logo"}
+    logo_rule = (
+        "图 2 是叠加官方 Logo 前的底图。检查整张图，特别是图 1 原有品牌标识附近。"
+        "如仍有品牌图形、独立品牌字标或残留笔画，或画出了新的品牌标识，记为 logo_remaining。"
+        "排除品牌标识，继续核对海报文案。"
+        if remove_logo else "只审核海报文案。"
+    )
+    prompt = (
+        "图 1 是海报底稿，图 2 是替换摄影素材后的候选图。逐字对照标题、副标题和其他设计文案。"
+        "如有换字、错字、删字、加字或整句重写，记为 text_changed。"
+        "忽略断行、空格、纯字体变化，以及被替换照片本身的文字。"
+        f"{logo_rule}"
+        '仅返回 JSON。合格时返回 {"status":"pass","violations":[]}。'
+        '不合格时返回 {"status":"fail","violations":[...]}，列出所有适用的问题代码。'
+    )
+    content = [
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": source_url}},
+        {"type": "image_url", "image_url": {"url": _review_image_url(data)}},
+    ]
+    try:
+        result = client.chat_json(
+            [{"role": "user", "content": content}], model=settings.asset_index_model_name,
+            timeout_seconds=min(settings.asset_index_timeout_seconds, 45),
+        )
+    except Exception as exc:
+        logger.warning("Replacement candidate review unavailable: %s", type(exc).__name__)
+        return "暂时无法校验替换结果，请重试"
+    issues = result.get("violations")
+    if isinstance(issues, list):
+        if result.get("status") == "pass" and not issues:
+            return None
+        if result.get("status") == "fail" and issues and all(
+            isinstance(issue, str) and issue in violations for issue in issues
+        ) and (remove_logo or "logo_remaining" not in issues):
+            if set(issues) == violations.keys():
+                return "候选的文案和 Logo 均未通过校验"
+            return violations[issues[0]]
+    return "暂时无法校验替换结果，请重试"
 
 
 def _normalize_logo_box(payload: Any, source_w: int, source_h: int) -> dict[str, int] | None:
@@ -376,7 +423,8 @@ def queue_model_candidate_retry(db: Any, task_id: str, replacement_id: str, mode
 def _model_prompt(batch: dict[str, Any]) -> str:
     rows = _photo_replacements(batch)
     lines = ["图片 1 是唯一的海报底稿。保持原画布比例、取景、标题、文字、排版、装饰和未指定区域。"
-             "只对下列素材对应的目标做局部替换。输出完整海报。"]
+             "逐字保留图片 1 的标题、副标题和其他设计文案。只从替换原照提取指定摄影内容，"
+             "不得把替换原照上的文案、Logo 或排版带入海报。输出完整海报。"]
     for index, item in enumerate(rows, start=2):
         target = item["target"] or "按素材内容匹配底稿中对应的对象或区域"
         lines.append(f"图片 {index} 是替换原照。目标：{target}。")
@@ -461,6 +509,7 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
     prompt = _model_prompt(batch)
     width, height = batch["source"]["width"], batch["source"]["height"]
     size = gateway_image_size(width, height)
+    review_required = not is_series_task(parent)
 
     def run_candidate(index: int, model: str) -> None:
         for_crop = batch["candidates"][index].get("for_crop", False)
@@ -479,10 +528,19 @@ def run_model_batch(db: Any, settings: Settings, store: ObjectStore, client: Cor
         try:
             with poster_costs.track_task(db, parent, "replace"):
                 data = client.edit_image(prompt, references, size=size, model=model)
-            output = whole_image._save_output_asset(
-                db, settings, store, task_id=batch_id, version=1, role=model,
-                data=data, target_size=None if for_crop else (width, height), allow_letterbox=False)
-            candidate.update(status="succeeded", output=output)
+                review_error = None
+                if review_required:
+                    source = db.assets.find_one({"_id": batch["source"]["asset_id"]}) or {}
+                    review_error = _review_model_candidate(
+                        client, settings, _poster_data_url(store, source), data, remove_logo=overlay is not None,
+                    )
+            if review_error:
+                candidate.update(status="failed", error=review_error, review_failed=True)
+            else:
+                output = whole_image._save_output_asset(
+                    db, settings, store, task_id=batch_id, version=1, role=model,
+                    data=data, target_size=None if for_crop else (width, height), allow_letterbox=False)
+                candidate.update(status="succeeded", output=output)
         except Exception as exc:  # noqa: BLE001 - the other candidates keep running
             candidate.update(status="failed", error=whole_image._error_text(exc))
         now = whole_image.utcnow()
